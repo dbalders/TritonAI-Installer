@@ -10,6 +10,10 @@ Fast local check:
 npm test
 ```
 
+The initial migration keeps explicit `noImplicitAny` and `strictNullChecks`
+exceptions for legacy CommonJS module boundaries. Other strict checks remain
+enabled; remove these two exceptions incrementally as those contracts are typed.
+
 This runs:
 
 - TypeScript 7 type-checking and JavaScript emission.

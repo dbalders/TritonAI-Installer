@@ -78,4 +78,23 @@ if (commonJsRendererPatterns.some((pattern) => pattern.test(rendererOutput))) {
   throw new Error("Compiled renderer contains CommonJS globals that are unavailable with Electron Node integration disabled.");
 }
 
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const windowsPackageScript = packageJson.scripts?.["package:win-installer"] || "";
+const windowsBuildCount = windowsPackageScript.match(/npm run build/g)?.length || 0;
+if (windowsBuildCount !== 1) {
+  throw new Error(`Windows packaging must compile exactly once; found ${windowsBuildCount} build steps.`);
+}
+
+for (const scriptName of [
+  "prepare:managed-config:compiled",
+  "prepare:t3code-desktop-vendor:win:compiled",
+  "prepare:codex-cli-vendor:win:compiled",
+  "prepare:skills-vendor:compiled"
+]) {
+  const script = packageJson.scripts?.[scriptName] || "";
+  if (!script || script.includes("npm run build")) {
+    throw new Error(`${scriptName} must run against the existing compiled output without rebuilding.`);
+  }
+}
+
 console.log("Installer scaffold validated.");
