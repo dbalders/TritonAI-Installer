@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "moduleDetection": "legacy"
+  },
+  "include": [
+    "src/global.d.ts",
+    "src/renderer/app.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "artifacts",
+    "vendor"
+  ]
+}

@@ -12,7 +12,8 @@ npm test
 
 This runs:
 
-- Syntax/scaffold validation.
+- TypeScript 7 type-checking and JavaScript emission.
+- Source, emitted application, and packaging scaffold validation.
 - npm package-age verification against the supply-chain cutoff.
 - Managed secure skills packaging, ownership, migration, collision, and failure-safety tests.
 - A clean-home dry run that writes all configs into a temp directory and injects fake command execution.
