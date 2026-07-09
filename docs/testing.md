@@ -98,16 +98,16 @@ The serve command validates the stapled DMG before opening the HTTP server and p
 use from the VM. In the VM, download the installer from Safari using that printed URL, for example:
 
 ```text
-http://192.168.64.1:8790/UCSD-AI-Tools-Installer-0.1.0-arm64.dmg
+http://192.168.64.1:8790/TritonAI-Installer-0.1.0-arm64.dmg
 ```
 
 If Safari searches instead of downloading, use Terminal in the VM with the printed URL:
 
 ```sh
 cd ~/Desktop
-curl -fL -o UCSD-AI-Tools-Installer.dmg \
-  http://192.168.64.1:8790/UCSD-AI-Tools-Installer-0.1.0-arm64.dmg
-open UCSD-AI-Tools-Installer.dmg
+curl -fL -o TritonAI-Installer.dmg \
+  http://192.168.64.1:8790/TritonAI-Installer-0.1.0-arm64.dmg
+open TritonAI-Installer.dmg
 ```
 
 Do not hand off `dist/mac-arm64`, ad-hoc builds, copied `.app` bundles, or `artifacts/macos-share`

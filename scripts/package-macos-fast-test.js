@@ -36,7 +36,7 @@ function main() {
     fs.rmSync(tempConfig, { force: true });
   }
 
-  const appPath = path.join(outputDir, "mac-arm64", "UCSD AI Tools Installer.app");
+  const appPath = path.join(outputDir, "mac-arm64", "TritonAI Installer.app");
   if (!fs.existsSync(appPath)) {
     throw new Error(`Fast test build did not create ${appPath}`);
   }

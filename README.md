@@ -1,6 +1,6 @@
 # TritonAI Installer
 
-Cross-platform Electron installer for [**TritonAI Harness**](https://github.com/dbalders/TritonAI-Harness) on macOS and Windows. The packaged app is named **UCSD AI Tools Installer** and gives UC San Diego users a guided setup without requiring a system Node.js installation or manual configuration.
+Cross-platform Electron installer for [**TritonAI Harness**](https://github.com/dbalders/TritonAI-Harness) on macOS and Windows. The packaged app is named **TritonAI Installer** and gives UC San Diego users a guided setup without requiring a system Node.js installation or manual configuration.
 
 The installer:
 

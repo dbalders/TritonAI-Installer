@@ -7,8 +7,8 @@ const { spawn } = require("child_process");
 const root = path.resolve(__dirname, "..");
 const artifactDir = path.join(root, "artifacts", "macos-fast-test");
 const pkg = require(path.join(root, "package.json"));
-const zipName = `UCSD-AI-Tools-Installer-${pkg.version}-arm64-fast-test.zip`;
-const appPath = path.join(artifactDir, "mac-arm64", "UCSD AI Tools Installer.app");
+const zipName = `TritonAI-Installer-${pkg.version}-arm64-fast-test.zip`;
+const appPath = path.join(artifactDir, "mac-arm64", "TritonAI Installer.app");
 const port = Number(process.env.PORT || process.argv[2] || 8791);
 
 function main() {

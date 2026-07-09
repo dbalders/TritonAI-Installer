@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, "..");
 const pkg = require(path.join(root, "package.json"));
 
 const ELECTRON_VERSION = pkg.devDependencies.electron;
-const PRODUCT_NAME = "UCSD AI Tools Installer";
+const PRODUCT_NAME = "TritonAI Installer";
 const ELECTRON_ZIP = `electron-v${ELECTRON_VERSION}-win32-x64.zip`;
 const ELECTRON_URL = `https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/${ELECTRON_ZIP}`;
 

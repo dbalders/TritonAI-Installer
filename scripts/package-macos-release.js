@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, "..");
 const outputDir = path.join(root, "artifacts", "macos-release");
 const configPath = path.join(root, "electron-builder.mac.json");
 const builderCli = path.join(root, "node_modules", "electron-builder", "cli.js");
-const appPath = path.join(outputDir, "mac-arm64", "UCSD AI Tools Installer.app");
+const appPath = path.join(outputDir, "mac-arm64", "TritonAI Installer.app");
 const dmgVolumeName = "Double-click to Install";
 const dmgBackgroundSource = path.join(root, "build", "dmg-background.png");
 const dmgBackgroundMountPath = path.join(".background", "dmg-background.png");
@@ -272,7 +272,7 @@ function verifyMountedDmgApp(dmg) {
   const mountPoint = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-dmg-"));
   try {
     run("hdiutil", ["attach", dmg, "-nobrowse", "-readonly", "-mountpoint", mountPoint]);
-    const mountedApp = path.join(mountPoint, "UCSD AI Tools Installer.app");
+    const mountedApp = path.join(mountPoint, "TritonAI Installer.app");
     verifyApp(mountedApp);
   } finally {
     spawnSync("hdiutil", ["detach", mountPoint], { stdio: "inherit" });

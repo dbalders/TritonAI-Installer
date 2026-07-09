@@ -32,7 +32,7 @@ function main() {
       tag,
       "--draft",
       "--title",
-      `UCSD AI Tools Installer ${tag}`,
+      `TritonAI Installer ${tag}`,
       "--notes",
       "macOS Developer ID signed and notarized DMG."
     ]);

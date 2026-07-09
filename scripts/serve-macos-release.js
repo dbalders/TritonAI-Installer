@@ -7,7 +7,7 @@ const { spawnSync } = require("child_process");
 const root = path.resolve(__dirname, "..");
 const releaseDir = path.join(root, "artifacts", "macos-release");
 const pkg = require(path.join(root, "package.json"));
-const dmgName = `UCSD-AI-Tools-Installer-${pkg.version}-arm64.dmg`;
+const dmgName = `TritonAI-Installer-${pkg.version}-arm64.dmg`;
 const dmgPath = path.join(releaseDir, dmgName);
 const port = Number(process.env.PORT || process.argv[2] || 8790);
 
