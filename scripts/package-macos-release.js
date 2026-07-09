@@ -142,7 +142,7 @@ function recreateDmgsFromApp() {
 }
 
 function recreateDmgFromApp(dmg) {
-  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-dmg-src-"));
+  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-installer-dmg-src-"));
   const mountPoint = path.join(stagingDir, "mount");
   const writableDmg = path.join(stagingDir, "installer-rw.dmg");
   const sizeMb = Math.max(1024, Math.ceil(directorySizeBytes(appPath) / 1024 / 1024) + 256);
@@ -269,7 +269,7 @@ function notarizeAndStapleDmgs(notary) {
 }
 
 function verifyMountedDmgApp(dmg) {
-  const mountPoint = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-dmg-"));
+  const mountPoint = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-installer-dmg-"));
   try {
     run("hdiutil", ["attach", dmg, "-nobrowse", "-readonly", "-mountpoint", mountPoint]);
     const mountedApp = path.join(mountPoint, "TritonAI Installer.app");

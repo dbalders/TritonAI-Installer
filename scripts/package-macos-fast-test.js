@@ -64,7 +64,7 @@ function writeFastTestConfig() {
   delete config.mac.entitlementsInherit;
   delete config.dmg;
 
-  const tempConfig = path.join(os.tmpdir(), `ucsd-ai-tools-fast-mac-${process.pid}.json`);
+  const tempConfig = path.join(os.tmpdir(), `tritonai-fast-mac-${process.pid}.json`);
   fs.writeFileSync(tempConfig, JSON.stringify(config, null, 2));
   return tempConfig;
 }
