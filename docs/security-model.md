@@ -7,7 +7,7 @@ This project currently configures each tool at the user scope. It does not requi
 The installer creates:
 
 - `~/.agents/ucsd/` for shared agent guidance, logs, and wrappers.
-- `~/.tritonai-harness/codex/skills/` for packaged UCSD skills.
+- `~/.tritonai-harness/codex/skills/` for bundled secure skills plus public/community/user skills installed through other trusted flows.
 - `~/.agents/ucsd/runtime/` for a user-scoped Node.js/npm runtime and packaged managed tools.
 - Codex home under `~/.tritonai-harness/codex`.
 - TritonAI Harness provider settings under `~/.tritonai-harness/userdata/settings.json`.
@@ -24,7 +24,9 @@ The first-pass guardrails are config-level and file-level:
 - Create `~/.agents/ucsd/logs/` as the stable local log destination.
 - Write redacted installer transcripts and support reports under `~/.agents/ucsd/logs/` so users can copy a report or reveal the logs folder when setup pauses.
 - Add deny/read guidance for common secret files.
-- Install reviewed UCSD skill folders at build time into the managed Codex home.
+- Stage reviewed secure skill folders from the private secure repository at build time. Public AI Team and Community skills are not bundled into the Installer.
+- Record Installer-owned secure skill names in `.tritonai-managed-skills.json`; upgrades replace/remove only those names and reject collisions with unowned skill folders.
+- Validate the versioned vendor manifest, skill names, directories, and required `SKILL.md` files before mutating an existing install, and stage the complete replacement set before activation.
 - Route TritonAI Harness through Codex by setting the provider instance to `codex`, passing `UCSD_AI_BASE_URL` and `TRITONAI_API_KEY`, exposing TritonAI-routed Codex models, defaulting to `deepseek-v4-flash`, and disabling stale non-Codex provider entries.
 - Avoid relying on Homebrew, system Node, or global machine package state.
 

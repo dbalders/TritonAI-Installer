@@ -367,13 +367,11 @@ function assertTritonAiModelsUrl() {
 function assertSkillsVendorStaging() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-skills-vendor-"));
   try {
-    const sourceRoot = path.join(tempRoot, "UCSD-Skills-Library");
-    const skillsRoot = path.join(sourceRoot, "skills");
+    const sourceRoot = path.join(tempRoot, "UCSD-Skills-Library-Secure");
     const vendorDir = path.join(tempRoot, "vendor", "skills");
-    writeSkill(path.join(skillsRoot, "tritonai-feedback"), "tritonai-feedback");
-    writeSkill(path.join(skillsRoot, "ucsd-data-classification"), "ucsd-data-classification");
-    writeSkill(path.join(skillsRoot, "_template"), "_template");
-    writeSkill(path.join(skillsRoot, "Bad_Name"), "Bad_Name");
+    writeSkill(path.join(sourceRoot, "secure-review"), "secure-review");
+    writeSkill(path.join(sourceRoot, "ucsd-dsmlp-deploy"), "ucsd-dsmlp-deploy");
+    fs.mkdirSync(path.join(sourceRoot, "docs"), { recursive: true });
 
     const result = stageSkillsFromSource({
       sourceRoot,
@@ -382,30 +380,32 @@ function assertSkillsVendorStaging() {
     });
 
     assert.deepStrictEqual(result.skills, [
-      "tritonai-feedback",
-      "ucsd-data-classification"
+      "secure-review",
+      "ucsd-dsmlp-deploy"
     ]);
-    assertFile(path.join(vendorDir, "tritonai-feedback", "SKILL.md"));
-    assertFile(path.join(vendorDir, "ucsd-data-classification", "SKILL.md"));
-    assert(!fs.existsSync(path.join(vendorDir, "_template")), "template skill should not be packaged");
-    assert(!fs.existsSync(path.join(vendorDir, "Bad_Name")), "invalid skill folder name should not be packaged");
+    assertFile(path.join(vendorDir, "secure-review", "SKILL.md"));
+    assertFile(path.join(vendorDir, "ucsd-dsmlp-deploy", "SKILL.md"));
+    assert(!fs.existsSync(path.join(vendorDir, "docs")), "non-skill support folders should not be packaged");
 
     const manifest = JSON.parse(fs.readFileSync(path.join(vendorDir, "manifest.json"), "utf8"));
+    assert.strictEqual(manifest.version, 1);
+    assert.strictEqual(manifest.kind, "tritonai-secure");
     assert.deepStrictEqual(manifest.skills, result.skills);
     assert.strictEqual(manifest.source.type, "local");
 
-    const tritonaiSourceRoot = path.join(tempRoot, "UCSD-Skills-Library-TritonAI");
-    const tritonaiRoot = path.join(tritonaiSourceRoot, "tritonai");
-    const tritonaiVendorDir = path.join(tempRoot, "vendor", "tritonai-skills");
-    writeSkill(path.join(tritonaiRoot, "ucsd-branding"), "ucsd-branding");
-    assert.strictEqual(findSkillsSourceDir(tritonaiSourceRoot), tritonaiRoot);
-    const tritonaiResult = stageSkillsFromSource({
-      sourceRoot: tritonaiSourceRoot,
-      vendorDir: tritonaiVendorDir,
-      sourceInfo: { type: "local", path: tritonaiSourceRoot }
+    const overrideSourceRoot = path.join(tempRoot, "override-source");
+    const overrideRoot = path.join(overrideSourceRoot, "fixtures");
+    const overrideVendorDir = path.join(tempRoot, "vendor", "override-skills");
+    writeSkill(path.join(overrideRoot, "secure-override"), "secure-override");
+    assert.strictEqual(findSkillsSourceDir(overrideSourceRoot, "fixtures"), overrideRoot);
+    const overrideResult = stageSkillsFromSource({
+      sourceRoot: overrideSourceRoot,
+      sourceSubdir: "fixtures",
+      vendorDir: overrideVendorDir,
+      sourceInfo: { type: "local", path: overrideSourceRoot }
     });
-    assert.deepStrictEqual(tritonaiResult.skills, ["ucsd-branding"]);
-    assertFile(path.join(tritonaiVendorDir, "ucsd-branding", "SKILL.md"));
+    assert.deepStrictEqual(overrideResult.skills, ["secure-override"]);
+    assertFile(path.join(overrideVendorDir, "secure-override", "SKILL.md"));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -660,7 +660,7 @@ async function runDryRun(platform, options) {
 
     assertFile(paths.sharedAgentsFile);
     assertFile(path.join(paths.skillsDir, "tritonai-feedback", "SKILL.md"));
-    assert(paths.skillsDir.startsWith(paths.codexHome), "bundled skills should install into Codex home");
+    assert(paths.skillsDir.startsWith(paths.codexHome), "managed secure skills should install into Codex home");
     assertFile(paths.envFile);
     assertFile(paths.t3Settings);
     assertFile(paths.t3DefaultsPatcher);
