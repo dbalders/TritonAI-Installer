@@ -1,6 +1,6 @@
 {
   "appId": "edu.ucsd.ai.desktopinstaller",
-  "productName": "UCSD AI Tools Installer",
+  "productName": "TritonAI Installer",
   "asar": true,
   "compression": "normal",
   "directories": {
@@ -50,7 +50,7 @@
         ]
       }
     ],
-    "artifactName": "UCSD-AI-Tools-Installer-${version}-${arch}.${ext}",
+    "artifactName": "TritonAI-Installer-${version}-${arch}.${ext}",
     "category": "public.app-category.developer-tools",
     "hardenedRuntime": true,
     "forceCodeSigning": true,
@@ -63,7 +63,7 @@
     "notarize": true
   },
   "dmg": {
-    "artifactName": "UCSD-AI-Tools-Installer-${version}-${arch}.dmg",
+    "artifactName": "TritonAI-Installer-${version}-${arch}.dmg",
     "title": "Double-click to Install",
     "backgroundColor": "#eeeeee",
     "sign": false,

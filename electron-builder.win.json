@@ -1,6 +1,6 @@
 {
   "appId": "edu.ucsd.ai-tools.installer",
-  "productName": "UCSD AI Tools Installer",
+  "productName": "TritonAI Installer",
   "asar": false,
   "compression": "normal",
   "directories": {
@@ -37,10 +37,10 @@
         ]
       }
     ],
-    "artifactName": "UCSD-AI-Tools-Installer-Setup-${version}-${arch}.${ext}"
+    "artifactName": "TritonAI-Installer-Setup-${version}-${arch}.${ext}"
   },
   "portable": {
-    "artifactName": "UCSD-AI-Tools-Installer-${version}-${arch}-portable.${ext}"
+    "artifactName": "TritonAI-Installer-${version}-${arch}-portable.${ext}"
   },
   "nsis": {
     "include": "build/installer.nsh",
@@ -50,7 +50,7 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "UCSD AI Tools Installer"
+    "shortcutName": "TritonAI Installer"
   },
   "publish": null
 }

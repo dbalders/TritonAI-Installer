@@ -91,7 +91,7 @@ function requestJson({ url, method = "GET", apiKey, timeoutMs, body }) {
       headers: {
         Accept: "application/json",
         Authorization: `Bearer ${apiKey}`,
-        "User-Agent": "UCSD-AI-Tools-Installer",
+        "User-Agent": "TritonAI-Installer",
         ...(payload ? {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload)

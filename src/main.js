@@ -18,7 +18,7 @@ function createWindow() {
     height: 390,
     minWidth: 540,
     minHeight: 360,
-    title: "UCSD AI Tools Installer",
+    title: "TritonAI Installer",
     webPreferences: {
       preload: path.join(__dirname, "preload.js")
     }
@@ -166,7 +166,7 @@ function getMountedInstallerVolume() {
   }
 
   const volumePath = path.join("/Volumes", volumeName);
-  const mountedInstallerApp = path.join(volumePath, "UCSD AI Tools Installer.app");
+  const mountedInstallerApp = path.join(volumePath, "TritonAI Installer.app");
   return fs.existsSync(mountedInstallerApp) ? volumePath : null;
 }
 

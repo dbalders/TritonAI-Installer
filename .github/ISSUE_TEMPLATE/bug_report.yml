@@ -86,7 +86,7 @@ body:
     attributes:
       label: Version or commit
       description: Release version, artifact name, commit SHA, or branch name if known.
-      placeholder: 0.1.23, main @ abc1234, or UCSD-AI-Tools-Installer-...
+      placeholder: 0.1.23, main @ abc1234, or TritonAI-Installer-...
 
   - type: input
     id: environment
