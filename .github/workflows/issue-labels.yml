@@ -23,115 +23,109 @@ jobs:
           script: |
             const managedLabels = [
               {
-                name: "type:bug",
-                color: "d73a4a",
-                description: "Something is broken or behaving incorrectly.",
-              },
-              {
-                name: "type:feature",
+                name: "feature",
                 color: "a2eeef",
                 description: "A product idea, enhancement, or new capability request.",
               },
               {
-                name: "type:docs",
+                name: "bug",
+                color: "d73a4a",
+                description: "Something is broken or behaving incorrectly.",
+              },
+              {
+                name: "documentation",
                 color: "0075ca",
                 description: "Documentation-only work.",
               },
               {
-                name: "type:question",
+                name: "question",
                 color: "d876e3",
                 description: "A question or support-style discussion.",
               },
               {
-                name: "type:maintenance",
+                name: "maintenance",
                 color: "cfd3d7",
                 description: "Internal cleanup, tooling, tests, or upkeep.",
               },
               {
-                name: "status:needs-review",
-                color: "fbca04",
-                description: "Needs human product or maintainer review.",
+                name: "research",
+                color: "c5def5",
+                description: "Investigation or decision work before implementation.",
               },
               {
-                name: "status:accepted",
-                color: "0e8a16",
-                description: "Accepted direction, not necessarily ready for automation.",
-              },
-              {
-                name: "status:ready-for-dev",
-                color: "1d76db",
-                description: "Scoped and ready for implementation.",
-              },
-              {
-                name: "status:blocked",
+                name: "blocked",
                 color: "b60205",
                 description: "Blocked by tests, review, missing info, or another dependency.",
               },
               {
-                name: "status:declined",
+                name: "needs review",
+                color: "fbca04",
+                description: "Needs human product or maintainer review.",
+              },
+              {
+                name: "needs decision",
+                color: "d4c5f9",
+                description: "Needs a maintainer decision or manual follow-up.",
+              },
+              {
+                name: "accepted",
+                color: "0e8a16",
+                description: "Accepted direction, not necessarily ready for automation.",
+              },
+              {
+                name: "ready",
+                color: "1d76db",
+                description: "Scoped and ready for implementation.",
+              },
+              {
+                name: "declined",
                 color: "7057ff",
                 description: "Not planned or not appropriate for this project.",
               },
               {
-                name: "automation:auto",
-                color: "5319e7",
-                description: "Maintainer approved automatic issue implementation.",
+                name: "duplicate",
+                color: "cfd3d7",
+                description: "Already tracked by another issue or pull request.",
               },
               {
-                name: "automation:triaged",
-                color: "bfdadc",
-                description: "Reviewed by maintainer automation.",
-              },
-              {
-                name: "automation:candidate",
+                name: "automation candidate",
                 color: "bfd4f2",
                 description: "May be suitable for automation after approval or clarification.",
               },
               {
-                name: "automation:auto-pr",
+                name: "auto PR",
                 color: "5319e7",
                 description: "Automation is allowed to attempt a pull request.",
               },
-              {
-                name: "automation:needs-human",
-                color: "d4c5f9",
-                description: "Automation needs a maintainer decision or manual follow-up.",
-              },
-              {
-                name: "area:installer",
-                color: "f9d0c4",
-                description: "Installer, packaging, bootstrap, or managed setup.",
-              },
-              {
-                name: "area:app",
-                color: "c2e0c6",
-                description: "TritonAI Harness app surface or shared app code.",
-              },
-              {
-                name: "area:desktop",
-                color: "bfd4f2",
-                description: "Desktop runtime or Electron app behavior.",
-              },
-              {
-                name: "area:mobile",
-                color: "fef2c0",
-                description: "Mobile app behavior.",
-              },
-              {
-                name: "area:settings",
-                color: "d4c5f9",
-                description: "Settings, preferences, or configuration UI.",
-              },
-              {
-                name: "area:providers",
-                color: "c5def5",
-                description: "Codex or provider integrations.",
-              },
-              {
-                name: "area:docs",
-                color: "0075ca",
-                description: "Documentation surface.",
-              },
+            ];
+            const retiredLabels = [
+              "area:app",
+              "area:desktop",
+              "area:docs",
+              "area:installer",
+              "area:mobile",
+              "area:providers",
+              "area:settings",
+              "automation:auto",
+              "automation:auto-pr",
+              "automation:candidate",
+              "automation:needs-human",
+              "automation:triaged",
+              "enhancement",
+              "good first issue",
+              "help wanted",
+              "invalid",
+              "status:accepted",
+              "status:blocked",
+              "status:declined",
+              "status:needs-review",
+              "status:ready-for-dev",
+              "type:bug",
+              "type:docs",
+              "type:feature",
+              "type:maintenance",
+              "type:question",
+              "wontfix",
             ];
 
             for (const label of managedLabels) {
@@ -171,6 +165,20 @@ jobs:
                   if (createError.status !== 422) {
                     throw createError;
                   }
+                }
+              }
+            }
+
+            for (const name of retiredLabels) {
+              try {
+                await github.rest.issues.deleteLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
                 }
               }
             }

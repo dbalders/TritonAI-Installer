@@ -2,8 +2,8 @@ name: Bug report
 description: Report broken installer behavior, regressions, crashes, or reliability issues.
 title: "[Bug]: "
 labels:
-  - type:bug
-  - status:needs-review
+  - bug
+  - needs review
 body:
   - type: markdown
     attributes:
