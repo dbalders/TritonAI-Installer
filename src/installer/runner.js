@@ -14,6 +14,8 @@ const { getTritonAiEnvironment } = require("./codex-environment");
 const configWriters = require("./config-writers");
 const { UCSD } = require("./constants");
 const { createDiagnosticsSession } = require("./diagnostics");
+const { writeInstallerVersionMarker } = require("./installer-version-marker");
+const { version: packageInstallerVersion } = require("../../package.json");
 
 async function runInstall(payload, runtime) {
   const apiKey = payload && typeof payload.apiKey === "string" ? payload.apiKey.trim() : "";
@@ -104,12 +106,18 @@ async function runInstall(payload, runtime) {
     }
 
     diagnostics.setStep("verify");
-    emit("Install flow finished.");
     const diagnosticsInfo = diagnostics.writeSupportReport({
       ok: true,
       nodeRuntime,
       desktopApps
     });
+    const markerWriter = runtime.writeInstallerVersionMarker || writeInstallerVersionMarker;
+    markerWriter({
+      paths,
+      installerVersion: runtime.installerVersion || packageInstallerVersion
+    });
+    emit("Recorded the installed TritonAI Installer version.");
+    emit("Install flow finished.");
     const response = {
       ok: true,
       paths: {

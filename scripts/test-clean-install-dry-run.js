@@ -44,6 +44,10 @@ const {
 const {
   redactSensitive
 } = require("../src/installer/diagnostics");
+const {
+  writeInstallerVersionMarker
+} = require("../src/installer/installer-version-marker");
+const { version: packageInstallerVersion } = require("../package.json");
 const { UCSD, resetManagedConfigForTests } = require("../src/installer/constants");
 const {
   findSkillsSourceDir,
@@ -288,6 +292,7 @@ async function assertRunInstallStopsBeforeDesktopWhenConnectionFails() {
   const fakeRuntime = getNodeRuntimePaths(paths, "darwin", runtimeArch);
   let environmentSaveAttempted = false;
   let desktopInstallAttempted = false;
+  let markerWriteAttempted = false;
 
   try {
     fs.mkdirSync(fakeRuntime.nodeBinDir, { recursive: true });
@@ -319,6 +324,9 @@ async function assertRunInstallStopsBeforeDesktopWhenConnectionFails() {
         },
         installT3CodeDesktop: async () => {
           desktopInstallAttempted = true;
+        },
+        writeInstallerVersionMarker: () => {
+          markerWriteAttempted = true;
         }
       });
     } catch (error) {
@@ -335,6 +343,7 @@ async function assertRunInstallStopsBeforeDesktopWhenConnectionFails() {
     assert(!JSON.stringify(report).includes("test-api-key"), "support report should redact the access key");
     assert.strictEqual(environmentSaveAttempted, false, "access key should not be saved after a failed TritonAI connection check");
     assert.strictEqual(desktopInstallAttempted, false, "desktop app should not install after a failed TritonAI connection check");
+    assert.strictEqual(markerWriteAttempted, false, "failed installs must not write an installer version marker");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -626,6 +635,14 @@ async function runDryRun(platform, options) {
           if (isNpmCommand({ command, args }, fakeRuntime)) {
             managedCodexInstalled = true;
           }
+        },
+        writeInstallerVersionMarker: (markerOptions) => {
+          assert.strictEqual(
+            t3CodeDesktopInstalls.length,
+            1,
+            "installer version marker must only be written after the desktop app install succeeds"
+          );
+          return writeInstallerVersionMarker(markerOptions);
         }
       }
     );
@@ -649,6 +666,11 @@ async function runDryRun(platform, options) {
     assertFile(paths.t3DefaultsPatcher);
     assertFile(path.join(paths.onboardingWorkspaceDir, "README.md"));
     assertFile(paths.onboardingWorkspaceMarker);
+    assertFile(paths.installerVersionMarker);
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(paths.installerVersionMarker, "utf8")).version,
+      packageInstallerVersion
+    );
     assert(!fs.existsSync(staleLegacyStatusCache), "stale legacy provider status cache should be cleared");
     assert(!fs.existsSync(staleCodexStatusCache), "stale Codex provider status cache should be cleared");
 
