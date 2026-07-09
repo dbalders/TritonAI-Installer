@@ -84,7 +84,7 @@ jobs:
               },
               {
                 name: "duplicate",
-                color: "cfd3d7",
+                color: "e4e669",
                 description: "Already tracked by another issue or pull request.",
               },
               {
