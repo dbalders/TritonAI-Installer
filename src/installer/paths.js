@@ -1,6 +1,7 @@
 const os = require("os");
 const path = require("path");
 const { CODEX_CLI_VERSION } = require("./npm-policy");
+const { INSTALLER_VERSION_MARKER_FILENAME } = require("./installer-version-marker");
 
 function getPaths(homeDir = os.homedir(), platform = process.platform) {
   const agentsRoot = path.join(homeDir, ".agents");
@@ -39,6 +40,7 @@ function getPaths(homeDir = os.homedir(), platform = process.platform) {
     sharedAgentsFile: path.join(ucsdRoot, "AGENTS.md"),
     onboardingWorkspaceDir: path.join(homeDir, "TritonAI"),
     onboardingWorkspaceMarker: path.join(ucsdRoot, "state", "onboarding-workspace-seeded"),
+    installerVersionMarker: path.join(stateDir, INSTALLER_VERSION_MARKER_FILENAME),
     envFile: isWindows ? path.join(ucsdRoot, "env.ps1") : path.join(ucsdRoot, "env"),
     t3Home: tritonAiHome,
     t3Settings: path.join(tritonAiHome, "userdata", "settings.json"),
