@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+early_access: false
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  review_details: false
+  auto_review:
+    enabled: false
+    drafts: false
+    base_branches:
+      - main
+  path_instructions:
+    - path: "src/**"
+      instructions: |
+        Focus on clean-machine behavior, safe recovery, platform differences,
+        credential handling, and preserving user-owned configuration.
+    - path: "scripts/**"
+      instructions: |
+        Treat packaging, signing, release, vendor preparation, and managed-config
+        scripts as high risk. Flag destructive filesystem behavior, secret exposure,
+        mutable downloads, missing verification, and commands that can publish.
+    - path: ".github/**"
+      instructions: |
+        Review for least privilege, untrusted pull-request execution, accidental
+        publishing, and checks that can report success without testing the artifact.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+
+chat:
+  auto_reply: true

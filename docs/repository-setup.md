@@ -24,13 +24,19 @@ After the first push, confirm Actions are enabled for the repository and manuall
 
 ## Review Integrations
 
-These are GitHub App or service settings, not tracked files in this repository:
+Enable the review apps for `dbalders/TritonAI-Installer` after the repository
+exists. Their repository configuration differs:
 
-- CodeRabbit
-- Greptile
-- Any GitHub-native issue or PR review app configuration
+- CodeRabbit behavior is tracked in `.coderabbit.yaml`. Automatic review is
+  disabled; request an advisory review with `@coderabbitai review` when a change
+  warrants it. For public repositories, CodeRabbit applies configuration from
+  the base branch, so changes to this file take effect after merge.
+- Greptile is configured through its GitHub App and remains advisory; this
+  repository does not track a Greptile configuration file.
+- Other GitHub-native issue or PR review apps remain service-managed unless a
+  reviewed repository configuration file is added intentionally.
 
-Enable each app for `dbalders/TritonAI-Installer` after the repository exists. If a service supports repo-local config later, add that config in a separate PR after confirming the service schema from its current docs.
+Confirm the current service schema before changing tracked review configuration.
 
 ## Private Automation
 

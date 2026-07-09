@@ -2,8 +2,8 @@ name: Feature request
 description: Propose a scoped installer improvement or new capability.
 title: "[Feature]: "
 labels:
-  - type:feature
-  - status:needs-review
+  - feature
+  - needs review
 body:
   - type: markdown
     attributes:
