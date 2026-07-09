@@ -1,0 +1,176 @@
+name: Issue Labels
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/ISSUE_TEMPLATE/**
+      - .github/workflows/issue-labels.yml
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  sync:
+    name: Sync issue labels
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Ensure managed issue labels exist
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const managedLabels = [
+              {
+                name: "type:bug",
+                color: "d73a4a",
+                description: "Something is broken or behaving incorrectly.",
+              },
+              {
+                name: "type:feature",
+                color: "a2eeef",
+                description: "A product idea, enhancement, or new capability request.",
+              },
+              {
+                name: "type:docs",
+                color: "0075ca",
+                description: "Documentation-only work.",
+              },
+              {
+                name: "type:question",
+                color: "d876e3",
+                description: "A question or support-style discussion.",
+              },
+              {
+                name: "type:maintenance",
+                color: "cfd3d7",
+                description: "Internal cleanup, tooling, tests, or upkeep.",
+              },
+              {
+                name: "status:needs-review",
+                color: "fbca04",
+                description: "Needs human product or maintainer review.",
+              },
+              {
+                name: "status:accepted",
+                color: "0e8a16",
+                description: "Accepted direction, not necessarily ready for automation.",
+              },
+              {
+                name: "status:ready-for-dev",
+                color: "1d76db",
+                description: "Scoped and ready for implementation.",
+              },
+              {
+                name: "status:blocked",
+                color: "b60205",
+                description: "Blocked by tests, review, missing info, or another dependency.",
+              },
+              {
+                name: "status:declined",
+                color: "7057ff",
+                description: "Not planned or not appropriate for this project.",
+              },
+              {
+                name: "automation:auto",
+                color: "5319e7",
+                description: "Maintainer approved automatic issue implementation.",
+              },
+              {
+                name: "automation:triaged",
+                color: "bfdadc",
+                description: "Reviewed by maintainer automation.",
+              },
+              {
+                name: "automation:candidate",
+                color: "bfd4f2",
+                description: "May be suitable for automation after approval or clarification.",
+              },
+              {
+                name: "automation:auto-pr",
+                color: "5319e7",
+                description: "Automation is allowed to attempt a pull request.",
+              },
+              {
+                name: "automation:needs-human",
+                color: "d4c5f9",
+                description: "Automation needs a maintainer decision or manual follow-up.",
+              },
+              {
+                name: "area:installer",
+                color: "f9d0c4",
+                description: "Installer, packaging, bootstrap, or managed setup.",
+              },
+              {
+                name: "area:app",
+                color: "c2e0c6",
+                description: "TritonAI Harness app surface or shared app code.",
+              },
+              {
+                name: "area:desktop",
+                color: "bfd4f2",
+                description: "Desktop runtime or Electron app behavior.",
+              },
+              {
+                name: "area:mobile",
+                color: "fef2c0",
+                description: "Mobile app behavior.",
+              },
+              {
+                name: "area:settings",
+                color: "d4c5f9",
+                description: "Settings, preferences, or configuration UI.",
+              },
+              {
+                name: "area:providers",
+                color: "c5def5",
+                description: "Codex or provider integrations.",
+              },
+              {
+                name: "area:docs",
+                color: "0075ca",
+                description: "Documentation surface.",
+              },
+            ];
+
+            for (const label of managedLabels) {
+              try {
+                const { data: existing } = await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name,
+                });
+
+                if (
+                  existing.color !== label.color ||
+                  (existing.description ?? "") !== label.description
+                ) {
+                  await github.rest.issues.updateLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label.name,
+                    color: label.color,
+                    description: label.description,
+                  });
+                }
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+
+                try {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label.name,
+                    color: label.color,
+                    description: label.description,
+                  });
+                } catch (createError) {
+                  if (createError.status !== 422) {
+                    throw createError;
+                  }
+                }
+              }
+            }

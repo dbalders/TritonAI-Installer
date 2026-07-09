@@ -1,0 +1,73 @@
+{
+  "appId": "edu.ucsd.ai.desktopinstaller",
+  "productName": "UCSD AI Tools Installer",
+  "asar": true,
+  "compression": "normal",
+  "directories": {
+    "output": "artifacts/macos-release"
+  },
+  "files": [
+    "package.json",
+    "README.md",
+    "src/**/*",
+    "docs/**/*"
+  ],
+  "extraResources": [
+    {
+      "from": "vendor/t3code-desktop/mac-arm64",
+      "to": "vendor/t3code-desktop/mac-arm64",
+      "filter": [
+        "latest-mac.yml",
+        "TritonAI-Harness-*.dmg"
+      ]
+    },
+    {
+      "from": "vendor/skills",
+      "to": "vendor/skills",
+      "filter": [
+        "**/*"
+      ]
+    },
+    {
+      "from": "vendor/codex-cli/mac-arm64",
+      "to": "vendor/codex-cli/mac-arm64",
+      "filter": [
+        "**/*"
+      ]
+    },
+    {
+      "from": "build/managed-config.generated.json",
+      "to": "managed-config.json"
+    }
+  ],
+  "mac": {
+    "icon": "build/icon.icns",
+    "target": [
+      {
+        "target": "dmg",
+        "arch": [
+          "arm64"
+        ]
+      }
+    ],
+    "artifactName": "UCSD-AI-Tools-Installer-${version}-${arch}.${ext}",
+    "category": "public.app-category.developer-tools",
+    "hardenedRuntime": true,
+    "forceCodeSigning": true,
+    "gatekeeperAssess": false,
+    "signIgnore": [
+      "vendor/t3code-desktop/.+\\.dmg$"
+    ],
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+    "notarize": true
+  },
+  "dmg": {
+    "artifactName": "UCSD-AI-Tools-Installer-${version}-${arch}.dmg",
+    "title": "Double-click to Install",
+    "backgroundColor": "#eeeeee",
+    "sign": false,
+    "writeUpdateInfo": false
+  },
+  "publish": null
+}

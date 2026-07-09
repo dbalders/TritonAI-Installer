@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build and packaged artifacts
+dist/
+artifacts/
+out/
+release/
+build/managed-config.generated.json
+*.dmg
+*.exe
+*.msi
+*.pkg
+*.zip
+vendor/skills/
+vendor/codex-cli/
+vendor/t3code-desktop/
+
+# Runtime output
+output/
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.issue-autopilot/
+
+# Private local automation
+docs/issue-autopilot.md
+scripts/issue_autopilot.py
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

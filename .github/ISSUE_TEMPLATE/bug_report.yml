@@ -1,0 +1,110 @@
+name: Bug report
+description: Report broken installer behavior, regressions, crashes, or reliability issues.
+title: "[Bug]: "
+labels:
+  - type:bug
+  - status:needs-review
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for broken installer behavior, regressions, crashes, or reliability problems.
+        Search existing issues first and keep the report focused on one problem.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I included enough detail to reproduce or investigate the problem.
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the installer is affected?
+      options:
+        - macOS packaging or notarization
+        - Windows packaging
+        - TritonAI Harness desktop install
+        - Codex managed runtime
+        - UCSD/TritonAI configuration
+        - Bundled skills
+        - Clean install or migration
+        - Docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide a minimal, deterministic repro.
+      placeholder: |
+        1. Start from a clean macOS account
+        2. Run the installer build ...
+        3. Enter ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: The installer should complete and launch TritonAI Harness.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: The installer stops at runtime verification with ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      description: How bad is this in practice?
+      options:
+        - Blocks install completely
+        - Major degradation or frequent failure
+        - Minor bug or occasional failure
+        - Cosmetic issue
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release version, artifact name, commit SHA, or branch name if known.
+      placeholder: 0.1.23, main @ abc1234, or UCSD-AI-Tools-Installer-...
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS version, architecture, VM/provider, shell, and relevant account state.
+      placeholder: macOS 15.3 arm64 clean VM, Windows 11 x64, standard user account ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or stack traces
+      description: Paste the most relevant output only. Redact secrets and API keys.
+      render: shell
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround
+      description: If you found a temporary workaround, include it.
+      placeholder: Removing stale TritonAI Harness settings and re-running the installer works around it.

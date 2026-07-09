@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>UCSD AI Tools Installer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="single-screen panel active" id="credentials-panel" aria-labelledby="credentials-title">
+        <div class="setup-card">
+          <div class="panel-header">
+            <h2 id="credentials-title">Let's get you set up.</h2>
+            <p id="credentials-copy">Add your TritonAI access key to install and use TritonAI Harness.</p>
+          </div>
+
+          <form id="credentials-form" class="form">
+            <div class="input-wrap">
+              <input id="api-key" name="api-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="TritonAI access key" aria-describedby="api-key-help" required />
+              <button type="button" class="visibility-toggle" id="api-key-visibility-toggle" aria-label="Show TritonAI access key" aria-pressed="false" title="Show access key">
+                <span class="eye-icon" aria-hidden="true"></span>
+              </button>
+            </div>
+            <p class="field-help" id="api-key-help" aria-live="polite">Required for UC San Diego-managed model access.</p>
+
+            <div class="actions">
+              <button type="submit" class="primary" id="continue-button" disabled>Continue</button>
+              <button type="button" class="link-button" id="open-docs-footer">Don't have a key?</button>
+            </div>
+          </form>
+
+          <section class="inline-progress" id="inline-progress" aria-label="Install progress" aria-live="polite" hidden>
+            <div class="connection-meter">
+              <div class="progress-track" aria-label="Install progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-bar"></span></div>
+              <strong id="progress-value">0%</strong>
+            </div>
+          </section>
+          <div class="result" id="result"></div>
+          <pre id="log" aria-hidden="true"></pre>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

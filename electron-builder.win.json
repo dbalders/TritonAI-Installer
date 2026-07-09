@@ -1,0 +1,56 @@
+{
+  "appId": "edu.ucsd.ai-tools.installer",
+  "productName": "UCSD AI Tools Installer",
+  "asar": false,
+  "compression": "normal",
+  "directories": {
+    "output": "artifacts/windows-installer"
+  },
+  "files": [
+    "package.json",
+    "README.md",
+    "src/**/*",
+    "docs/**/*",
+    "vendor/skills/**/*",
+    "vendor/codex-cli/win-x64/**/*",
+    "vendor/t3code-desktop/win-x64/**/*"
+  ],
+  "extraResources": [
+    {
+      "from": "build/managed-config.generated.json",
+      "to": "managed-config.json"
+    }
+  ],
+  "win": {
+    "icon": "build/icon.ico",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "artifactName": "UCSD-AI-Tools-Installer-Setup-${version}-${arch}.${ext}"
+  },
+  "portable": {
+    "artifactName": "UCSD-AI-Tools-Installer-${version}-${arch}-portable.${ext}"
+  },
+  "nsis": {
+    "include": "build/installer.nsh",
+    "oneClick": false,
+    "perMachine": false,
+    "allowElevation": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "UCSD AI Tools Installer"
+  },
+  "publish": null
+}

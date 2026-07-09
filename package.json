@@ -1,0 +1,54 @@
+{
+  "name": "tritonai-installer",
+  "version": "0.1.26",
+  "description": "Cross-platform installer for TritonAI-managed UCSD coding tools.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "validate": "node scripts/validate.js",
+    "verify:npm-age": "node scripts/verify-npm-age.js",
+    "test": "npm run validate && npm run verify:npm-age && npm run test:clean-dry-run",
+    "test:clean-dry-run": "node scripts/test-clean-install-dry-run.js",
+    "test:clean-runtime": "node scripts/test-clean-runtime.js",
+    "prepare:managed-config": "node scripts/write-managed-config.js",
+    "prepare:skills-vendor": "node scripts/prepare-skills-vendor.js",
+    "prepare:codex-cli-vendor": "node scripts/prepare-codex-cli-vendor.js",
+    "prepare:codex-cli-vendor:win": "node scripts/prepare-codex-cli-vendor.js win-x64",
+    "prepare:codex-cli-vendor:all": "node scripts/prepare-codex-cli-vendor.js all",
+    "prepare:t3code-desktop-vendor": "node scripts/prepare-t3code-desktop-vendor.js",
+    "prepare:t3code-desktop-vendor:win": "node scripts/prepare-t3code-desktop-vendor.js win-x64",
+    "mac:prepare-developer-id-csr": "node scripts/prepare-developer-id-csr.js",
+    "mac:import-developer-id-cert": "node scripts/import-developer-id-cert.js",
+    "package:mac-release": "node scripts/package-macos-release.js",
+    "serve:mac-release": "node scripts/serve-macos-release.js",
+    "package:mac-fast-test": "node scripts/package-macos-fast-test.js",
+    "serve:mac-fast-test": "node scripts/serve-macos-fast-test.js",
+    "release:github": "node scripts/publish-github-release.js",
+    "package:win-installer": "npm run prepare:managed-config && npm run prepare:t3code-desktop-vendor:win && npm run prepare:codex-cli-vendor:win && npm run prepare:skills-vendor && electron-builder --win --x64 --config electron-builder.win.json",
+    "package:win-portable": "node scripts/package-windows-portable.js",
+    "mac:trust-dev": "node scripts/trust-macos-dev-artifacts.js",
+    "mac:open-dev": "node scripts/trust-macos-dev-artifacts.js --open"
+  },
+  "keywords": [
+    "ucsd",
+    "installer",
+    "ai",
+    "agents"
+  ],
+  "author": "UC San Diego",
+  "license": "UNLICENSED",
+  "private": true,
+  "overrides": {
+    "@xmldom/xmldom": "0.8.13",
+    "brace-expansion": "5.0.6",
+    "form-data": "4.0.6",
+    "ip-address": "10.1.1",
+    "js-yaml": "4.2.0",
+    "tar": "7.5.16",
+    "tmp": "0.2.7"
+  },
+  "devDependencies": {
+    "electron": "41.2.0",
+    "electron-builder": "26.8.1"
+  }
+}
