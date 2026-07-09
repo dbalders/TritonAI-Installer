@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { validateManagedSkillsManifest } = require("../src/installer/skill-manifest");
 
 const appPath = process.argv[2];
 
@@ -112,16 +113,34 @@ function cleanYamlValue(value) {
 
 function verifyBundledSkills(skillsDir) {
   if (!fs.existsSync(skillsDir)) {
-    throw new Error(`Bundled skills directory is missing: ${skillsDir}`);
+    throw new Error(`Bundled secure skills directory is missing: ${skillsDir}`);
   }
 
   const skills = fs.readdirSync(skillsDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
-    .filter((name) => fs.existsSync(path.join(skillsDir, name, "SKILL.md")));
+    .sort();
 
   if (skills.length === 0) {
-    throw new Error(`Bundled skills directory has no skill folders with SKILL.md: ${skillsDir}`);
+    throw new Error(`Bundled secure skills directory has no skill folders: ${skillsDir}`);
+  }
+  for (const name of skills) {
+    const skillFile = path.join(skillsDir, name, "SKILL.md");
+    if (!fs.existsSync(skillFile) || !fs.statSync(skillFile).isFile()) {
+      throw new Error(`Bundled secure skill is missing SKILL.md: ${name}`);
+    }
+  }
+
+  const manifestPath = path.join(skillsDir, "manifest.json");
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(`Bundled secure skills manifest is missing: ${manifestPath}`);
+  }
+  const manifest = validateManagedSkillsManifest(
+    JSON.parse(fs.readFileSync(manifestPath, "utf8")),
+    "Bundled secure skills manifest"
+  );
+  if (JSON.stringify(manifest.skills) !== JSON.stringify(skills)) {
+    throw new Error("Bundled secure skills manifest does not match packaged skill directories.");
   }
 }
 

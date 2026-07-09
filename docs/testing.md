@@ -14,6 +14,7 @@ This runs:
 
 - Syntax/scaffold validation.
 - npm package-age verification against the supply-chain cutoff.
+- Managed secure skills packaging, ownership, migration, collision, and failure-safety tests.
 - A clean-home dry run that writes all configs into a temp directory and injects fake command execution.
 
 Runtime bootstrap check:
@@ -35,6 +36,7 @@ This creates a temp home directory, strips PATH down to OS basics, downloads the
 - Regressions where TritonAI Harness keeps a stale legacy provider-status cache.
 - Regressions where the installer uses a random system `codex` instead of the managed UCSD Codex path.
 - Regressions where the managed Codex backend is missing, stale, copied from the wrong packaged payload, or falls back to npm without the package-age cutoff.
+- Regressions where Installer upgrades overwrite public/user skills, retain retired managed secure skills, accept malformed manifests, or lose the prior secure bundle after a staged copy failure.
 
 ## Legacy Provider Stale-State Reproduction
 

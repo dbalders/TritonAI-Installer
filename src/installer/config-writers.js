@@ -68,7 +68,7 @@ function buildOnboardingReadme(paths) {
   const skillNames = listSkillDirs(paths.skillsDir).map((skillDir) => path.basename(skillDir));
   const skillList = skillNames.length
     ? skillNames.map((name) => `- ${name}`).join("\n")
-    : "- No bundled UCSD skills were installed. TritonAI Harness can still use skills you add later.";
+    : "- No bundled managed secure skills were installed. TritonAI Harness can still use public, community, and user-added skills.";
 
   return `# TritonAI Harness
 

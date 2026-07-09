@@ -2,113 +2,161 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const {
+  createManagedSkillsManifest,
+  isValidSkillName
+} = require("../src/installer/skill-manifest");
 
 const root = path.resolve(__dirname, "..");
 const localSourceOverride = process.env.UCSD_SKILLS_SOURCE;
-const repo = process.env.UCSD_SKILLS_REPO || "https://github.com/dbalders/UCSD-Skills-Library.git";
+const repo = process.env.UCSD_SKILLS_REPO || "https://github.com/dbalders/UCSD-Skills-Library-Secure.git";
 const ref = process.env.UCSD_SKILLS_REF || "main";
+const sourceSubdir = process.env.UCSD_SKILLS_SUBDIR || "";
 const vendorDir = path.join(root, "vendor", "skills");
-const sourceDirNames = [
-  process.env.UCSD_SKILLS_SUBDIR,
-  "skills",
-  "tritonai"
-].filter(Boolean);
-const localSourceCandidates = [
-  localSourceOverride,
-  path.join(root, "..", "UCSD-Skills-Library"),
-  path.join(root, "..", "..", "UCSD-Skills-Library")
-].filter(Boolean);
+const localSourceCandidates = localSourceOverride
+  ? [localSourceOverride]
+  : [
+      path.join(root, "..", "..", "UCSD-Skills-Library-Secure"),
+      path.join(root, "..", "..", "..", "UCSD-Skills-Library-Secure")
+    ];
 
 function main() {
-  const localSource = findLocalSkillsSource(localSourceCandidates);
+  const localSource = findLocalSkillsSource(localSourceCandidates, sourceSubdir);
+  if (localSourceOverride && !localSource) {
+    throw new Error("UCSD_SKILLS_SOURCE does not contain packageable root-level secure skills.");
+  }
   if (localSource) {
     const result = stageSkillsFromSource({
       sourceRoot: localSource,
+      sourceSubdir,
       vendorDir,
       sourceInfo: getLocalSourceInfo(localSource)
     });
-    console.log(`Prepared ${result.skills.length} UCSD skill${result.skills.length === 1 ? "" : "s"} from ${localSource}.`);
+    console.log(`Prepared ${result.skills.length} managed secure skill${result.skills.length === 1 ? "" : "s"} from a local checkout.`);
     return;
   }
 
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-skills-vendor-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-secure-skills-vendor-"));
   try {
     const cloneDir = path.join(tempRoot, "repo");
-    run("git", ["clone", "--depth", "1", "--branch", ref, repo, cloneDir]);
+    cloneSecureRepository(repo, ref, cloneDir);
     const result = stageSkillsFromSource({
       sourceRoot: cloneDir,
+      sourceSubdir,
       vendorDir,
       sourceInfo: {
         type: "git",
-        repo,
+        repo: sanitizeRepositoryUrl(repo),
         ref,
         commit: getGitValue(cloneDir, ["rev-parse", "HEAD"])
       }
     });
 
-    console.log(`Prepared ${result.skills.length} UCSD skill${result.skills.length === 1 ? "" : "s"} from ${repo}#${ref} (${result.source.commit}).`);
+    console.log(`Prepared ${result.skills.length} managed secure skill${result.skills.length === 1 ? "" : "s"} from ${sanitizeRepositoryUrl(repo)}#${ref}.`);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }
 
-function findLocalSkillsSource(candidates) {
+function findLocalSkillsSource(candidates, subdir = "") {
   return candidates
     .map((candidate) => path.resolve(candidate))
-    .find((candidate) => findSkillsSourceDir(candidate));
+    .find((candidate) => findSkillsSourceDir(candidate, subdir));
 }
 
-function stageSkillsFromSource({ sourceRoot, vendorDir, sourceInfo }) {
-  const skillsSource = findSkillsSourceDir(sourceRoot);
+function stageSkillsFromSource({ sourceRoot, sourceSubdir = "", vendorDir, sourceInfo }) {
+  const skillsSource = findSkillsSourceDir(sourceRoot, sourceSubdir);
   if (!skillsSource) {
-    throw new Error(`Skills source does not contain a packageable skills directory (${sourceDirNames.join(", ")}): ${sourceRoot}`);
+    const location = sourceSubdir ? `${sourceRoot} (subdirectory ${sourceSubdir})` : sourceRoot;
+    throw new Error(`Secure skills source has no root-level skill folders with SKILL.md: ${location}`);
   }
 
   const skillNames = findPackagedSkillNames(skillsSource);
   if (skillNames.length === 0) {
-    throw new Error(`Skills source has no packageable skill folders with SKILL.md: ${sourceRoot}`);
+    throw new Error(`Secure skills source has no packageable root-level skill folders with SKILL.md: ${skillsSource}`);
   }
 
-  fs.rmSync(vendorDir, { recursive: true, force: true });
-  fs.mkdirSync(vendorDir, { recursive: true });
-  for (const skillName of skillNames) {
-    fs.cpSync(path.join(skillsSource, skillName), path.join(vendorDir, skillName), {
-      recursive: true,
-      force: true,
-      filter: shouldCopySkillEntry
-    });
+  const stagingDir = createSiblingTempDir(vendorDir, ".secure-skills-vendor-");
+  try {
+    for (const skillName of skillNames) {
+      const sourceSkill = path.join(skillsSource, skillName);
+      validateSkillDirectory(sourceSkill, skillName, "Secure skills source");
+      fs.cpSync(sourceSkill, path.join(stagingDir, skillName), {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+        filter: shouldCopySkillEntry
+      });
+    }
+
+    const manifest = {
+      ...createManagedSkillsManifest(skillNames),
+      ...(sourceInfo ? { source: sanitizeSourceInfo(sourceInfo) } : {})
+    };
+    fs.writeFileSync(path.join(stagingDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+
+    fs.rmSync(vendorDir, { recursive: true, force: true });
+    fs.renameSync(stagingDir, vendorDir);
+  } finally {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
   }
 
-  const manifest = {
-    source: sourceInfo,
-    skills: skillNames
-  };
-  fs.writeFileSync(path.join(vendorDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-
-  return { source: sourceInfo, skills: skillNames };
+  return { source: sanitizeSourceInfo(sourceInfo), skills: skillNames };
 }
 
-function findSkillsSourceDir(sourceRoot) {
-  for (const dirName of sourceDirNames) {
-    const candidate = path.join(sourceRoot, dirName);
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
-      return candidate;
-    }
+function findSkillsSourceDir(sourceRoot, subdir = "") {
+  const candidate = path.resolve(sourceRoot, subdir);
+  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
+    return null;
   }
-  return null;
+  return findPackagedSkillNames(candidate).length > 0 ? candidate : null;
 }
 
 function findPackagedSkillNames(skillsSource) {
   return fs.readdirSync(skillsSource, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .filter(isPackagedSkillName)
-    .filter((name) => fs.existsSync(path.join(skillsSource, name, "SKILL.md")))
+    .filter((entry) => fs.existsSync(path.join(skillsSource, entry.name, "SKILL.md")))
+    .map((entry) => {
+      if (!isValidSkillName(entry.name)) {
+        throw new Error(`Secure skills source contains invalid skill folder name ${JSON.stringify(entry.name)}.`);
+      }
+      validateSkillDirectory(path.join(skillsSource, entry.name), entry.name, "Secure skills source");
+      return entry.name;
+    })
     .sort();
 }
 
-function isPackagedSkillName(name) {
-  return /^[a-z0-9][a-z0-9-]*$/.test(name);
+function validateSkillDirectory(skillDir, skillName, label) {
+  const directoryStat = fs.lstatSync(skillDir);
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+    throw new Error(`${label} skill ${JSON.stringify(skillName)} must be a real directory.`);
+  }
+  const skillFile = path.join(skillDir, "SKILL.md");
+  if (!fs.existsSync(skillFile)) {
+    throw new Error(`${label} skill ${JSON.stringify(skillName)} is missing SKILL.md.`);
+  }
+  const skillStat = fs.lstatSync(skillFile);
+  if (!skillStat.isFile() || skillStat.isSymbolicLink()) {
+    throw new Error(`${label} skill ${JSON.stringify(skillName)} must contain a regular SKILL.md file.`);
+  }
+  validateSkillTree(skillDir, `${label} skill ${JSON.stringify(skillName)}`);
+}
+
+function validateSkillTree(root, label) {
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const entryPath = path.join(root, entry.name);
+    const stat = fs.lstatSync(entryPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`${label} cannot contain symbolic links: ${entry.name}`);
+    }
+    if (stat.isDirectory()) {
+      validateSkillTree(entryPath, label);
+      continue;
+    }
+    if (!stat.isFile()) {
+      throw new Error(`${label} can contain only regular files and directories: ${entry.name}`);
+    }
+  }
 }
 
 function shouldCopySkillEntry(entry) {
@@ -116,14 +164,55 @@ function shouldCopySkillEntry(entry) {
   return basename !== ".DS_Store" && !entry.includes(`${path.sep}.git${path.sep}`) && !entry.endsWith(`${path.sep}.git`);
 }
 
+function createSiblingTempDir(target, prefix) {
+  const parent = path.dirname(target);
+  fs.mkdirSync(parent, { recursive: true });
+  return fs.mkdtempSync(path.join(parent, prefix));
+}
+
 function getLocalSourceInfo(sourceRoot) {
   const commit = getGitValue(sourceRoot, ["rev-parse", "HEAD"]);
   const dirty = getGitValue(sourceRoot, ["status", "--porcelain"]) !== "";
   return {
     type: "local",
-    path: sourceRoot,
     ...(commit ? { commit, dirty } : {})
   };
+}
+
+function sanitizeSourceInfo(sourceInfo) {
+  if (!sourceInfo || typeof sourceInfo !== "object") return undefined;
+  return {
+    ...(typeof sourceInfo.type === "string" ? { type: sourceInfo.type } : {}),
+    ...(typeof sourceInfo.repo === "string" ? { repo: sanitizeRepositoryUrl(sourceInfo.repo) } : {}),
+    ...(typeof sourceInfo.ref === "string" ? { ref: sourceInfo.ref } : {}),
+    ...(typeof sourceInfo.commit === "string" && sourceInfo.commit ? { commit: sourceInfo.commit } : {}),
+    ...(typeof sourceInfo.dirty === "boolean" ? { dirty: sourceInfo.dirty } : {})
+  };
+}
+
+function sanitizeRepositoryUrl(value) {
+  const raw = String(value).trim();
+  if (path.isAbsolute(raw) || raw.startsWith("file:")) {
+    return "local-repository";
+  }
+  try {
+    const parsed = new URL(raw);
+    if (["http:", "https:", "ssh:"].includes(parsed.protocol)) {
+      parsed.username = "";
+      parsed.password = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString().replace(/\/$/, "");
+    }
+  } catch (_error) {
+    // SCP-style Git remotes are not URL-parseable and are handled below.
+  }
+  const scpStyle = raw.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
+  if (scpStyle) {
+    const [, host, repositoryPath] = scpStyle;
+    return `${host}:${repositoryPath.replace(/[?#].*$/, "")}`;
+  }
+  return raw.replace(/[?#].*$/, "");
 }
 
 function getGitValue(cwd, args) {
@@ -138,11 +227,20 @@ function getGitValue(cwd, args) {
   }
 }
 
-function run(command, args) {
-  execFileSync(command, args, {
-    cwd: root,
-    stdio: "inherit"
-  });
+function cloneSecureRepository(repository, branch, target) {
+  try {
+    execFileSync("git", ["clone", "--depth", "1", "--branch", branch, repository, target], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "ignore", "pipe"]
+    });
+  } catch (error) {
+    const safeRepository = sanitizeRepositoryUrl(repository);
+    const stderr = String(error.stderr || "")
+      .replaceAll(String(repository), safeRepository)
+      .trim();
+    throw new Error(`Could not clone secure skills repository ${safeRepository}#${branch}${stderr ? `: ${stderr}` : "."}`);
+  }
 }
 
 if (require.main === module) {
@@ -153,6 +251,6 @@ module.exports = {
   findPackagedSkillNames,
   findSkillsSourceDir,
   findLocalSkillsSource,
-  isPackagedSkillName,
+  sanitizeRepositoryUrl,
   stageSkillsFromSource
 };

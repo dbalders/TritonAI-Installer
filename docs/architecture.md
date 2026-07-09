@@ -14,7 +14,7 @@ flowchart TD
   V --> C["Save user env"]
   D --> B
   C --> E["T3 setup"]
-  E --> S["Install bundled UCSD skills"]
+  E --> S["Install bundled managed secure skills"]
   S --> F["Provision Node/npm runtime if needed"]
   F --> G{"Managed Codex CLI is current?"}
   G -->|"Yes"| J["Write Codex provider settings"]
@@ -33,7 +33,7 @@ flowchart TD
 - `installer/runner`: ordered TritonAI Harness/Codex setup execution.
 - `installer/prerequisites`: user-scoped Node.js/npm bootstrap with checksum verification.
 - `installer/t3code-desktop`: TritonAI desktop app install. The bundled app may use release-channel names internally, but the user-facing launcher is always `TritonAI Harness`.
-- `installer/skills`: copies packaged UCSD skills into `~/.tritonai-harness/codex/skills/`.
+- `installer/skills`: transactionally installs only packaged secure skills into `~/.tritonai-harness/codex/skills/` and tracks Installer ownership without modifying unowned skills.
 - `installer/codex-vendor`: finds the packaged Codex CLI payload and copies it into the managed runtime prefix.
 - `installer/tool-manifest`: TritonAI Harness metadata and the pinned Codex CLI backend fallback install command for unpackaged development runs.
 - `installer/config-writers`: Codex provider settings and default selection enforcement.
@@ -45,7 +45,9 @@ flowchart TD
 - Shared API env: `TRITONAI_API_KEY`
 - Codex/TritonAI Harness default: `deepseek-v4-flash`
 - Codex/TritonAI Harness models: the UCSD upstream renders as `UCSD`; the current installer exposes `DeepSeek v4 Flash`.
-- Skills source: nearby local `UCSD-Skills-Library` checkout when present, otherwise latest `main` from `https://github.com/dbalders/UCSD-Skills-Library.git`, staged from `skills/` or `tritonai/` into `vendor/skills/` at package time
+- Secure skills source: nearby local `UCSD-Skills-Library-Secure` checkout when present, otherwise `main` from private `https://github.com/dbalders/UCSD-Skills-Library-Secure.git`, staged from root-level `<skill-name>/SKILL.md` folders into `vendor/skills/` at package time. Public AI Team and Community skills are fetched by TritonAI Harness and are not Installer payloads.
+- Secure ownership: the vendor and runtime manifests use `{ "version": 1, "kind": "tritonai-secure", "skills": ["..."] }`. The runtime manifest lives at `~/.tritonai-harness/codex/skills/.tritonai-managed-skills.json`. Reinstall replaces/removes only names in the previous runtime manifest, preserves all unowned folders, and refuses unowned collisions.
+- Secure update safety: all incoming skills and `SKILL.md` files are validated and copied to a same-filesystem staging directory before existing managed directories are moved. A failed staging or activation step leaves or restores the prior managed bundle.
 - Runtime: pinned Node.js `v22.22.2` downloaded under `~/.agents/ucsd/runtime`
 - Codex runtime: pinned `@openai/codex@0.141.0` staged into `vendor/codex-cli/mac-arm64` and `vendor/codex-cli/win-x64`, then copied under `~/.agents/ucsd/runtime/codex/openai-codex-0.141.0`; TritonAI Harness settings reference it explicitly instead of relying on `PATH`.
 - Default policy posture: local user control with UCSD routing, logs directory, and deny guidance around secrets.

@@ -18,7 +18,7 @@ const state = {
 const installerApi = window.ucsdInstaller || createPreviewInstallerApi();
 
 const installSteps = [
-  { id: "prepare", label: "Prepare this computer", match: ["creating", "checking installer prerequisites", "runtime", "node", "bundled ucsd skill"] },
+  { id: "prepare", label: "Prepare this computer", match: ["creating", "checking installer prerequisites", "runtime", "node", "managed secure skill"] },
   { id: "connect", label: "Connect to TritonAI", match: ["saving", "access key", "environment", "tritonai connection", "connection verified"] },
   { id: "tools", label: "Automatic TritonAI setup", match: ["codex", "backend", "cli", "configuring", "routing", "defaults"] },
   { id: "shortcut", label: `Install ${TRITONAI_APP_DISPLAY_NAME}`, match: ["desktop", "shortcut", "applications", "launcher", "bundled image"] },
@@ -28,7 +28,7 @@ const installSteps = [
 const installStepDetails = {
   prepare: [
     { id: "folders", label: "Create UC San Diego setup folders", match: ["creating ucsd", "setup folder"] },
-    { id: "skills", label: "Stage bundled UCSD skills", match: ["bundled ucsd skill"] },
+    { id: "skills", label: "Install managed secure skills", match: ["managed secure skill"] },
     { id: "workspace", label: "Prepare the starter workspace", match: ["first-run tritonai workspace"] },
     { id: "runtime", label: "Check this computer and local runtime", match: ["checking installer prerequisites", "runtime", "node.js", "npm"] }
   ],
