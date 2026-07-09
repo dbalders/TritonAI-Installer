@@ -7,6 +7,7 @@ const {
 } = require("./skill-manifest");
 
 const MANAGED_SKILLS_MANIFEST_FILE = ".tritonai-managed-skills.json";
+const VENDOR_SKILLS_MANIFEST_FILE = "manifest.json";
 const LEGACY_SKILLS_MANIFEST_FILE = "manifest.json";
 
 function installBundledSkills(options = {}) {
@@ -48,7 +49,7 @@ function installBundledSkills(options = {}) {
     transactionSucceeded = true;
   } finally {
     fs.rmSync(stageRoot, { recursive: true, force: true });
-    if (backupRoot && transactionSucceeded) {
+    if (backupRoot && (transactionSucceeded || isEmptyDirectory(backupRoot))) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
   }
@@ -64,7 +65,7 @@ function installBundledSkills(options = {}) {
 }
 
 function readBundledManifest(source) {
-  const manifestPath = path.join(source, LEGACY_SKILLS_MANIFEST_FILE);
+  const manifestPath = path.join(source, VENDOR_SKILLS_MANIFEST_FILE);
   const manifest = readJsonManifest(manifestPath, "Bundled secure skills manifest");
   const validated = validateManagedSkillsManifest(manifest, "Bundled secure skills manifest");
   const packagedSkills = listPackagedSkillNames(source);
@@ -337,6 +338,12 @@ function sameStringArray(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function isEmptyDirectory(directory) {
+  return fs.existsSync(directory)
+    && fs.lstatSync(directory).isDirectory()
+    && fs.readdirSync(directory).length === 0;
+}
+
 function findBundledSkillsDir(options = {}) {
   const candidates = bundleBaseCandidates(options)
     .map((base) => path.join(base, "vendor", "skills"));
@@ -367,6 +374,7 @@ function listSkillDirs(skillsDir) {
 module.exports = {
   LEGACY_SKILLS_MANIFEST_FILE,
   MANAGED_SKILLS_MANIFEST_FILE,
+  VENDOR_SKILLS_MANIFEST_FILE,
   findBundledSkillsDir,
   installBundledSkills,
   listSkillDirs,

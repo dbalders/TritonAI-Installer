@@ -95,8 +95,7 @@ function stageSkillsFromSource({ sourceRoot, sourceSubdir = "", vendorDir, sourc
     };
     fs.writeFileSync(path.join(stagingDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
-    fs.rmSync(vendorDir, { recursive: true, force: true });
-    fs.renameSync(stagingDir, vendorDir);
+    activateStagedVendor(stagingDir, vendorDir);
   } finally {
     fs.rmSync(stagingDir, { recursive: true, force: true });
   }
@@ -168,6 +167,43 @@ function createSiblingTempDir(target, prefix) {
   const parent = path.dirname(target);
   fs.mkdirSync(parent, { recursive: true });
   return fs.mkdtempSync(path.join(parent, prefix));
+}
+
+function activateStagedVendor(stagingDir, vendorDir) {
+  let backupRoot = null;
+  let previousVendorDir = null;
+  let previousVendorMoved = false;
+
+  try {
+    if (fs.existsSync(vendorDir)) {
+      backupRoot = createSiblingTempDir(vendorDir, ".secure-skills-vendor-backup-");
+      previousVendorDir = path.join(backupRoot, "previous");
+      fs.renameSync(vendorDir, previousVendorDir);
+      previousVendorMoved = true;
+    }
+    fs.renameSync(stagingDir, vendorDir);
+  } catch (error) {
+    const rollbackErrors = [];
+    if (previousVendorMoved && !fs.existsSync(vendorDir)) {
+      try {
+        fs.renameSync(previousVendorDir, vendorDir);
+        previousVendorMoved = false;
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError.message);
+      }
+    }
+    if (backupRoot && !previousVendorMoved) {
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+    const rollbackSuffix = rollbackErrors.length > 0
+      ? ` Rollback also reported: ${rollbackErrors.join("; ")}`
+      : "";
+    throw new Error(`Could not activate the staged secure skills vendor: ${error.message}.${rollbackSuffix}`);
+  }
+
+  if (backupRoot) {
+    fs.rmSync(backupRoot, { recursive: true, force: true });
+  }
 }
 
 function getLocalSourceInfo(sourceRoot) {
