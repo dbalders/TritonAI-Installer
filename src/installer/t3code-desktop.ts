@@ -305,9 +305,9 @@ function writeMacAppLauncher(paths, emit, arch, options: MacLauncherOptions = {}
   fs.mkdirSync(parent, { recursive: true });
   const stageRoot = fs.mkdtempSync(path.join(parent, ".tritonai-harness-launcher-stage-"));
   const stagedLauncherPath = path.join(stageRoot, path.basename(launcherPath));
-  const backupRoot = fs.mkdtempSync(path.join(parent, ".tritonai-harness-launcher-backup-"));
-  const previousLauncherPath = path.join(backupRoot, path.basename(launcherPath));
   const managedAppPath = getManagedMacAppPath(paths);
+  let backupRoot: string | null = null;
+  let previousLauncherPath: string | null = null;
   let previousMoved = false;
   let replacementActivated = false;
   let replacementCompleted = false;
@@ -317,6 +317,8 @@ function writeMacAppLauncher(paths, emit, arch, options: MacLauncherOptions = {}
     validateMacLauncherBundle(stagedLauncherPath, managedAppPath, "Staged");
 
     if (fs.existsSync(launcherPath)) {
+      backupRoot = fs.mkdtempSync(path.join(parent, ".tritonai-harness-launcher-backup-"));
+      previousLauncherPath = path.join(backupRoot, path.basename(launcherPath));
       fs.renameSync(launcherPath, previousLauncherPath);
       previousMoved = true;
     }
@@ -326,7 +328,7 @@ function writeMacAppLauncher(paths, emit, arch, options: MacLauncherOptions = {}
     replacementCompleted = true;
     return launcherPath;
   } catch (error) {
-    if (previousMoved) {
+    if (previousMoved && previousLauncherPath) {
       try {
         fs.rmSync(launcherPath, { recursive: true, force: true });
         fs.renameSync(previousLauncherPath, launcherPath);
@@ -340,10 +342,10 @@ function writeMacAppLauncher(paths, emit, arch, options: MacLauncherOptions = {}
     } else if (replacementActivated) {
       fs.rmSync(launcherPath, { recursive: true, force: true });
     }
-    throw new Error(`Could not create ${TRITONAI_LAUNCHER_NAME} launcher app: ${error.message}`);
+    throw new Error(`Could not create ${TRITONAI_LAUNCHER_NAME} launcher app: ${error.message}`, { cause: error });
   } finally {
     fs.rmSync(stageRoot, { recursive: true, force: true });
-    if (replacementCompleted || !previousMoved) {
+    if (backupRoot && (replacementCompleted || !previousMoved)) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
   }
