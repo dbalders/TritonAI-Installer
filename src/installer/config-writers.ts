@@ -500,6 +500,8 @@ function getCodexModelSlugs(paths) {
 
 function getCodexModels(paths) {
   if (paths.externalModelsEnabled === false) {
+    // Key capability is an upper bound: a packaged operator catalog cannot
+    // grant models that the installed key cannot access.
     return {
       [UCSD.codexModel]: UCSD.codexModels[UCSD.codexModel]
     };

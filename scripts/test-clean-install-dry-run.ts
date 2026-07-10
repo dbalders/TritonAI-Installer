@@ -256,6 +256,18 @@ function assertManagedConfigPrefersPackagedEndpoint() {
       () => UCSD.codexModels,
       /codexModels must include the configured default model: deepseek-v4-flash/
     );
+
+    fs.writeFileSync(configPath, JSON.stringify({
+      baseUrl: "https://packaged.example.invalid/v1",
+      codexModel: "gpt-5.5"
+    }));
+    resetManagedConfigForTests();
+    assert.strictEqual(UCSD.codexModel, "gpt-5.5");
+    assert.strictEqual(
+      UCSD.codexModels["gpt-5.5"].name,
+      "GPT-5.5",
+      "a packaged default that is already in the catalog must retain its display name"
+    );
   } finally {
     if (originalResourcesPath === undefined) {
       delete mutableProcess.resourcesPath;

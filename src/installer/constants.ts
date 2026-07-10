@@ -119,12 +119,17 @@ function normalizeCodexModels(codexModels, codexModel) {
   if (codexModel === DEFAULT_CODEX_MODEL) {
     return DEFAULT_CODEX_MODELS;
   }
+  const customEntry = Object.prototype.hasOwnProperty.call(DEFAULT_CODEX_MODELS, codexModel)
+    ? {}
+    : {
+        [codexModel]: {
+          id: codexModel,
+          name: codexModel
+        }
+      };
   return {
     ...DEFAULT_CODEX_MODELS,
-    [codexModel]: {
-      id: codexModel,
-      name: codexModel
-    }
+    ...customEntry
   };
 }
 
