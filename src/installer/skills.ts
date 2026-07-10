@@ -79,12 +79,20 @@ function installBundledSkills(options: InstallBundledSkillsOptions) {
 function readBundledManifest(source) {
   const manifestPath = path.join(source, VENDOR_SKILLS_MANIFEST_FILE);
   const manifest = readJsonManifest(manifestPath, "Bundled secure skills manifest");
+  validateBundledSkillsProvenance(manifest);
   const validated = validateManagedSkillsManifest(manifest, "Bundled secure skills manifest");
   const packagedSkills = listPackagedSkillNames(source);
   if (!sameStringArray(validated.skills, packagedSkills)) {
     throw new Error(`Bundled secure skills manifest does not match its skill directories (manifest: ${validated.skills.join(", ") || "none"}; directories: ${packagedSkills.join(", ") || "none"}).`);
   }
   return validated;
+}
+
+function validateBundledSkillsProvenance(manifest) {
+  const repository = manifest && manifest.source && manifest.source.repo;
+  if (typeof repository !== "string" || !/(?:^|[/:])dbalders\/UCSD-Skills-Library-Secure(?:\.git)?$/i.test(repository)) {
+    throw new Error("Bundled secure skills manifest must identify dbalders/UCSD-Skills-Library-Secure as its canonical source repository.");
+  }
 }
 
 function readInstalledManagedManifest(manifestPath) {

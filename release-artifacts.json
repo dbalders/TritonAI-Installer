@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "checksumManifest": "artifacts/SHA256SUMS.txt",
+  "artifacts": [
+    {
+      "id": "macos-dmg",
+      "platform": "macos-arm64",
+      "path": "artifacts/macos-release/TritonAI-Installer-{version}-arm64.dmg"
+    },
+    {
+      "id": "windows-setup",
+      "platform": "windows-x64",
+      "path": "artifacts/windows-installer/TritonAI-Installer-Setup-{version}-x64.exe"
+    },
+    {
+      "id": "windows-setup-blockmap",
+      "platform": "windows-x64",
+      "path": "artifacts/windows-installer/TritonAI-Installer-Setup-{version}-x64.exe.blockmap"
+    },
+    {
+      "id": "windows-portable",
+      "platform": "windows-x64",
+      "path": "artifacts/windows-installer/TritonAI-Installer-{version}-x64-portable.exe"
+    },
+    {
+      "id": "windows-update-manifest",
+      "platform": "windows-x64",
+      "path": "artifacts/windows-installer/latest.yml",
+      "metadata": true
+    }
+  ]
+}

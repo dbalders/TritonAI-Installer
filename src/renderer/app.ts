@@ -692,9 +692,7 @@ function escapeHtml(value) {
 }
 
 function brandCopy(value) {
-  return String(value)
-    .replace(/T3\s*Code/g, TRITONAI_APP_DISPLAY_NAME)
-    .replace(/T3\s*CODE/g, TRITONAI_APP_DISPLAY_NAME);
+  return String(value);
 }
 
 function updateCredentialControls() {

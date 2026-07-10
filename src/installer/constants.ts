@@ -15,7 +15,6 @@ const UCSD = {
   allowEnvConfigEnv: "UCSD_ALLOW_MANAGED_CONFIG_ENV",
   managedConfigPathEnv: "UCSD_MANAGED_CONFIG_PATH",
   tritonAiHomeEnv: "TRITONAI_HOME",
-  legacyT3HomeEnv: "T3CODE_HOME",
   codexHomeEnv: "CODEX_HOME",
   codexProvider: "ucsd",
   get baseUrl() {

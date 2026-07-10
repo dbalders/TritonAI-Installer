@@ -38,6 +38,9 @@ const required = [
   "scripts/test-clean-install-dry-run.ts",
   "scripts/test-installer-version-marker.ts",
   "scripts/test-skills.ts",
+  "scripts/test-windows-upgrade.ts",
+  "scripts/test-release-contract.ts",
+  "scripts/test-install-transactions.ts",
   "scripts/test-clean-runtime.ts",
   "scripts/write-managed-config.ts",
   "scripts/verify-macos-bundled-resources.ts",
@@ -51,10 +54,13 @@ const required = [
   "scripts/serve-macos-release.ts",
   "scripts/serve-macos-fast-test.ts",
   "scripts/publish-github-release.ts",
+  "scripts/release-contract.ts",
+  "scripts/clean-release-output.ts",
   "scripts/package-windows-portable.ts",
   "scripts/trust-macos-dev-artifacts.ts",
   "tsconfig.json",
   "tsconfig.renderer.json",
+  "release-artifacts.json",
   "dist/src/main.js",
   "dist/src/preload.js",
   "dist/src/renderer/app.js"
@@ -86,6 +92,7 @@ if (windowsBuildCount !== 1) {
 }
 
 for (const scriptName of [
+  "clean:release-output:compiled",
   "prepare:managed-config:compiled",
   "prepare:t3code-desktop-vendor:win:compiled",
   "prepare:codex-cli-vendor:win:compiled",

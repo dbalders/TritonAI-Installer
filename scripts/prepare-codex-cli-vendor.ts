@@ -47,7 +47,8 @@ function stageCodexVendor(targetName) {
     throw new Error(`Unsupported Codex CLI vendor target: ${targetName}`);
   }
 
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `ucsd-codex-cli-${targetName}-`));
+  fs.mkdirSync(path.dirname(target.vendorDir), { recursive: true });
+  const tempRoot = fs.mkdtempSync(path.join(path.dirname(target.vendorDir), `.codex-cli-${targetName}-`));
   try {
     run(npmCommand(), [
       "install",
@@ -70,13 +71,36 @@ function stageCodexVendor(targetName) {
     }
 
     verifyStagedCodex(tempRoot, targetName, target);
-    fs.rmSync(target.vendorDir, { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(target.vendorDir), { recursive: true });
-    fs.cpSync(tempRoot, target.vendorDir, { recursive: true, force: true });
-    writeManifest(target.vendorDir, targetName, target);
+    writeManifest(tempRoot, targetName, target);
+    activateStagedVendor(tempRoot, target.vendorDir);
     console.log(`Prepared ${path.relative(root, target.vendorDir)}`);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function activateStagedVendor(stagingDir, vendorDir) {
+  const backupRoot = fs.mkdtempSync(path.join(path.dirname(vendorDir), ".codex-cli-backup-"));
+  const previous = path.join(backupRoot, "previous");
+  let previousMoved = false;
+  let activationCompleted = false;
+  try {
+    if (fs.existsSync(vendorDir)) {
+      fs.renameSync(vendorDir, previous);
+      previousMoved = true;
+    }
+    fs.renameSync(stagingDir, vendorDir);
+    activationCompleted = true;
+  } catch (error) {
+    if (previousMoved && !fs.existsSync(vendorDir)) {
+      fs.renameSync(previous, vendorDir);
+      previousMoved = false;
+    }
+    throw error;
+  } finally {
+    if (activationCompleted || !previousMoved) {
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
   }
 }
 

@@ -1,5 +1,5 @@
 {
-  "appId": "edu.ucsd.ai-tools.installer",
+  "appId": "edu.ucsd.tritonai.installer",
   "productName": "TritonAI Installer",
   "asar": false,
   "compression": "normal",

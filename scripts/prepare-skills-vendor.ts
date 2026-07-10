@@ -13,6 +13,7 @@ const repo = process.env.UCSD_SKILLS_REPO || "https://github.com/dbalders/UCSD-S
 const ref = process.env.UCSD_SKILLS_REF || "main";
 const sourceSubdir = process.env.UCSD_SKILLS_SUBDIR || "";
 const vendorDir = path.join(root, "vendor", "skills");
+const CANONICAL_SECURE_REPOSITORY = "dbalders/UCSD-Skills-Library-Secure";
 const localSourceCandidates = localSourceOverride
   ? [localSourceOverride]
   : [
@@ -26,6 +27,7 @@ function main() {
     throw new Error("UCSD_SKILLS_SOURCE does not contain packageable root-level secure skills.");
   }
   if (localSource) {
+    assertCanonicalLocalSecureSkillsSource(localSource);
     const result = stageSkillsFromSource({
       sourceRoot: localSource,
       sourceSubdir,
@@ -38,6 +40,7 @@ function main() {
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-secure-skills-vendor-"));
   try {
+    assertCanonicalSecureSkillsRepository(repo, "UCSD_SKILLS_REPO");
     const cloneDir = path.join(tempRoot, "repo");
     cloneSecureRepository(repo, ref, cloneDir);
     const result = stageSkillsFromSource({
@@ -65,6 +68,9 @@ function findLocalSkillsSource(candidates, subdir = "") {
 }
 
 function stageSkillsFromSource({ sourceRoot, sourceSubdir = "", vendorDir, sourceInfo }) {
+  if (sourceInfo && sourceInfo.repo) {
+    assertCanonicalSecureSkillsRepository(sourceInfo.repo, "secure skills source");
+  }
   const skillsSource = findSkillsSourceDir(sourceRoot, sourceSubdir);
   if (!skillsSource) {
     const location = sourceSubdir ? `${sourceRoot} (subdirectory ${sourceSubdir})` : sourceRoot;
@@ -101,6 +107,36 @@ function stageSkillsFromSource({ sourceRoot, sourceSubdir = "", vendorDir, sourc
   }
 
   return { source: sanitizeSourceInfo(sourceInfo), skills: skillNames };
+}
+
+function assertCanonicalLocalSecureSkillsSource(sourceRoot) {
+  const repository = getGitValue(sourceRoot, ["remote", "get-url", "origin"]);
+  if (!repository) {
+    throw new Error(`Secure skills override must be a Git checkout of ${CANONICAL_SECURE_REPOSITORY}; no origin remote was found at ${sourceRoot}.`);
+  }
+  assertCanonicalSecureSkillsRepository(repository, "UCSD_SKILLS_SOURCE");
+}
+
+function assertCanonicalSecureSkillsRepository(repository, label = "secure skills repository") {
+  const slug = repositorySlug(repository);
+  if (slug.toLowerCase() !== CANONICAL_SECURE_REPOSITORY.toLowerCase()) {
+    throw new Error(`${label} must resolve to the private ${CANONICAL_SECURE_REPOSITORY} repository; ${sanitizeRepositoryUrl(repository)} is not accepted as secure skills provenance.`);
+  }
+  return slug;
+}
+
+function repositorySlug(repository) {
+  const sanitized = sanitizeRepositoryUrl(repository).replace(/\\/g, "/").replace(/\.git$/i, "");
+  let repositoryPath = sanitized;
+  try {
+    const parsed = new URL(sanitized);
+    repositoryPath = parsed.pathname;
+  } catch (_error) {
+    const scpMatch = sanitized.match(/^[^:]+:(.+)$/);
+    if (scpMatch) repositoryPath = scpMatch[1];
+  }
+  const parts = repositoryPath.split("/").filter(Boolean);
+  return parts.slice(-2).join("/");
 }
 
 function findSkillsSourceDir(sourceRoot, subdir = "") {
@@ -208,9 +244,11 @@ function activateStagedVendor(stagingDir, vendorDir) {
 
 function getLocalSourceInfo(sourceRoot) {
   const commit = getGitValue(sourceRoot, ["rev-parse", "HEAD"]);
+  const repository = getGitValue(sourceRoot, ["remote", "get-url", "origin"]);
   const dirty = getGitValue(sourceRoot, ["status", "--porcelain"]) !== "";
   return {
     type: "local",
+    ...(repository ? { repo: sanitizeRepositoryUrl(repository) } : {}),
     ...(commit ? { commit, dirty } : {})
   };
 }
@@ -284,6 +322,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  CANONICAL_SECURE_REPOSITORY,
+  assertCanonicalLocalSecureSkillsSource,
+  assertCanonicalSecureSkillsRepository,
   findPackagedSkillNames,
   findSkillsSourceDir,
   findLocalSkillsSource,

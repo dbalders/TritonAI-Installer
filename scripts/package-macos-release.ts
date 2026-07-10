@@ -33,6 +33,7 @@ function main() {
 
   const notary = getNotaryEnv();
   fs.rmSync(outputDir, { recursive: true, force: true });
+  fs.rmSync(path.join(root, "artifacts", "SHA256SUMS.txt"), { force: true });
   prepareManagedConfig();
   prepareVendorArtifacts();
 
@@ -57,9 +58,9 @@ function main() {
   recreateDmgsFromApp();
   signDmgs(identity);
   notarizeAndStapleDmgs(notary);
-  writeChecksums();
 
   console.log(`macOS release artifacts ready: ${path.relative(root, outputDir)}`);
+  console.log("Build Windows artifacts, then run npm run release:contract for the combined checksum manifest.");
 }
 
 function prepareVendorArtifacts() {
@@ -279,19 +280,6 @@ function verifyMountedDmgApp(dmg) {
     spawnSync("hdiutil", ["detach", mountPoint], { stdio: "inherit" });
     fs.rmSync(mountPoint, { recursive: true, force: true });
   }
-}
-
-function writeChecksums() {
-  const files = releaseFiles(".dmg");
-  const sums = files
-    .map((file) => {
-      const result = spawnSync("shasum", ["-a", "256", file], { encoding: "utf8" });
-      if (result.error) throw result.error;
-      if (result.status !== 0) throw new Error(result.stderr);
-      return result.stdout.trim();
-    })
-    .join("\n");
-  fs.writeFileSync(path.join(outputDir, "SHA256SUMS.txt"), `${sums}\n`);
 }
 
 function releaseFiles(...extensions) {

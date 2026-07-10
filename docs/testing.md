@@ -45,7 +45,7 @@ This creates a temp home directory, strips PATH down to OS basics, downloads the
 
 ## Legacy Provider Stale-State Reproduction
 
-Do not use the developer laptop home directory as the primary reproduction. The clean dry-run test creates a temp home, seeds the failure shape, and verifies the installer behavior without touching `~/.t3` or `~/.agents`.
+Do not use the developer laptop home directory as the primary reproduction. The clean dry-run test creates a temp home, seeds the failure shape, and verifies the installer behavior without touching `~/.tritonai-harness` or `~/.agents`.
 
 The dry run now covers:
 
