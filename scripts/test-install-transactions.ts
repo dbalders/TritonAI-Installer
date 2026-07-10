@@ -112,7 +112,7 @@ function assertCodexReplacementStagesBeforeSwapAndRollsBack() {
     const target = path.join(tempRoot, "runtime", "codex");
     writeCodexVendor(source, "new");
     writeCodexVendor(target, "old");
-    stageAndActivateBundledCodex({ source, target, platform: "darwin" });
+    stageAndActivateBundledCodex({ source, target, platform: "darwin", arch: "arm64" });
     assert.strictEqual(readCodexVersion(target), "new");
 
     writeCodexVendor(source, "newer");
@@ -125,7 +125,7 @@ function assertCodexReplacementStagesBeforeSwapAndRollsBack() {
     };
     try {
       assert.throws(
-        () => stageAndActivateBundledCodex({ source, target, platform: "darwin" }),
+        () => stageAndActivateBundledCodex({ source, target, platform: "darwin", arch: "arm64" }),
         /simulated Codex activation failure/
       );
     } finally {
@@ -144,7 +144,7 @@ function assertCodexReplacementStagesBeforeSwapAndRollsBack() {
     };
     try {
       assert.throws(
-        () => stageAndActivateBundledCodex({ source, target, platform: "darwin" }),
+        () => stageAndActivateBundledCodex({ source, target, platform: "darwin", arch: "arm64" }),
         /Rollback also failed: simulated Codex rollback failure/
       );
     } finally {
