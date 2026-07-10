@@ -42,6 +42,9 @@ TypeScript under `src/` and `scripts/` is the source of truth. `npm run build` e
 ## Packaging
 
 Release packaging requires the managed TritonAI endpoint and platform signing credentials to be configured in the environment.
+Harness vendoring also requires an explicit, immutable source contract. Set `UCSD_HARNESS_VERSION`
+and either one `UCSD_HARNESS_RELEASE_BASE` or both platform-specific release bases. Legacy
+`UCSD_T3CODE_*` fallbacks and `releases/latest/download` are intentionally not accepted.
 
 macOS:
 
@@ -68,6 +71,14 @@ UCSD_SKILLS_SOURCE="/path/to/UCSD-Skills-Library-Secure" npm run prepare:skills-
 At runtime the Installer owns only the secure skill names recorded in `~/.tritonai-harness/codex/skills/.tritonai-managed-skills.json`. Upgrades replace or remove only those owned directories. Existing public, community, and user-added skills are preserved, and an unowned name collision stops the install for explicit resolution.
 
 Publish the Harness release before building the Installer so the intended Harness assets are available.
+
+After both platforms are packaged, run `npm run release:contract`. The machine-readable
+[`release-artifacts.json`](release-artifacts.json) contract requires the canonical
+`TritonAI-Installer-*` DMG, Windows Setup, portable EXE, Setup blockmap, and Windows update
+manifest. It writes one `artifacts/SHA256SUMS.txt` with relative basenames only. The GitHub
+release helper validates that the requested tag, package version, and `HEAD` identify the same
+commit, uploads every contracted platform asset without `--clobber`, and refuses to modify an
+already-published release.
 
 ## Documentation
 

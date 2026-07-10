@@ -62,6 +62,7 @@ app.whenReady().then(() => {
         homeDir: app.getPath("home"),
         resourcesPath: process.resourcesPath,
         appRoot: app.getAppPath(),
+        packaged: app.isPackaged,
         installerVersion: app.getVersion(),
         emit: (message) => event.sender.send("installer:log", message),
         onDiagnostics: (diagnostics) => {

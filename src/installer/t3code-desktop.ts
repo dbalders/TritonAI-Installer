@@ -44,21 +44,39 @@ interface CommandOptions {
   allowFailure?: boolean;
 }
 
-async function installT3CodeDesktop({ paths, platform, arch, emit, env }) {
+interface WindowsInstallRuntime {
+  unblockWindowsFile?: typeof unblockWindowsFile;
+  runWindowsInstaller?: typeof runWindowsInstaller;
+  waitForWindowsT3CodeApp?: typeof waitForWindowsT3CodeApp;
+  readWindowsAppVersion?: typeof readWindowsAppVersion;
+  readWindowsAppFingerprint?: typeof readWindowsAppFingerprint;
+  finishWindowsInstall?: typeof finishWindowsInstall;
+}
+
+async function installT3CodeDesktop({ paths, platform, arch, emit, env, resourcesPath, appRoot, packaged, windowsInstallRuntime }) {
   if (platform === "darwin") {
-    return installMacDesktop({ paths, arch, emit });
+    return installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, packaged });
   }
 
   if (platform === "win32") {
-    return installWindowsDesktop({ paths, arch, emit, env });
+    return installWindowsDesktop({
+      paths,
+      arch,
+      emit,
+      env,
+      resourcesPath,
+      appRoot,
+      packaged,
+      windowsInstallRuntime
+    });
   }
 
   emit(`${TRITONAI_APP_DISPLAY_NAME} desktop install is not automated on ${platform}; skipping desktop app.`);
   return { skipped: true };
 }
 
-async function installMacDesktop({ paths, arch, emit }) {
-  const bundledDmg = getBundledMacDmg({ arch });
+async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, packaged }) {
+  const bundledDmg = getBundledMacDmg({ arch, resourcesPath, appRoot });
   const downloadDir = path.join(paths.cacheDir, "t3code-desktop");
   const mountDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-desktop-"));
   const managedAppPath = getManagedMacAppPath(paths);
@@ -70,6 +88,8 @@ async function installMacDesktop({ paths, arch, emit }) {
     verifyDownload(dmgPath, bundledDmg.expected);
     emit(`Installing ${TRITONAI_APP_DISPLAY_NAME} from bundled image at ${dmgPath}`);
     emit(`Using signed app-bundled ${TRITONAI_APP_DISPLAY_NAME} image; validating with hdiutil before install.`);
+  } else if (packaged) {
+    throw new Error(`This packaged TritonAI Installer is missing a valid bundled ${TRITONAI_APP_DISPLAY_NAME} macOS image.`);
   } else {
     const manifestText = await downloadText(`${MAC_RELEASE_BASE}/${MAC_MANIFEST_FILE}`);
     const manifest = parseLatestYml(manifestText);
@@ -88,13 +108,11 @@ async function installMacDesktop({ paths, arch, emit }) {
       throw new Error(`Could not find a supported ${TRITONAI_APP_DISPLAY_NAME} app in the mounted installer image.`);
     }
 
-    fs.rmSync(managedAppPath, { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(managedAppPath), { recursive: true });
-    await run("ditto", [mountedApp, managedAppPath], emit);
-
-    if (!fs.existsSync(managedAppPath)) {
-      throw new Error(`${TRITONAI_APP_DISPLAY_NAME} app copy did not finish.`);
-    }
+    await replaceMacAppTransactionally({
+      sourceAppPath: mountedApp,
+      managedAppPath,
+      emit
+    });
   } finally {
     await run("hdiutil", ["detach", mountDir], emit, { allowFailure: true });
     fs.rmSync(mountDir, { recursive: true, force: true });
@@ -105,47 +123,171 @@ async function installMacDesktop({ paths, arch, emit }) {
   return { appPath: shortcutPath || managedAppPath, shortcutPath };
 }
 
-async function installWindowsDesktop({ paths, arch, emit, env }) {
-  const bundledInstaller = getBundledWindowsInstaller({ arch });
+async function replaceMacAppTransactionally({
+  sourceAppPath,
+  managedAppPath,
+  emit,
+  copyApp = null,
+  validateStagedApp = null
+}) {
+  validateMacAppBundle(sourceAppPath, "Mounted");
+  const parent = path.dirname(managedAppPath);
+  fs.mkdirSync(parent, { recursive: true });
+  const stageRoot = fs.mkdtempSync(path.join(parent, ".tritonai-harness-stage-"));
+  const stagedAppPath = path.join(stageRoot, path.basename(managedAppPath));
+  const backupRoot = fs.mkdtempSync(path.join(parent, ".tritonai-harness-backup-"));
+  const previousAppPath = path.join(backupRoot, path.basename(managedAppPath));
+  let previousMoved = false;
+  let replacementActivated = false;
+  let replacementCompleted = false;
+
+  try {
+    if (copyApp) {
+      await copyApp(sourceAppPath, stagedAppPath);
+    } else {
+      await run("ditto", [sourceAppPath, stagedAppPath], emit);
+    }
+    validateMacAppBundle(stagedAppPath, "Staged");
+    if (validateStagedApp) {
+      await validateStagedApp(stagedAppPath);
+    } else if (process.platform === "darwin") {
+      await run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", stagedAppPath], emit);
+    }
+
+    if (fs.existsSync(managedAppPath)) {
+      fs.renameSync(managedAppPath, previousAppPath);
+      previousMoved = true;
+    }
+    fs.renameSync(stagedAppPath, managedAppPath);
+    replacementActivated = true;
+    validateMacAppBundle(managedAppPath, "Installed");
+    replacementCompleted = true;
+  } catch (error) {
+    if (previousMoved) {
+      try {
+        fs.rmSync(managedAppPath, { recursive: true, force: true });
+        fs.renameSync(previousAppPath, managedAppPath);
+        previousMoved = false;
+      } catch (rollbackError) {
+        throw new Error(
+          `Could not replace ${TRITONAI_APP_DISPLAY_NAME}: ${error.message}. `
+          + `Rollback also failed: ${rollbackError.message}`
+        );
+      }
+    } else if (replacementActivated) {
+      fs.rmSync(managedAppPath, { recursive: true, force: true });
+    }
+    throw error;
+  } finally {
+    fs.rmSync(stageRoot, { recursive: true, force: true });
+    if (replacementCompleted || !previousMoved) {
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  }
+}
+
+function validateMacAppBundle(appPath, label) {
+  const infoPlist = path.join(appPath, "Contents", "Info.plist");
+  const macOsDir = path.join(appPath, "Contents", "MacOS");
+  if (!fs.existsSync(infoPlist) || !fs.statSync(infoPlist).isFile()) {
+    throw new Error(`${label} ${TRITONAI_APP_DISPLAY_NAME} app is missing Contents/Info.plist.`);
+  }
+  if (!fs.existsSync(macOsDir) || !fs.statSync(macOsDir).isDirectory()) {
+    throw new Error(`${label} ${TRITONAI_APP_DISPLAY_NAME} app is missing Contents/MacOS.`);
+  }
+  const executables = fs.readdirSync(macOsDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.join(macOsDir, entry.name));
+  if (executables.length === 0) {
+    throw new Error(`${label} ${TRITONAI_APP_DISPLAY_NAME} app has no executable under Contents/MacOS.`);
+  }
+}
+
+async function installWindowsDesktop({
+  paths,
+  arch,
+  emit,
+  env,
+  resourcesPath,
+  appRoot,
+  packaged,
+  windowsInstallRuntime = {}
+}) {
+  const windowsRuntime = windowsInstallRuntime as WindowsInstallRuntime;
+  const bundledInstaller = getBundledWindowsInstaller({ arch, resourcesPath, appRoot });
   const downloadDir = path.join(paths.cacheDir, "t3code-desktop");
   fs.mkdirSync(downloadDir, { recursive: true });
 
   let installerPath;
+  let expectedVersion;
   if (bundledInstaller) {
     verifyDownload(bundledInstaller.installerPath, bundledInstaller.expected);
     installerPath = stageWindowsInstallerInCache(bundledInstaller.installerPath, downloadDir);
+    expectedVersion = bundledInstaller.version;
     verifyDownload(installerPath, bundledInstaller.expected);
     emit(`Using bundled ${TRITONAI_APP_DISPLAY_NAME} installer staged at ${installerPath}`);
+  } else if (packaged) {
+    throw new Error(`This packaged TritonAI Installer is missing a valid bundled ${TRITONAI_APP_DISPLAY_NAME} Windows installer.`);
   } else {
     const manifestText = await downloadText(`${WIN_RELEASE_BASE}/${WIN_MANIFEST_FILE}`);
     const manifest = parseLatestYml(manifestText);
     const selected = selectWindowsInstaller(manifest, arch);
     installerPath = path.join(downloadDir, selected.fileName);
+    expectedVersion = manifest.version;
     await download(`${WIN_RELEASE_BASE}/${selected.fileName}`, installerPath, emit);
     verifyDownload(installerPath, selected.expected);
   }
 
+  const normalizedExpectedVersion = normalizeWindowsAppVersion(expectedVersion);
+  if (!normalizedExpectedVersion) {
+    throw new Error(`${TRITONAI_APP_DISPLAY_NAME} Windows manifest has an invalid version: ${expectedVersion || "missing"}`);
+  }
+
   const expectedExecutableNames = windowsExecutableNamesForInstaller(installerPath);
   const existingAppPath = findWindowsT3CodeApp(paths.homeDir, { expectedExecutableNames });
+  const fingerprintReader = windowsRuntime.readWindowsAppFingerprint || readWindowsAppFingerprint;
+  const existingAppFingerprint = existingAppPath
+    ? await fingerprintReader(existingAppPath)
+    : null;
   if (existingAppPath) {
-    emit(`Found existing ${TRITONAI_APP_DISPLAY_NAME} compatible install.`);
-    return finishWindowsInstall({ paths, appPath: existingAppPath, emit });
+    emit(`Found existing ${TRITONAI_APP_DISPLAY_NAME} install; running the bundled installer to update or repair it.`);
   }
 
-  await unblockWindowsFile(installerPath, emit);
+  const unblock = windowsRuntime.unblockWindowsFile || unblockWindowsFile;
+  const installerRunner = windowsRuntime.runWindowsInstaller || runWindowsInstaller;
+  const appWaiter = windowsRuntime.waitForWindowsT3CodeApp || waitForWindowsT3CodeApp;
+  const versionReader = windowsRuntime.readWindowsAppVersion || readWindowsAppVersion;
+  const installFinisher = windowsRuntime.finishWindowsInstall || finishWindowsInstall;
+
+  await unblock(installerPath, emit);
   emit(`Running ${TRITONAI_APP_DISPLAY_NAME} Windows installer...`);
-  try {
-    await runWindowsInstaller(installerPath, ["/S"], emit, env);
-  } catch (error) {
-    emit(`${TRITONAI_APP_DISPLAY_NAME} installer launch reported a failure; checking whether it installed anyway: ${error.message}`);
-  }
+  await installerRunner(installerPath, ["/S"], emit, env);
 
-  const appPath = await waitForWindowsT3CodeApp(paths.homeDir, { expectedExecutableNames });
+  const appPath = await appWaiter(paths.homeDir, { expectedExecutableNames });
   if (!appPath) {
     throw new Error(`${TRITONAI_APP_DISPLAY_NAME} installer finished, but the app executable was not found in the current user's app folders.`);
   }
 
-  return finishWindowsInstall({ paths, appPath, emit });
+  const installedVersion = normalizeWindowsAppVersion(await versionReader(appPath, emit));
+  if (installedVersion !== normalizedExpectedVersion) {
+    throw new Error(
+      `${TRITONAI_APP_DISPLAY_NAME} installer did not install the bundled version ${normalizedExpectedVersion}; `
+      + `found ${installedVersion || "an unreadable version"} at ${appPath}.`
+    );
+  }
+
+  if (
+    existingAppPath
+    && path.resolve(existingAppPath).toLowerCase() === path.resolve(appPath).toLowerCase()
+    && existingAppFingerprint === await fingerprintReader(appPath)
+  ) {
+    throw new Error(
+      `${TRITONAI_APP_DISPLAY_NAME} installer reported success but did not replace or refresh the existing app executable.`
+    );
+  }
+
+  emit(`Verified ${TRITONAI_APP_DISPLAY_NAME} ${installedVersion} after the Windows installer completed.`);
+  return installFinisher({ paths, appPath, emit });
 }
 
 async function finishWindowsInstall({ paths, appPath, emit }) {
@@ -403,6 +545,25 @@ async function runWindowsInstaller(installerPath, args, emit, env) {
   ], emit, { env, shell: false });
 }
 
+async function readWindowsAppVersion(appPath, emit) {
+  const output = await runPowerShellCapture(
+    `[Diagnostics.FileVersionInfo]::GetVersionInfo('${escapePowerShellSingleQuoted(appPath)}').ProductVersion`,
+    emit
+  );
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).pop() || null;
+}
+
+function readWindowsAppFingerprint(appPath) {
+  const stat = fs.statSync(appPath);
+  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
+}
+
+function normalizeWindowsAppVersion(value) {
+  if (typeof value !== "string") return null;
+  const match = value.trim().replace(/^v/i, "").match(/^(\d+)\.(\d+)\.(\d+)(?:\D|$)/);
+  return match ? `${match[1]}.${match[2]}.${match[3]}` : null;
+}
+
 function stageWindowsInstallerInCache(source, downloadDir) {
   fs.mkdirSync(downloadDir, { recursive: true });
   const target = path.join(downloadDir, path.basename(source));
@@ -443,7 +604,7 @@ function getBundledWindowsInstaller(options: DesktopBundleOptions = {}) {
     const selected = selectWindowsInstaller(manifest, options.arch || process.arch);
     const installerPath = path.join(vendorDir, selected.fileName);
     if (fs.existsSync(installerPath)) {
-      return { manifestPath, installerPath, ...selected };
+      return { manifestPath, installerPath, version: manifest.version, ...selected };
     }
   }
 
@@ -831,6 +992,8 @@ function escapePowerShellSingleQuoted(value) {
 
 module.exports = {
   installT3CodeDesktop,
+  installWindowsDesktop,
+  replaceMacAppTransactionally,
   getBundledMacDmg,
   getBundledWindowsInstaller,
   parseLatestYml,
@@ -840,5 +1003,6 @@ module.exports = {
   getMacAppIconSource,
   buildWindowsDesktopShortcutScript,
   findWindowsT3CodeApp,
+  normalizeWindowsAppVersion,
   getManagedMacAppPath
 };

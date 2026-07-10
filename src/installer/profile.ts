@@ -8,18 +8,26 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
+function powerShellLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function buildWindowsEnvironmentLines({ apiKey, paths, pathEntries, tritonAiEnvironment }) {
+  return [
+    `$env:PATH = ${powerShellLiteral(`${pathEntries.join(";")};`)} + $env:PATH`,
+    ...Object.entries(tritonAiEnvironment).map(([name, value]) => `$env:${name} = ${powerShellLiteral(value)}`),
+    `$env:${UCSD.codexHomeEnv} = ${powerShellLiteral(paths.codexHome)}`,
+    apiKey ? `$env:${UCSD.apiKeyEnv} = ${powerShellLiteral(apiKey)}` : null
+  ].filter(Boolean);
+}
+
 async function saveEnvironment({ apiKey, paths, platform, nodeRuntime, emit }) {
   fs.mkdirSync(path.dirname(paths.envFile), { recursive: true });
   const pathEntries = [paths.binDir, paths.codexBinDir, paths.nodeGlobalBinDir, nodeRuntime && nodeRuntime.nodeBinDir].filter(Boolean);
   const tritonAiEnvironment = getTritonAiEnvironment(paths) as Record<string, string>;
 
   if (platform === "win32") {
-    const lines = [
-      `$env:PATH = "${pathEntries.join(";").replaceAll('"', '\\"')};$env:PATH"`,
-      ...Object.entries(tritonAiEnvironment).map(([name, value]) => `$env:${name} = "${value.replaceAll('"', '\\"')}"`),
-      `$env:${UCSD.codexHomeEnv} = "${paths.codexHome.replaceAll('"', '\\"')}"`,
-      apiKey ? `$env:${UCSD.apiKeyEnv} = "${apiKey.replaceAll('"', '\\"')}"` : null
-    ].filter(Boolean);
+    const lines = buildWindowsEnvironmentLines({ apiKey, paths, pathEntries, tritonAiEnvironment });
 
     fs.writeFileSync(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
 
@@ -141,4 +149,4 @@ function runPowerShell(command, description) {
   });
 }
 
-module.exports = { saveEnvironment };
+module.exports = { buildWindowsEnvironmentLines, powerShellLiteral, saveEnvironment };

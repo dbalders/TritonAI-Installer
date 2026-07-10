@@ -5,21 +5,16 @@ const path = require("path");
 const { execFileSync, spawnSync } = require("child_process");
 
 const root = path.resolve(__dirname, "..", "..");
-const defaultReleaseBase = process.env.UCSD_HARNESS_RELEASE_BASE
-  || process.env.UCSD_T3CODE_RELEASE_BASE
-  || "https://github.com/dbalders/TritonAI-Harness/releases/latest/download";
-const macReleaseBase = process.env.UCSD_HARNESS_MAC_RELEASE_BASE
-  || process.env.UCSD_T3CODE_MAC_RELEASE_BASE
-  || defaultReleaseBase;
-const winReleaseBase = process.env.UCSD_HARNESS_WIN_RELEASE_BASE
-  || process.env.UCSD_T3CODE_WIN_RELEASE_BASE
-  || defaultReleaseBase;
+const expectedHarnessVersion = process.env.UCSD_HARNESS_VERSION || "";
+const defaultReleaseBase = process.env.UCSD_HARNESS_RELEASE_BASE || "";
+const macReleaseBase = process.env.UCSD_HARNESS_MAC_RELEASE_BASE || defaultReleaseBase;
+const winReleaseBase = process.env.UCSD_HARNESS_WIN_RELEASE_BASE || defaultReleaseBase;
 const macManifestFile = "latest-mac.yml";
 const winManifestFile = "latest.yml";
-const desktopAssetPrefixPattern = "TritonAI-Harness";
 
 function main() {
-  const target = process.argv[2] || process.env.UCSD_T3CODE_VENDOR_TARGET || defaultTarget();
+  const target = process.argv[2] || process.env.UCSD_HARNESS_VENDOR_TARGET || defaultTarget();
+  assertExplicitHarnessSource({ expectedVersion: expectedHarnessVersion, macReleaseBase, winReleaseBase, target });
 
   if (target === "mac-arm64") {
     prepareMacVendor("arm64");
@@ -32,8 +27,7 @@ function main() {
   }
 
   if (target === "all") {
-    prepareMacVendor("arm64");
-    prepareWindowsVendor("x64");
+    prepareAllVendors();
     return;
   }
 
@@ -45,32 +39,156 @@ function defaultTarget() {
 }
 
 function prepareMacVendor(arch) {
-  const vendorDir = path.join(root, "vendor", "t3code-desktop", `mac-${arch}`);
-  const manifestPath = path.join(vendorDir, macManifestFile);
-  fs.mkdirSync(vendorDir, { recursive: true });
-  downloadManifest(`${macReleaseBase}/${macManifestFile}`, manifestPath);
+  const stage = stageMacVendor(arch);
+  try {
+    activateStagedVendors([stage]);
+    console.log(`Prepared ${path.relative(root, path.join(stage.vendorDir, stage.assetName))}`);
+  } finally {
+    fs.rmSync(stage.stagingDir, { recursive: true, force: true });
+  }
+}
 
-  const manifest = parseLatestYml(fs.readFileSync(manifestPath, "utf8"));
-  const selected = selectManifestFile(manifest, new RegExp(`-${arch}\\.dmg$`));
-  const dmgPath = path.join(vendorDir, selected.fileName);
-  downloadVerified(`${macReleaseBase}/${selected.fileName}`, dmgPath, selected.expected);
-  verifyDmgContainsApp(dmgPath);
-  removeMatchingFiles(vendorDir, /\.(?:dmg|zip|blockmap)$/i, new Set([selected.fileName]));
-  console.log(`Prepared ${path.relative(root, dmgPath)}`);
+function stageMacVendor(arch) {
+  const vendorDir = path.join(root, "vendor", "t3code-desktop", `mac-${arch}`);
+  const stagingDir = createSiblingTempDir(vendorDir, ".harness-mac-vendor-");
+  try {
+    const manifestPath = path.join(stagingDir, macManifestFile);
+    downloadManifest(`${macReleaseBase}/${macManifestFile}`, manifestPath);
+    const manifest = parseLatestYml(fs.readFileSync(manifestPath, "utf8"));
+    assertManifestVersion(manifest, expectedHarnessVersion, "macOS");
+    const expectedName = `TritonAI-Harness-${expectedHarnessVersion}-${arch}.dmg`;
+    const selected = selectManifestFile(manifest, new RegExp(`^${escapeRegExp(expectedName)}$`));
+    const dmgPath = path.join(stagingDir, selected.fileName);
+    downloadVerified(`${macReleaseBase}/${selected.fileName}`, dmgPath, selected.expected);
+    verifyDmgContainsApp(dmgPath);
+    return { stagingDir, vendorDir, version: manifest.version, assetName: selected.fileName };
+  } catch (error) {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function prepareWindowsVendor(arch) {
-  const vendorDir = path.join(root, "vendor", "t3code-desktop", `win-${arch}`);
-  const manifestPath = path.join(vendorDir, winManifestFile);
-  fs.mkdirSync(vendorDir, { recursive: true });
-  downloadManifest(`${winReleaseBase}/${winManifestFile}`, manifestPath);
+  const stage = stageWindowsVendor(arch);
+  try {
+    activateStagedVendors([stage]);
+    console.log(`Prepared ${path.relative(root, path.join(stage.vendorDir, stage.assetName))}`);
+  } finally {
+    fs.rmSync(stage.stagingDir, { recursive: true, force: true });
+  }
+}
 
-  const manifest = parseLatestYml(fs.readFileSync(manifestPath, "utf8"));
-  const selected = selectManifestFile(manifest, new RegExp(`-${arch}\\.exe$`));
-  const installerPath = path.join(vendorDir, selected.fileName);
-  downloadVerified(`${winReleaseBase}/${selected.fileName}`, installerPath, selected.expected);
-  removeMatchingFiles(vendorDir, /\.(?:exe|blockmap)$/i, new Set([selected.fileName]));
-  console.log(`Prepared ${path.relative(root, installerPath)}`);
+function stageWindowsVendor(arch) {
+  const vendorDir = path.join(root, "vendor", "t3code-desktop", `win-${arch}`);
+  const stagingDir = createSiblingTempDir(vendorDir, ".harness-win-vendor-");
+  try {
+    const manifestPath = path.join(stagingDir, winManifestFile);
+    downloadManifest(`${winReleaseBase}/${winManifestFile}`, manifestPath);
+    const manifest = parseLatestYml(fs.readFileSync(manifestPath, "utf8"));
+    assertManifestVersion(manifest, expectedHarnessVersion, "Windows");
+    const expectedName = `TritonAI-Harness-${expectedHarnessVersion}-${arch}.exe`;
+    const selected = selectManifestFile(manifest, new RegExp(`^${escapeRegExp(expectedName)}$`));
+    const installerPath = path.join(stagingDir, selected.fileName);
+    downloadVerified(`${winReleaseBase}/${selected.fileName}`, installerPath, selected.expected);
+    return { stagingDir, vendorDir, version: manifest.version, assetName: selected.fileName };
+  } catch (error) {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function prepareAllVendors() {
+  const stages = [];
+  try {
+    stages.push(stageMacVendor("arm64"));
+    stages.push(stageWindowsVendor("x64"));
+    assertMatchingManifestVersions(stages.map((stage) => stage.version));
+    activateStagedVendors(stages);
+    for (const stage of stages) {
+      console.log(`Prepared ${path.relative(root, path.join(stage.vendorDir, stage.assetName))}`);
+    }
+  } finally {
+    for (const stage of stages) {
+      fs.rmSync(stage.stagingDir, { recursive: true, force: true });
+    }
+  }
+}
+
+function assertExplicitHarnessSource({ expectedVersion, macReleaseBase, winReleaseBase, target }) {
+  if (!/^\d+\.\d+\.\d+$/.test(expectedVersion)) {
+    throw new Error("UCSD_HARNESS_VERSION must explicitly name the stable TritonAI Harness version to vendor.");
+  }
+  if (["mac-arm64", "all"].includes(target) && !macReleaseBase) {
+    throw new Error("Set UCSD_HARNESS_RELEASE_BASE or UCSD_HARNESS_MAC_RELEASE_BASE explicitly.");
+  }
+  if (["win-x64", "all"].includes(target) && !winReleaseBase) {
+    throw new Error("Set UCSD_HARNESS_RELEASE_BASE or UCSD_HARNESS_WIN_RELEASE_BASE explicitly.");
+  }
+}
+
+function assertManifestVersion(manifest, expectedVersion, platformLabel) {
+  if (manifest.version !== expectedVersion) {
+    throw new Error(`${platformLabel} TritonAI Harness manifest version ${manifest.version || "missing"} does not match expected ${expectedVersion}.`);
+  }
+}
+
+function assertMatchingManifestVersions(versions) {
+  const unique = [...new Set(versions.filter(Boolean))];
+  if (unique.length !== 1) {
+    throw new Error(`macOS and Windows TritonAI Harness manifest versions must match; found ${unique.join(", ") || "none"}.`);
+  }
+}
+
+function createSiblingTempDir(target, prefix) {
+  const parent = path.dirname(target);
+  fs.mkdirSync(parent, { recursive: true });
+  return fs.mkdtempSync(path.join(parent, prefix));
+}
+
+function activateStagedVendors(stages) {
+  const activated = [];
+  let completed = false;
+  try {
+    for (const stage of stages) {
+      const backupRoot = createSiblingTempDir(stage.vendorDir, ".harness-vendor-backup-");
+      const previous = path.join(backupRoot, path.basename(stage.vendorDir));
+      const record = { ...stage, backupRoot, previous, previousMoved: false };
+      activated.push(record);
+      if (fs.existsSync(stage.vendorDir)) {
+        fs.renameSync(stage.vendorDir, previous);
+        record.previousMoved = true;
+      }
+      fs.renameSync(stage.stagingDir, stage.vendorDir);
+    }
+    completed = true;
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const record of [...activated].reverse()) {
+      fs.rmSync(record.vendorDir, { recursive: true, force: true });
+      if (record.previousMoved) {
+        try {
+          fs.renameSync(record.previous, record.vendorDir);
+          record.previousMoved = false;
+        } catch (rollbackError) {
+          rollbackErrors.push(`${record.vendorDir}: ${rollbackError.message}; backup kept at ${record.previous}`);
+        }
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new Error(`${error.message} Vendor rollback failures: ${rollbackErrors.join("; ")}`);
+    }
+    throw error;
+  } finally {
+    for (const record of activated) {
+      if (completed || !record.previousMoved) {
+        fs.rmSync(record.backupRoot, { recursive: true, force: true });
+      }
+    }
+  }
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function downloadVerified(url, target, expected) {
@@ -231,4 +349,15 @@ function run(command, args) {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  activateStagedVendors,
+  assertExplicitHarnessSource,
+  assertMatchingManifestVersions,
+  assertManifestVersion,
+  parseLatestYml,
+  selectManifestFile
+};

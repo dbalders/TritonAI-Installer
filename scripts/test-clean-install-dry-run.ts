@@ -454,7 +454,13 @@ function assertCodexResourceLookupFallsBackFromUndefined() {
     fs.mkdirSync(path.join(codexVendorDir, "bin"), { recursive: true });
     fs.writeFileSync(path.join(codexVendorDir, "bin", "codex"), "#!/usr/bin/env sh\n");
     fs.mkdirSync(path.join(codexVendorDir, "lib", "node_modules", "@openai", "codex", "bin"), { recursive: true });
+    fs.mkdirSync(path.join(codexVendorDir, "lib", "node_modules", "@openai", "codex", "node_modules", "@openai", "codex-darwin-arm64"), { recursive: true });
     fs.writeFileSync(path.join(codexVendorDir, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"), "");
+    fs.writeFileSync(path.join(codexVendorDir, "manifest.json"), JSON.stringify({
+      name: "@openai/codex",
+      version: CODEX_CLI_VERSION,
+      target: "mac-arm64"
+    }));
 
     mutableProcess.resourcesPath = resourcesPath;
     assert.strictEqual(

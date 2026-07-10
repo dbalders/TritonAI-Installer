@@ -1,53 +1,84 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const {
+  assertReleaseMayBeUpdated,
+  assertReleaseSourceIdentity,
+  writeReleaseChecksumManifest
+} = require("./release-contract");
 
 const root = path.resolve(__dirname, "..", "..");
 const tag = process.argv[2];
-const releaseDir = path.join(root, "artifacts", "macos-release");
+const pkg = require(path.join(root, "package.json"));
 
 function main() {
   if (!tag) {
     throw new Error("Usage: npm run release:github -- v0.1.0");
   }
 
+  const sourceIdentity = assertReleaseSourceIdentity({
+    root,
+    tag,
+    version: pkg.version,
+    remoteTaggedCommit: getRemoteTagCommit(tag)
+  });
+  const releaseState = getReleaseState(tag);
+  assertReleaseMayBeUpdated(releaseState);
+  const contract = writeReleaseChecksumManifest({ root, version: pkg.version });
   const assets = [
-    ...files(".dmg"),
-    path.join(releaseDir, "SHA256SUMS.txt")
-  ].filter((file) => fs.existsSync(file));
+    ...contract.artifacts.map((entry) => entry.absolutePath),
+    contract.manifestPath
+  ];
 
-  if (assets.length === 0) {
-    throw new Error("No release assets found. Run npm run package:mac-release first.");
-  }
-
-  const exists = spawnSync("gh", ["release", "view", tag], {
-    cwd: root,
-    stdio: "ignore"
-  }).status === 0;
-
-  if (!exists) {
+  if (!releaseState) {
     run("gh", [
       "release",
       "create",
       tag,
       "--draft",
+      "--target",
+      sourceIdentity.head,
       "--title",
       `TritonAI Installer ${tag}`,
       "--notes",
-      "macOS Developer ID signed and notarized DMG."
+      "macOS and Windows TritonAI Installer artifacts."
     ]);
   }
 
-  run("gh", ["release", "upload", tag, ...assets, "--clobber"]);
+  run("gh", ["release", "upload", tag, ...assets]);
   console.log(`Uploaded ${assets.length} asset(s) to GitHub release ${tag}.`);
 }
 
-function files(extension) {
-  if (!fs.existsSync(releaseDir)) return [];
-  return fs.readdirSync(releaseDir)
-    .filter((entry) => entry.endsWith(extension))
-    .map((entry) => path.join(releaseDir, entry))
-    .sort();
+function getRemoteTagCommit(releaseTag) {
+  const result = spawnSync("git", [
+    "ls-remote",
+    "--tags",
+    "origin",
+    `refs/tags/${releaseTag}`,
+    `refs/tags/${releaseTag}^{}`
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`Could not inspect remote release tag ${releaseTag}: ${String(result.stderr || "").trim()}`);
+  }
+  const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean);
+  const peeled = lines.find((line) => line.endsWith(`refs/tags/${releaseTag}^{}`));
+  const direct = lines.find((line) => line.endsWith(`refs/tags/${releaseTag}`));
+  return (peeled || direct || "").split(/\s+/)[0] || null;
+}
+
+function getReleaseState(releaseTag) {
+  const result = spawnSync("gh", ["release", "view", releaseTag, "--json", "isDraft"], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (result.status !== 0) return null;
+  return JSON.parse(result.stdout);
 }
 
 function run(command, args) {
@@ -58,4 +89,6 @@ function run(command, args) {
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { getRemoteTagCommit };
