@@ -494,11 +494,18 @@ function getCodexBinaryPath(paths) {
   return path.join(paths.codexBinDir, paths.platform === "win32" ? "codex.cmd" : "codex");
 }
 
-function getCodexModelSlugs(paths = {}) {
+function getCodexModelSlugs(paths) {
   return Object.keys(getCodexModels(paths));
 }
 
-function getCodexModels(paths = {}) {
+function getCodexModels(paths) {
+  if (paths.externalModelsEnabled === false) {
+    // Key capability is an upper bound: a packaged operator catalog cannot
+    // grant models that the installed key cannot access.
+    return {
+      [UCSD.codexModel]: UCSD.codexModels[UCSD.codexModel]
+    };
+  }
   return UCSD.codexModels;
 }
 

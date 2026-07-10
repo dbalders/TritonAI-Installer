@@ -5,6 +5,20 @@ const { defaultAppRoot } = require("./app-root");
 const MANAGED_CONFIG_FILE = "managed-config.json";
 const DEFAULT_BASE_URL = "https://example.invalid/v1";
 const DEFAULT_CODEX_MODEL = "deepseek-v4-flash";
+const DEFAULT_CODEX_MODELS = {
+  [DEFAULT_CODEX_MODEL]: {
+    id: DEFAULT_CODEX_MODEL,
+    name: "DeepSeek v4 Flash"
+  },
+  "gpt-5.5": {
+    id: "gpt-5.5",
+    name: "GPT-5.5"
+  },
+  "claude-opus-4-8": {
+    id: "claude-opus-4-8",
+    name: "Claude Opus 4.8"
+  }
+};
 
 let cachedManagedConfig = null;
 
@@ -94,13 +108,28 @@ function normalizeManagedConfig(config) {
 
 function normalizeCodexModels(codexModels, codexModel) {
   if (codexModels && typeof codexModels === "object" && !Array.isArray(codexModels)) {
+    // An explicit managed catalog is an operator policy override. Preserve it
+    // exactly; key capability gating may narrow this catalog but must not add
+    // models that the packaged policy intentionally omitted.
+    if (!Object.prototype.hasOwnProperty.call(codexModels, codexModel)) {
+      throw new Error(`Managed config codexModels must include the configured default model: ${codexModel}`);
+    }
     return codexModels;
   }
+  if (codexModel === DEFAULT_CODEX_MODEL) {
+    return DEFAULT_CODEX_MODELS;
+  }
+  const customEntry = Object.prototype.hasOwnProperty.call(DEFAULT_CODEX_MODELS, codexModel)
+    ? {}
+    : {
+        [codexModel]: {
+          id: codexModel,
+          name: codexModel
+        }
+      };
   return {
-    [codexModel]: {
-      id: codexModel,
-      name: "DeepSeek v4 Flash"
-    }
+    ...DEFAULT_CODEX_MODELS,
+    ...customEntry
   };
 }
 
