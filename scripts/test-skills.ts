@@ -17,14 +17,52 @@ const {
 
 function main() {
   assertRootSecureRepositoryStaging();
+  assertVendorActivationFailureRestoresPreviousBundle();
   assertRepositoryUrlSanitization();
   assertPreservesUnownedAndMigratesLegacyManifest();
   assertPreservesUnrecognizedRootManifest();
   assertManagedUpdatesAndRemovals();
   assertRejectsUnownedCollisions();
   assertStageFailurePreservesPreviousInstall();
+  assertTransactionFailureRestoresPreviousInstallAndCleansBackup();
   assertRejectsInvalidBundles();
   console.log("Managed secure skills tests passed.");
+}
+
+function assertVendorActivationFailureRestoresPreviousBundle() {
+  withTempRoot("tritonai-secure-vendor-swap-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "skills");
+    writeSkill(path.join(sourceRoot, "secure-new"), "secure-new", "new-v1");
+    writeVendor(vendorDir, { "secure-existing": "existing-v1" });
+    const manifestBefore = fs.readFileSync(path.join(vendorDir, "manifest.json"), "utf8");
+    const originalRenameSync = fs.renameSync;
+    let activationFailed = false;
+
+    fs.renameSync = (source, target) => {
+      if (!activationFailed && target === vendorDir && path.basename(source).startsWith(".secure-skills-vendor-")) {
+        activationFailed = true;
+        throw new Error("simulated vendor activation failure");
+      }
+      return originalRenameSync(source, target);
+    };
+    try {
+      assert.throws(
+        () => stageSkillsFromSource({ sourceRoot, vendorDir }),
+        /simulated vendor activation failure/
+      );
+    } finally {
+      fs.renameSync = originalRenameSync;
+    }
+
+    assertSkillVersion(vendorDir, "secure-existing", "existing-v1");
+    assert(!fs.existsSync(path.join(vendorDir, "secure-new")));
+    assert.strictEqual(fs.readFileSync(path.join(vendorDir, "manifest.json"), "utf8"), manifestBefore);
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(vendorDir)).filter((name) => name.startsWith(".secure-skills-vendor-backup-")),
+      []
+    );
+  });
 }
 
 function assertRepositoryUrlSanitization() {
@@ -217,6 +255,48 @@ function assertStageFailurePreservesPreviousInstall() {
     assert.strictEqual(
       fs.readFileSync(path.join(fixture.skillsDir, MANAGED_SKILLS_MANIFEST_FILE), "utf8"),
       manifestBefore
+    );
+  });
+}
+
+function assertTransactionFailureRestoresPreviousInstallAndCleansBackup() {
+  withInstallFixture((fixture) => {
+    writeVendor(fixture.vendorDir, { "secure-review": "secure-v1" });
+    installFixture(fixture);
+    const manifestBefore = fs.readFileSync(path.join(fixture.skillsDir, MANAGED_SKILLS_MANIFEST_FILE), "utf8");
+
+    writeVendor(fixture.vendorDir, { "secure-review": "secure-v2" });
+    const originalRenameSync = fs.renameSync;
+    let activationFailed = false;
+    fs.renameSync = (source, target) => {
+      if (
+        !activationFailed
+        && target === path.join(fixture.skillsDir, "secure-review")
+        && source.includes(".tritonai-secure-skills-stage-")
+      ) {
+        activationFailed = true;
+        throw new Error("simulated managed skill activation failure");
+      }
+      return originalRenameSync(source, target);
+    };
+    try {
+      assert.throws(
+        () => installFixture(fixture),
+        /simulated managed skill activation failure/
+      );
+    } finally {
+      fs.renameSync = originalRenameSync;
+    }
+
+    assertSkillVersion(fixture.skillsDir, "secure-review", "secure-v1");
+    assert.strictEqual(
+      fs.readFileSync(path.join(fixture.skillsDir, MANAGED_SKILLS_MANIFEST_FILE), "utf8"),
+      manifestBefore
+    );
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(fixture.skillsDir))
+        .filter((name) => name.startsWith(".tritonai-secure-skills-backup-")),
+      []
     );
   });
 }
