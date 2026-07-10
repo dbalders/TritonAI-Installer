@@ -3,6 +3,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const { UCSD } = require("./constants");
 const { getTritonAiEnvironment } = require("./codex-environment");
+const { readApiKeyFromEnvFile } = require("./existing-api-key");
 
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -12,103 +13,60 @@ function powerShellLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function buildWindowsEnvironmentLines({ apiKey, paths, pathEntries, tritonAiEnvironment }) {
+function buildWindowsEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment }) {
   return [
     `$env:PATH = ${powerShellLiteral(`${pathEntries.join(";")};`)} + $env:PATH`,
     ...Object.entries(tritonAiEnvironment).map(([name, value]) => `$env:${name} = ${powerShellLiteral(value)}`),
-    `$env:${UCSD.codexHomeEnv} = ${powerShellLiteral(paths.codexHome)}`,
     apiKey ? `$env:${UCSD.apiKeyEnv} = ${powerShellLiteral(apiKey)}` : null
   ].filter(Boolean);
 }
 
-async function saveEnvironment({ apiKey, paths, platform, nodeRuntime, emit }) {
-  fs.mkdirSync(path.dirname(paths.envFile), { recursive: true });
-  const pathEntries = [paths.binDir, paths.codexBinDir, paths.nodeGlobalBinDir, nodeRuntime && nodeRuntime.nodeBinDir].filter(Boolean);
-  const tritonAiEnvironment = getTritonAiEnvironment(paths) as Record<string, string>;
-
-  if (platform === "win32") {
-    const lines = buildWindowsEnvironmentLines({ apiKey, paths, pathEntries, tritonAiEnvironment });
-
-    fs.writeFileSync(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
-
-    for (const [name, value] of Object.entries(tritonAiEnvironment)) {
-      await setWindowsEnv(name, value);
-    }
-    await setWindowsEnv(UCSD.codexHomeEnv, paths.codexHome);
-    await updateWindowsPath(pathEntries);
-    if (apiKey) {
-      await setWindowsEnv(UCSD.apiKeyEnv, apiKey);
-    }
-    Object.assign(process.env, tritonAiEnvironment);
-    process.env[UCSD.codexHomeEnv] = paths.codexHome;
-    process.env.PATH = `${pathEntries.join(";")};${process.env.PATH || ""}`;
-    if (apiKey) {
-      process.env[UCSD.apiKeyEnv] = apiKey;
-    }
-    await broadcastWindowsEnvironmentChange(emit);
-
-    emit(`Saved user environment variables and ${paths.envFile}`);
-    return;
-  }
-
-  const lines = [
+function buildMacEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment }) {
+  return [
     `export PATH=${shellQuote(pathEntries.join(":"))}:$PATH`,
     ...Object.entries(tritonAiEnvironment).map(([name, value]) => `export ${name}=${shellQuote(value)}`),
-    `export ${UCSD.codexHomeEnv}=${shellQuote(paths.codexHome)}`,
     apiKey ? `export ${UCSD.apiKeyEnv}=${shellQuote(apiKey)}` : null
   ].filter(Boolean);
-
-  fs.writeFileSync(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
-  updateShellProfile(paths.homeDir, paths.envFile);
-  emit(`Saved shell environment file at ${paths.envFile}`);
 }
 
-function updateShellProfile(homeDir, envFile) {
-  const profile = process.env.SHELL && process.env.SHELL.includes("bash")
-    ? path.join(homeDir, ".bashrc")
-    : path.join(homeDir, ".zshrc");
-  const marker = "# TritonAI environment";
-  const line = `[ -f "${envFile}" ] && source "${envFile}"`;
-  const block = `${marker}\n${line}`;
-  const existing = fs.existsSync(profile) ? fs.readFileSync(profile, "utf8") : "";
+function buildWindowsEnvironmentCleanupScript({ apiKey, legacyApiKey, paths, pathEntries, tritonAiEnvironment }) {
+  const managedApiKeys = [...new Set([apiKey, legacyApiKey].filter(Boolean))];
+  const managedValues = [
+    ...Object.entries(tritonAiEnvironment),
+    [UCSD.codexHomeEnv, paths.codexHome],
+    ...managedApiKeys.map((value) => [UCSD.apiKeyEnv, value])
+  ];
+  const valueEntries = managedValues
+    .map(([name, value]) => `  [pscustomobject]@{ Name = ${powerShellLiteral(name)}; Value = ${powerShellLiteral(value)} }`)
+    .join(",\n");
+  const managedPaths = pathEntries.map((entry) => powerShellLiteral(entry)).join(", ");
 
-  if (!existing.includes(marker) && !existing.includes(line)) {
-    fs.appendFileSync(profile, `${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}${block}\n`);
+  return `
+$changed = $false
+$managedValues = @(
+${valueEntries}
+)
+foreach ($item in $managedValues) {
+  $current = [Environment]::GetEnvironmentVariable($item.Name, 'User')
+  if ($null -ne $current -and $current -ceq $item.Value) {
+    [Environment]::SetEnvironmentVariable($item.Name, $null, 'User')
+    $changed = $true
   }
 }
 
-function setWindowsEnv(name, value) {
-  return new Promise<void>((resolve, reject) => {
-    const escaped = String(value).replaceAll("'", "''");
-    const command = `[Environment]::SetEnvironmentVariable('${name}', '${escaped}', 'User')`;
-    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
-      windowsHide: true
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`PowerShell exited with code ${code} while setting ${name}`));
-    });
-  });
+$currentPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($currentPath) {
+  $managedPaths = @(${managedPaths})
+  $keptPaths = @($currentPath -split ';' | Where-Object { $_ -and $managedPaths -notcontains $_ })
+  $updatedPath = $keptPaths -join ';'
+  if ($updatedPath -cne $currentPath) {
+    [Environment]::SetEnvironmentVariable('Path', $updatedPath, 'User')
+    $changed = $true
+  }
 }
 
-async function updateWindowsPath(pathEntries) {
-  const escapedEntries = pathEntries.map((entry) => entry.replaceAll("'", "''"));
-  const command = `
-$current = [Environment]::GetEnvironmentVariable('Path', 'User')
-$parts = @()
-if ($current) { $parts = $current -split ';' }
-foreach ($entry in @('${escapedEntries.join("','")}')) {
-  if ($parts -notcontains $entry) { $parts = @($entry) + $parts }
-}
-[Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User')
-`;
-  await runPowerShell(command, "updating user PATH");
-}
-
-async function broadcastWindowsEnvironmentChange(emit: InstallerEmit = () => {}) {
-  const command = `
-$signature = @'
+if ($changed) {
+  $signature = @'
 using System;
 using System.Runtime.InteropServices;
 
@@ -124,21 +82,71 @@ public static class NativeMethods {
     out UIntPtr lpdwResult);
 }
 '@
-Add-Type -TypeDefinition $signature -ErrorAction SilentlyContinue
-$result = [UIntPtr]::Zero
-[NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result) | Out-Null
+  Add-Type -TypeDefinition $signature -ErrorAction SilentlyContinue
+  $result = [UIntPtr]::Zero
+  [NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result) | Out-Null
+}
 `;
+}
 
-  try {
-    await runPowerShell(command, "broadcasting environment update");
-  } catch (error) {
-    emit(`Could not broadcast Windows environment update; new apps may need a sign out/in before seeing env changes: ${error.message}`);
+async function saveEnvironment({ apiKey, paths, platform, nodeRuntime, emit }) {
+  fs.mkdirSync(path.dirname(paths.envFile), { recursive: true });
+  const pathEntries = [paths.binDir, paths.codexBinDir, paths.nodeGlobalBinDir, nodeRuntime && nodeRuntime.nodeBinDir].filter(Boolean);
+  const tritonAiEnvironment = getTritonAiEnvironment(paths) as Record<string, string>;
+
+  if (platform === "win32") {
+    if (process.platform === "win32") {
+      const legacyApiKey = readApiKeyFromEnvFile(paths.envFile);
+      const cleanupScript = buildWindowsEnvironmentCleanupScript({ apiKey, legacyApiKey, paths, pathEntries, tritonAiEnvironment });
+      await runPowerShell(cleanupScript, "removing legacy TritonAI user environment variables");
+    }
+    const lines = buildWindowsEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment });
+
+    fs.writeFileSync(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
+    emit(`Saved private TritonAI Harness environment at ${paths.envFile}`);
+    return;
+  }
+
+  removeLegacyShellProfileIntegration(paths.homeDir, paths.envFile);
+  const lines = buildMacEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment });
+
+  fs.writeFileSync(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
+  emit(`Saved private TritonAI Harness environment at ${paths.envFile}`);
+}
+
+function removeLegacyShellProfileIntegration(homeDir, envFile) {
+  const marker = "# TritonAI environment";
+  const sourceLine = `[ -f "${envFile}" ] && source "${envFile}"`;
+
+  for (const profileName of [".zshrc", ".bashrc"]) {
+    const profile = path.join(homeDir, profileName);
+    if (!fs.existsSync(profile)) continue;
+
+    const existing = fs.readFileSync(profile, "utf8");
+    const newline = existing.includes("\r\n") ? "\r\n" : "\n";
+    const lines = existing.split(/\r?\n/);
+    const kept = [];
+
+    for (let index = 0; index < lines.length; index += 1) {
+      if (lines[index] === marker && lines[index + 1] === sourceLine) {
+        index += 1;
+        continue;
+      }
+      if (lines[index] === sourceLine) continue;
+      kept.push(lines[index]);
+    }
+
+    const updated = kept.join(newline);
+    if (updated !== existing) {
+      fs.writeFileSync(profile, updated);
+    }
   }
 }
 
 function runPowerShell(command, description) {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
+    const encodedCommand = Buffer.from(command, "utf16le").toString("base64");
+    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand], {
       windowsHide: true
     });
     child.on("error", reject);
@@ -149,4 +157,11 @@ function runPowerShell(command, description) {
   });
 }
 
-module.exports = { buildWindowsEnvironmentLines, powerShellLiteral, saveEnvironment };
+module.exports = {
+  buildMacEnvironmentLines,
+  buildWindowsEnvironmentCleanupScript,
+  buildWindowsEnvironmentLines,
+  powerShellLiteral,
+  removeLegacyShellProfileIntegration,
+  saveEnvironment
+};
