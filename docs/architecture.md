@@ -11,7 +11,7 @@ flowchart TD
   A["Welcome"] --> B["Enter UCSD API key"]
   B --> V["Verify TritonAI connection"]
   B -->|"Open docs"| D["API key documentation"]
-  V --> C["Save user env"]
+  V --> C["Save private Harness env"]
   D --> B
   C --> E["T3 setup"]
   E --> S["Install bundled managed secure skills"]
@@ -39,7 +39,7 @@ flowchart TD
 - `installer/codex-vendor`: finds the packaged Codex CLI payload and copies it into the managed runtime prefix.
 - `installer/tool-manifest`: TritonAI Harness metadata and the pinned Codex CLI backend fallback install command for unpackaged development runs.
 - `installer/config-writers`: Codex provider settings and default selection enforcement.
-- `installer/profile`: user environment variable setup.
+- `installer/profile`: private environment file used only by the TritonAI Harness launcher. Fresh installs do not modify shell profiles or Windows user variables; upgrades remove only exact legacy hooks and values previously written by this Installer.
 - `scripts`: TypeScript source for validation, tests, vendoring, packaging, and release helpers; emitted under `dist/scripts` before execution.
 
 ## UCSD Managed Defaults
@@ -52,7 +52,7 @@ flowchart TD
 - Secure ownership: the vendor and runtime manifests use `{ "version": 1, "kind": "tritonai-secure", "skills": ["..."] }`. The runtime manifest lives at `~/.tritonai-harness/codex/skills/.tritonai-managed-skills.json`. Reinstall replaces/removes only names in the previous runtime manifest, preserves all unowned folders, and refuses unowned collisions.
 - Secure update safety: all incoming skills and `SKILL.md` files are validated and copied to a same-filesystem staging directory before existing managed directories are moved. A failed staging or activation step leaves or restores the prior managed bundle.
 - Runtime: pinned Node.js `v22.22.2` downloaded under `~/.agents/ucsd/runtime`
-- Codex runtime: pinned `@openai/codex@0.141.0` staged into `vendor/codex-cli/mac-arm64` and `vendor/codex-cli/win-x64`, then copied under `~/.agents/ucsd/runtime/codex/openai-codex-0.141.0`; TritonAI Harness settings reference it explicitly instead of relying on `PATH`.
+- Codex runtime: pinned `@openai/codex@0.141.0` staged into `vendor/codex-cli/mac-arm64` and `vendor/codex-cli/win-x64`, then copied under `~/.agents/ucsd/runtime/codex/openai-codex-0.141.0`; TritonAI Harness settings reference it explicitly instead of relying on the user's `PATH`. The launcher scopes its private runtime environment to Harness and leaves the user's normal Codex configuration untouched.
 - Default policy posture: local user control with UCSD routing, logs directory, and deny guidance around secrets.
 
 ## Release Work Still Needed

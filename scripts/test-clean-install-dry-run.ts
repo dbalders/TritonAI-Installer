@@ -25,12 +25,18 @@ const {
   selectWindowsInstaller,
   macInfoPlist,
   getMacAppIconSource,
+  buildMacLauncherScript,
+  buildWindowsEnvironmentScript,
   buildWindowsDesktopShortcutScript,
   getBundledMacDmg,
   getBundledWindowsInstaller,
   findWindowsT3CodeApp,
   getManagedMacAppPath
 } = require("../src/installer/t3code-desktop");
+const {
+  buildWindowsEnvironmentCleanupScript,
+  saveEnvironment
+} = require("../src/installer/profile");
 const {
   getTritonAiEnvironment,
   getCodexProviderEnvironmentVariables
@@ -92,6 +98,7 @@ async function main() {
   assertPackagedResourceLookupFallsBackFromUndefined();
   assertCodexResourceLookupFallsBackFromUndefined();
   assertCodexVendorLayoutNormalization();
+  await assertEnvironmentIsHarnessScoped();
   assertDesktopArtifactHelpers();
   assertWindowsT3CodeAppDetection();
   assertWindowsShortcutTargetsApp();
@@ -132,6 +139,70 @@ async function main() {
     });
   }
   console.log("Clean install dry run passed.");
+}
+
+async function assertEnvironmentIsHarnessScoped() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-environment-"));
+  const originalPath = process.env.PATH;
+  const originalCodexHome = process.env.CODEX_HOME;
+  const originalTritonAiHome = process.env.TRITONAI_HOME;
+
+  try {
+    const zshrc = path.join(tempRoot, ".zshrc");
+    const bashrc = path.join(tempRoot, ".bashrc");
+    fs.writeFileSync(zshrc, `# user zsh config
+# TritonAI environment
+[ -f "${getPaths(tempRoot, "darwin").envFile}" ] && source "${getPaths(tempRoot, "darwin").envFile}"
+`);
+    fs.writeFileSync(bashrc, "# user bash config\n");
+
+    const macPaths = getPaths(tempRoot, "darwin");
+    const macRuntime = getNodeRuntimePaths(macPaths, "darwin", process.arch);
+    await saveEnvironment({ apiKey: "private-key", paths: macPaths, platform: "darwin", nodeRuntime: macRuntime, emit: () => {} });
+
+    const macEnvironment = fs.readFileSync(macPaths.envFile, "utf8");
+    assert(macEnvironment.includes("TRITONAI_API_KEY"));
+    assert(macEnvironment.includes(macPaths.codexBinDir));
+    assert(!macEnvironment.includes("CODEX_HOME"), "macOS private environment must not export CODEX_HOME");
+    assert.strictEqual(fs.readFileSync(zshrc, "utf8"), "# user zsh config\n");
+    assert.strictEqual(fs.readFileSync(bashrc, "utf8"), "# user bash config\n");
+
+    const macLauncher = buildMacLauncherScript(macPaths, macRuntime.nodeBinary, getManagedMacAppPath(macPaths));
+    assert(macLauncher.includes(macPaths.envFile));
+    assert(!macLauncher.includes("CODEX_HOME"), "macOS launcher must leave Codex home selection to Harness child processes");
+
+    const winPaths = getPaths(tempRoot, "win32");
+    const winRuntime = getNodeRuntimePaths(winPaths, "win32", "x64");
+    await saveEnvironment({ apiKey: "private-key", paths: winPaths, platform: "win32", nodeRuntime: winRuntime, emit: () => {} });
+
+    const windowsEnvironment = fs.readFileSync(winPaths.envFile, "utf8");
+    assert(windowsEnvironment.includes("TRITONAI_API_KEY"));
+    assert(windowsEnvironment.includes(winPaths.codexBinDir));
+    assert(!windowsEnvironment.includes("CODEX_HOME"), "Windows private environment must not export CODEX_HOME");
+
+    const previousTestValue = ["previous", "test", "value"].join("-");
+    const cleanupScript = buildWindowsEnvironmentCleanupScript({
+      apiKey: "private-key",
+      legacyApiKey: previousTestValue,
+      paths: winPaths,
+      pathEntries: [winPaths.binDir, winPaths.codexBinDir, winPaths.nodeGlobalBinDir, winRuntime.nodeBinDir],
+      tritonAiEnvironment: getTritonAiEnvironment(winPaths)
+    });
+    assert(cleanupScript.includes("$current -ceq $item.Value"), "Windows cleanup must remove only exact Installer-owned values");
+    assert(cleanupScript.includes("$managedPaths -notcontains $_"), "Windows cleanup must preserve unrelated user PATH entries");
+    assert(cleanupScript.includes(winPaths.codexHome));
+    assert(cleanupScript.includes(previousTestValue), "Windows cleanup must remove the API key recorded by the prior Installer");
+
+    const windowsLauncher = buildWindowsEnvironmentScript(winPaths);
+    assert(windowsLauncher.includes(winPaths.envFile));
+    assert(!windowsLauncher.includes("CODEX_HOME"), "Windows launcher must leave Codex home selection to Harness child processes");
+
+    assert.strictEqual(process.env.PATH, originalPath, "saving private environment must not mutate process PATH");
+    assert.strictEqual(process.env.CODEX_HOME, originalCodexHome, "saving private environment must not mutate process CODEX_HOME");
+    assert.strictEqual(process.env.TRITONAI_HOME, originalTritonAiHome, "saving private environment must not mutate process TRITONAI_HOME");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertManagedModelDefaultsUseNonMaxDeepSeek() {

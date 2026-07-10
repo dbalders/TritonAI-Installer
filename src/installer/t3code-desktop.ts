@@ -311,14 +311,22 @@ function writeMacAppLauncher(paths, emit, arch) {
       ? MAC_LAUNCHER_ICON_FILE
       : null;
     fs.writeFileSync(path.join(contentsDir, "Info.plist"), macInfoPlist(iconFile));
-    fs.writeFileSync(executablePath, `#!/usr/bin/env sh
+    fs.writeFileSync(executablePath, buildMacLauncherScript(paths, nodeBinary, managedAppPath), { mode: 0o755 });
+    return MAC_TRITONAI_APP_PATH;
+  } catch (error) {
+    emit(`Could not create ${TRITONAI_LAUNCHER_NAME} launcher app: ${error.message}`);
+    return null;
+  }
+}
+
+function buildMacLauncherScript(paths, nodeBinary, managedAppPath) {
+  return `#!/usr/bin/env sh
 set -eu
 if [ -f "${paths.envFile}" ]; then
   # shellcheck disable=SC1090
   . "${paths.envFile}"
 fi
 export TRITONAI_HOME="${paths.t3Home}"
-export CODEX_HOME="${paths.codexHome}"
 if [ -x "${nodeBinary}" ] && [ -f "${paths.t3DefaultsPatcher}" ]; then
   "${nodeBinary}" "${paths.t3DefaultsPatcher}" >/dev/null 2>&1 || true
 elif [ -f "${paths.t3DefaultsPatcher}" ]; then
@@ -327,12 +335,7 @@ fi
 APP_PATH="${managedAppPath}"
 APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist")
 exec "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE" "$@"
-`, { mode: 0o755 });
-    return MAC_TRITONAI_APP_PATH;
-  } catch (error) {
-    emit(`Could not create ${TRITONAI_LAUNCHER_NAME} launcher app: ${error.message}`);
-    return null;
-  }
+`;
 }
 
 function getManagedMacAppPath(paths) {
@@ -424,7 +427,6 @@ if (Test-Path '${escapePowerShellSingleQuoted(paths.envFile)}') {
   . '${escapePowerShellSingleQuoted(paths.envFile)}'
 }
 $env:TRITONAI_HOME = '${escapePowerShellSingleQuoted(paths.t3Home)}'
-$env:CODEX_HOME = '${escapePowerShellSingleQuoted(paths.codexHome)}'
 `;
 }
 
@@ -959,6 +961,8 @@ module.exports = {
   selectWindowsInstaller,
   macInfoPlist,
   getMacAppIconSource,
+  buildMacLauncherScript,
+  buildWindowsEnvironmentScript,
   buildWindowsDesktopShortcutScript,
   findWindowsT3CodeApp,
   normalizeWindowsAppVersion,

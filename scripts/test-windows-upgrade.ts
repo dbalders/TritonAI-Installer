@@ -200,13 +200,13 @@ function assertPowerShellEnvironmentUsesLiteralQuoting() {
   assert.strictEqual(powerShellLiteral(hostile), "'C:\\Users\\O''Brien\\$cache`value\"quoted'");
   const lines = buildWindowsEnvironmentLines({
     apiKey: "key'$`\"value",
-    paths: { codexHome: hostile },
     pathEntries: [hostile],
     tritonAiEnvironment: { OPENAI_BASE_URL: "https://example.invalid/$v`1?'x=\"y\"" }
   });
   assert(lines.every((line) => !line.includes(' = "')), "generated assignments must not use interpolating double-quoted PowerShell literals");
   assert(lines.some((line) => line.includes("O''Brien")));
   assert(lines.some((line) => line.includes("key''$`\"value")));
+  assert(lines.every((line) => !line.includes("CODEX_HOME")), "private launcher environment must not export CODEX_HOME");
   assert(lines[0].endsWith(" + $env:PATH"));
 }
 

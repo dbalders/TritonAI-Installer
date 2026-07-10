@@ -40,6 +40,7 @@ This creates a temp home directory, strips PATH down to OS basics, downloads the
 - Private Node/npm bootstrap regressions.
 - Regressions where TritonAI Harness keeps a stale legacy provider-status cache.
 - Regressions where the installer uses a random system `codex` instead of the managed UCSD Codex path.
+- Regressions where the installer exports its managed `PATH` or `CODEX_HOME` through shell profiles, Windows user variables, or its own process environment, including upgrades from the legacy global environment behavior.
 - Regressions where the managed Codex backend is missing, stale, copied from the wrong packaged payload, or falls back to npm without the package-age cutoff.
 - Regressions where Installer upgrades overwrite public/user skills, retain retired managed secure skills, accept malformed manifests, or lose the prior secure bundle after a staged copy failure.
 
