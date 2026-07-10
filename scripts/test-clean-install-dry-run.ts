@@ -454,7 +454,13 @@ function assertCodexResourceLookupFallsBackFromUndefined() {
     fs.mkdirSync(path.join(codexVendorDir, "bin"), { recursive: true });
     fs.writeFileSync(path.join(codexVendorDir, "bin", "codex"), "#!/usr/bin/env sh\n");
     fs.mkdirSync(path.join(codexVendorDir, "lib", "node_modules", "@openai", "codex", "bin"), { recursive: true });
+    fs.mkdirSync(path.join(codexVendorDir, "lib", "node_modules", "@openai", "codex", "node_modules", "@openai", "codex-darwin-arm64"), { recursive: true });
     fs.writeFileSync(path.join(codexVendorDir, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"), "");
+    fs.writeFileSync(path.join(codexVendorDir, "manifest.json"), JSON.stringify({
+      name: "@openai/codex",
+      version: CODEX_CLI_VERSION,
+      target: "mac-arm64"
+    }));
 
     mutableProcess.resourcesPath = resourcesPath;
     assert.strictEqual(
@@ -502,6 +508,23 @@ function assertWindowsT3CodeAppDetection() {
     fs.mkdirSync(path.dirname(harnessApp), { recursive: true });
     fs.writeFileSync(harnessApp, "");
     assert.strictEqual(findWindowsT3CodeApp(tempRoot), harnessApp);
+
+    const releaseChannelHome = path.join(tempRoot, "release-channel-home");
+    const releaseChannelApp = path.join(
+      releaseChannelHome,
+      "AppData",
+      "Local",
+      "Programs",
+      "TritonAI Harness (Preview)",
+      "TritonAI Harness (Preview).exe"
+    );
+    fs.mkdirSync(path.dirname(releaseChannelApp), { recursive: true });
+    fs.writeFileSync(releaseChannelApp, "");
+    assert.strictEqual(
+      findWindowsT3CodeApp(releaseChannelHome),
+      null,
+      "only the canonical TritonAI Harness executable name may satisfy installation detection"
+    );
 
     const protectedDir = path.join(tempRoot, "Program Files", "Windows Defender Advanced Threat Protection", "Classification", "Configuration");
     fs.mkdirSync(protectedDir, { recursive: true });
@@ -682,6 +705,11 @@ async function runDryRun(platform, options) {
     assert(onboardingReadme.includes(paths.codexHome));
 
     const expectedTritonAiEnvironment = getTritonAiEnvironment(paths);
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(expectedTritonAiEnvironment, "T3CODE_HOME"),
+      false,
+      "the legacy T3CODE_HOME runtime alias must not be emitted"
+    );
     const expectedProviderEnvironmentVariables = getCodexProviderEnvironmentVariables({
       ...paths,
       tritonAiApiKey: "test-key"
@@ -1057,6 +1085,16 @@ files:
 `);
   assert.strictEqual(t3MacManifest.version, "0.1.3");
   assert.strictEqual(selectMacDmg(t3MacManifest, "arm64").fileName, "TritonAI-Harness-0.1.3-arm64.dmg");
+  assert.throws(
+    () => selectMacDmg(parseLatestYml(`version: 0.1.3
+files:
+  - url: TritonAI-Harness-Preview-0.1.3-arm64.dmg
+    sha512: abc
+    size: 123
+`), "arm64"),
+    /does not include an asset matching/,
+    "macOS runtime selection must reject noncanonical Harness basenames"
+  );
 
   const t3WinManifest = parseLatestYml(`version: 0.1.3
 files:
@@ -1065,6 +1103,16 @@ files:
     size: 123
 `);
   assert.strictEqual(selectWindowsInstaller(t3WinManifest, "x64").fileName, "TritonAI-Harness-0.1.3-x64.exe");
+  assert.throws(
+    () => selectWindowsInstaller(parseLatestYml(`version: 0.1.3
+files:
+  - url: TritonAI-Harness-Preview-0.1.3-x64.exe
+    sha512: abc
+    size: 123
+`), "x64"),
+    /does not include an asset matching/,
+    "Windows runtime selection must reject noncanonical Harness basenames"
+  );
 
   const t3TempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-t3code-bundle-"));
   try {

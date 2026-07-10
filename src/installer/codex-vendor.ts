@@ -26,28 +26,73 @@ function installBundledCodexCli({
 }: InstallBundledCodexOptions) {
   const source = findBundledCodexDir({ resourcesPath, appRoot, platform, arch });
   if (!source) {
-    emit("No bundled Codex CLI payload found; falling back to managed npm install.");
+    emit("No valid bundled Codex CLI payload found.");
     return false;
   }
 
   emit(`Installing managed Codex ${CODEX_CLI_VERSION} from bundled ${codexTargetName(platform, arch)} payload...`);
-  fs.rmSync(paths.codexInstallRoot, { recursive: true, force: true });
-  fs.mkdirSync(path.dirname(paths.codexInstallRoot), { recursive: true });
-  fs.cpSync(source, paths.codexInstallRoot, {
-    recursive: true,
-    force: true,
-    filter: (entry) => !entry.includes(`${path.sep}.git${path.sep}`) && !entry.endsWith(`${path.sep}.git`),
-  });
-
-  const binary = managedCodexBinary(paths, platform);
-  if (!fs.existsSync(binary)) {
-    throw new Error(`Bundled Codex CLI payload did not install the expected binary: ${binary}`);
-  }
-  if (platform !== "win32") {
-    fs.chmodSync(binary, 0o755);
-  }
+  stageAndActivateBundledCodex({ source, target: paths.codexInstallRoot, platform, arch });
 
   return true;
+}
+
+function stageAndActivateBundledCodex({ source, target, platform = process.platform, arch = process.arch }) {
+  const parent = path.dirname(target);
+  fs.mkdirSync(parent, { recursive: true });
+  const stageRoot = fs.mkdtempSync(path.join(parent, ".codex-install-stage-"));
+  const stagedInstall = path.join(stageRoot, "next");
+  const backupRoot = fs.mkdtempSync(path.join(parent, ".codex-install-backup-"));
+  const previousInstall = path.join(backupRoot, "previous");
+  let previousMoved = false;
+  let activationCompleted = false;
+
+  try {
+    fs.cpSync(source, stagedInstall, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      filter: (entry) => !entry.includes(`${path.sep}.git${path.sep}`) && !entry.endsWith(`${path.sep}.git`),
+    });
+    if (!isCodexVendorDir(stagedInstall, platform, arch)) {
+      throw new Error(`Staged bundled Codex CLI payload is incomplete or has invalid identity for ${codexTargetName(platform, arch)}.`);
+    }
+    const stagedBinary = platform === "win32"
+      ? path.join(stagedInstall, "codex.cmd")
+      : path.join(stagedInstall, "bin", "codex");
+    if (platform !== "win32") fs.chmodSync(stagedBinary, 0o755);
+
+    if (fs.existsSync(target)) {
+      fs.renameSync(target, previousInstall);
+      previousMoved = true;
+    }
+    fs.renameSync(stagedInstall, target);
+    activationCompleted = true;
+  } catch (error) {
+    if (previousMoved && !fs.existsSync(target)) {
+      try {
+        fs.renameSync(previousInstall, target);
+        previousMoved = false;
+      } catch (rollbackError) {
+        throw new Error(
+          `Could not activate bundled Codex CLI: ${error.message}. `
+          + `Rollback also failed: ${rollbackError.message}`
+        );
+      }
+    }
+    throw error;
+  } finally {
+    fs.rmSync(stageRoot, { recursive: true, force: true });
+    if (activationCompleted || !previousMoved) {
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
+  }
+
+  const binary = platform === "win32"
+    ? path.join(target, "codex.cmd")
+    : path.join(target, "bin", "codex");
+  if (!fs.existsSync(binary)) {
+    throw new Error(`Bundled Codex CLI activation did not retain the expected binary: ${binary}`);
+  }
 }
 
 function findBundledCodexDir(options: BundleOptions = {}): string | null {
@@ -60,16 +105,61 @@ function findBundledCodexDir(options: BundleOptions = {}): string | null {
   const candidates = bundleBaseCandidates(options)
     .map((base) => path.join(base, "vendor", "codex-cli", target));
 
-  return candidates.find((candidate) => isCodexVendorDir(candidate, options.platform || process.platform)) || null;
+  return candidates.find((candidate) => isCodexVendorDir(
+    candidate,
+    options.platform || process.platform,
+    options.arch || process.arch
+  )) || null;
 }
 
-function isCodexVendorDir(candidate: string | undefined, platform: NodeJS.Platform = process.platform): boolean {
+function isCodexVendorDir(
+  candidate: string | undefined,
+  platform: NodeJS.Platform = process.platform,
+  arch: NodeJS.Architecture = process.arch
+): boolean {
   if (!candidate || !fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) return false;
+  let target;
+  try {
+    target = codexTargetName(platform, arch);
+  } catch (_error) {
+    return false;
+  }
   const binary = platform === "win32"
     ? path.join(candidate, "codex.cmd")
     : path.join(candidate, "bin", "codex");
-  return fs.existsSync(path.join(candidate, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"))
-    && fs.existsSync(binary);
+  const nativePackage = path.join(
+    candidate,
+    "lib",
+    "node_modules",
+    "@openai",
+    "codex",
+    "node_modules",
+    "@openai",
+    platform === "win32" ? "codex-win32-x64" : "codex-darwin-arm64"
+  );
+  const manifest = readCodexVendorManifest(candidate);
+  return manifest?.name === "@openai/codex"
+    && manifest?.version === CODEX_CLI_VERSION
+    && manifest?.target === target
+    && isRegularFile(path.join(candidate, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"))
+    && isRegularFile(binary)
+    && isRealDirectory(nativePackage);
+}
+
+function isRegularFile(file) {
+  return fs.existsSync(file) && fs.lstatSync(file).isFile() && !fs.lstatSync(file).isSymbolicLink();
+}
+
+function isRealDirectory(dir) {
+  return fs.existsSync(dir) && fs.lstatSync(dir).isDirectory() && !fs.lstatSync(dir).isSymbolicLink();
+}
+
+function readCodexVendorManifest(candidate) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(candidate, "manifest.json"), "utf8"));
+  } catch (_error) {
+    return null;
+  }
 }
 
 function bundleBaseCandidates(options: BundleOptions = {}): string[] {
@@ -96,5 +186,7 @@ function managedCodexBinary(paths: Record<string, string>, platform: NodeJS.Plat
 module.exports = {
   installBundledCodexCli,
   findBundledCodexDir,
+  isCodexVendorDir,
+  stageAndActivateBundledCodex,
   codexTargetName,
 };

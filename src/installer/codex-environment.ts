@@ -3,8 +3,7 @@ const { UCSD } = require("./constants");
 function getTritonAiEnvironment(paths) {
   return {
     [UCSD.baseUrlEnv]: UCSD.baseUrl,
-    [UCSD.tritonAiHomeEnv]: paths.t3Home,
-    [UCSD.legacyT3HomeEnv]: paths.t3Home
+    [UCSD.tritonAiHomeEnv]: paths.t3Home
   };
 }
 

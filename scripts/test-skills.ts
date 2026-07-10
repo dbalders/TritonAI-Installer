@@ -2,6 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 const {
   createManagedSkillsManifest
 } = require("../src/installer/skill-manifest");
@@ -10,12 +11,15 @@ const {
   installBundledSkills
 } = require("../src/installer/skills");
 const {
+  assertCanonicalLocalSecureSkillsSource,
+  assertCanonicalSecureSkillsRepository,
   findSkillsSourceDir,
   sanitizeRepositoryUrl,
   stageSkillsFromSource
 } = require("./prepare-skills-vendor");
 
 function main() {
+  assertSecureRepositoryProvenance();
   assertRootSecureRepositoryStaging();
   assertVendorActivationFailureRestoresPreviousBundle();
   assertRepositoryUrlSanitization();
@@ -27,6 +31,28 @@ function main() {
   assertTransactionFailureRestoresPreviousInstallAndCleansBackup();
   assertRejectsInvalidBundles();
   console.log("Managed secure skills tests passed.");
+}
+
+function assertSecureRepositoryProvenance() {
+  assert.strictEqual(
+    assertCanonicalSecureSkillsRepository("https://github.com/dbalders/UCSD-Skills-Library-Secure.git"),
+    "dbalders/UCSD-Skills-Library-Secure"
+  );
+  assert.throws(
+    () => assertCanonicalSecureSkillsRepository("https://github.com/dbalders/UCSD-Skills-Library.git", "UCSD_SKILLS_SOURCE"),
+    /is not accepted as secure skills provenance/
+  );
+
+  withTempRoot("tritonai-secure-provenance-", (tempRoot) => {
+    execFileSync("git", ["init", "-q"], { cwd: tempRoot });
+    execFileSync("git", ["remote", "add", "origin", "https://github.com/dbalders/UCSD-Skills-Library.git"], { cwd: tempRoot });
+    assert.throws(
+      () => assertCanonicalLocalSecureSkillsSource(tempRoot),
+      /is not accepted as secure skills provenance/
+    );
+    execFileSync("git", ["remote", "set-url", "origin", "git@github.com:dbalders/UCSD-Skills-Library-Secure.git"], { cwd: tempRoot });
+    assert.doesNotThrow(() => assertCanonicalLocalSecureSkillsSource(tempRoot));
+  });
 }
 
 function assertVendorActivationFailureRestoresPreviousBundle() {
@@ -306,7 +332,10 @@ function assertRejectsInvalidBundles() {
     fs.mkdirSync(path.join(fixture.vendorDir, "secure-review"), { recursive: true });
     fs.writeFileSync(
       path.join(fixture.vendorDir, "manifest.json"),
-      `${JSON.stringify(createManagedSkillsManifest(["secure-review"]), null, 2)}\n`
+      `${JSON.stringify({
+        ...createManagedSkillsManifest(["secure-review"]),
+        source: { repo: "https://github.com/dbalders/UCSD-Skills-Library-Secure.git" }
+      }, null, 2)}\n`
     );
     assert.throws(() => installFixture(fixture), /missing SKILL.md/);
     assert.deepStrictEqual(fs.readdirSync(fixture.skillsDir), []);
@@ -316,6 +345,13 @@ function assertRejectsInvalidBundles() {
     malformed.kind = "public";
     fs.writeFileSync(path.join(fixture.vendorDir, "manifest.json"), JSON.stringify(malformed));
     assert.throws(() => installFixture(fixture), /unsupported kind/);
+    assert.deepStrictEqual(fs.readdirSync(fixture.skillsDir), []);
+
+    writeVendor(fixture.vendorDir, { "secure-review": "secure-v1" });
+    const publicSource = readJson(path.join(fixture.vendorDir, "manifest.json"));
+    publicSource.source.repo = "https://github.com/dbalders/UCSD-Skills-Library.git";
+    fs.writeFileSync(path.join(fixture.vendorDir, "manifest.json"), JSON.stringify(publicSource));
+    assert.throws(() => installFixture(fixture), /canonical source repository/);
     assert.deepStrictEqual(fs.readdirSync(fixture.skillsDir), []);
   });
 }
@@ -353,7 +389,15 @@ function writeVendor(vendorDir, skills) {
   }
   fs.writeFileSync(
     path.join(vendorDir, "manifest.json"),
-    `${JSON.stringify(createManagedSkillsManifest(names), null, 2)}\n`
+    `${JSON.stringify({
+      ...createManagedSkillsManifest(names),
+      source: {
+        type: "git",
+        repo: "https://github.com/dbalders/UCSD-Skills-Library-Secure.git",
+        ref: "main",
+        commit: "a".repeat(40)
+      }
+    }, null, 2)}\n`
   );
 }
 

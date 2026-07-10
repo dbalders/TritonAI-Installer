@@ -94,6 +94,7 @@ async function runInstall(payload, runtime) {
       emit,
       resourcesPath: runtime.resourcesPath,
       appRoot: runtime.appRoot,
+      packaged: runtime.packaged,
       env: buildEnv(apiKey, paths, nodeRuntime, platform)
     });
     if (result && result.appPath) {
@@ -227,6 +228,10 @@ async function installManagedCodexCli({ apiKey, paths, nodeRuntime, runtime, emi
     return;
   }
 
+  if (runtime.packaged) {
+    throw new Error("This packaged TritonAI Installer is missing a valid bundled Codex CLI payload; npm fallback is disabled for packaged builds.");
+  }
+
   await runCommands(getCommands(CODEX_CLI, "install", runtime.platform), {
     emit,
     env: buildEnv(apiKey, paths, nodeRuntime, runtime.platform),
@@ -256,9 +261,9 @@ function parseCodexVersion(output) {
   return match ? match[1] : null;
 }
 
-async function installOptionalDesktopApp({ desktopInstaller, paths, platform, arch, emit, env, resourcesPath, appRoot }) {
+async function installOptionalDesktopApp({ desktopInstaller, paths, platform, arch, emit, env, resourcesPath, appRoot, packaged }) {
   try {
-    return await desktopInstaller({ paths, platform, arch, emit, env, resourcesPath, appRoot });
+    return await desktopInstaller({ paths, platform, arch, emit, env, resourcesPath, appRoot, packaged });
   } catch (error) {
     if (platform === "win32") {
       throw new Error(`The CLI is installed, but the desktop app still needs attention. ${error.message}`);

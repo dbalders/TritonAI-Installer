@@ -34,7 +34,7 @@ flowchart TD
 - `main`: IPC boundary and privileged desktop launch action.
 - `installer/runner`: ordered TritonAI Harness/Codex setup execution.
 - `installer/prerequisites`: user-scoped Node.js/npm bootstrap with checksum verification.
-- `installer/t3code-desktop`: TritonAI desktop app install. The bundled app may use release-channel names internally, but the user-facing launcher is always `TritonAI Harness`.
+- `installer/t3code-desktop`: parent-native module that installs only the canonical `TritonAI Harness` desktop identity.
 - `installer/skills`: transactionally installs only packaged secure skills into `~/.tritonai-harness/codex/skills/` and tracks Installer ownership without modifying unowned skills.
 - `installer/codex-vendor`: finds the packaged Codex CLI payload and copies it into the managed runtime prefix.
 - `installer/tool-manifest`: TritonAI Harness metadata and the pinned Codex CLI backend fallback install command for unpackaged development runs.
