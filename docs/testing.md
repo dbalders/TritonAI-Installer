@@ -10,9 +10,14 @@ Fast local check:
 npm test
 ```
 
+The initial migration keeps explicit `noImplicitAny` and `strictNullChecks`
+exceptions for legacy CommonJS module boundaries. Other strict checks remain
+enabled; remove these two exceptions incrementally as those contracts are typed.
+
 This runs:
 
-- Syntax/scaffold validation.
+- TypeScript 7 type-checking and JavaScript emission.
+- Source, emitted application, and packaging scaffold validation.
 - npm package-age verification against the supply-chain cutoff.
 - Managed secure skills packaging, ownership, migration, collision, and failure-safety tests.
 - A clean-home dry run that writes all configs into a temp directory and injects fake command execution.

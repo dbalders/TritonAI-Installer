@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
+    "rootDir": ".",
+    "outDir": "dist",
+    "moduleDetection": "force",
+    "strict": true,
+    // Staged migration: legacy CommonJS module boundaries still expose implicit any values.
+    // Keep these exceptions visible until those boundaries are typed incrementally.
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "useUnknownInCatchVariables": false,
+    "forceConsistentCasingInFileNames": true,
+    "noEmitOnError": true,
+    "skipLibCheck": false
+  },
+  "include": [
+    "*.ts",
+    "src/**/*.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "artifacts",
+    "vendor",
+    "src/renderer/app.ts"
+  ]
+}

@@ -20,6 +20,7 @@ The first-pass guardrails are config-level and file-level:
 - Route model traffic through UCSD/TritonAI rather than arbitrary default providers.
 - Pin packaged tools to explicit reviewed versions.
 - Use npm's `--before` cutoff while staging tool payloads so transitive dependency resolution excludes packages published after the policy date.
+- Pin the TypeScript toolchain exactly, verify registry signatures and attestations after dependency changes, and advance the cutoff only after reviewing newly admitted packages.
 - Keep shared instructions in `~/.agents/ucsd/AGENTS.md`.
 - Create `~/.agents/ucsd/logs/` as the stable local log destination.
 - Write redacted installer transcripts and support reports under `~/.agents/ucsd/logs/` so users can copy a report or reveal the logs folder when setup pauses.

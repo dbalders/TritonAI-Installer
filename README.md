@@ -28,12 +28,16 @@ See the [architecture](docs/architecture.md) and [security model](docs/security-
 
 ```sh
 npm install
+npm run typecheck
+npm run build
 npm run validate
 npm test
 npm start
 ```
 
 Use `npm ci` instead of `npm install` in CI and release packaging.
+
+TypeScript under `src/` and `scripts/` is the source of truth. `npm run build` emits the Electron application and repository scripts into the ignored `dist/` directory before launch, testing, or packaging.
 
 ## Packaging
 
