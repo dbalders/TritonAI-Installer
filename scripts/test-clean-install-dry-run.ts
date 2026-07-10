@@ -72,6 +72,7 @@ const {
 } = require("./prepare-codex-cli-vendor");
 
 const EXPECTED_CODEX_MODELS = Object.keys(UCSD.codexModels);
+const EXPECTED_DEEPSEEK_ONLY_CODEX_MODELS = [UCSD.codexModel];
 
 function assertIncludesPath(content, expectedPath) {
   const rawExpectedPath = String(expectedPath);
@@ -104,6 +105,7 @@ async function main() {
   assertWindowsShortcutTargetsApp();
   assertT3CodeUcsdCustomModelsAreCanonical();
   assertT3DefaultsPatcherClearsRuntimeState();
+  assertT3DefaultsPatcherRespectsModelAccess();
   assertDiagnosticsRedaction();
   await assertRunInstallRequiresApiKey();
   await assertRunInstallStopsBeforeDesktopWhenConnectionFails();
@@ -209,6 +211,8 @@ function assertManagedModelDefaultsUseNonMaxDeepSeek() {
   resetManagedConfigForTests();
   assert.strictEqual(UCSD.codexModel, "deepseek-v4-flash");
   assert.strictEqual(UCSD.codexModels[UCSD.codexModel].name, "DeepSeek v4 Flash");
+  assert.strictEqual(UCSD.codexModels["gpt-5.5"].name, "GPT-5.5");
+  assert.strictEqual(UCSD.codexModels["claude-opus-4-8"].name, "Claude Opus 4.8");
   assert(!UCSD.codexModel.includes("max"), "managed default should not use the Max model");
 }
 
@@ -239,6 +243,19 @@ function assertManagedConfigPrefersPackagedEndpoint() {
     resetManagedConfigForTests();
     assert.strictEqual(UCSD.baseUrl, "https://ambient.example.invalid/v1");
     assert.strictEqual(UCSD.apiDocsUrl, "https://ambient.example.invalid/docs");
+
+    delete process.env.UCSD_ALLOW_MANAGED_CONFIG_ENV;
+    fs.writeFileSync(configPath, JSON.stringify({
+      baseUrl: "https://packaged.example.invalid/v1",
+      codexModels: {
+        "gpt-5.5": { id: "gpt-5.5", name: "GPT-5.5" }
+      }
+    }));
+    resetManagedConfigForTests();
+    assert.throws(
+      () => UCSD.codexModels,
+      /codexModels must include the configured default model: deepseek-v4-flash/
+    );
   } finally {
     if (originalResourcesPath === undefined) {
       delete mutableProcess.resourcesPath;
@@ -631,6 +648,9 @@ function assertWindowsT3CodeAppDetection() {
 async function runDryRun(platform, options) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-clean-"));
   const paths = getPaths(tempRoot, platform);
+  const expectedCodexModels = options.externalModelsEnabled === false
+    ? EXPECTED_DEEPSEEK_ONLY_CODEX_MODELS
+    : EXPECTED_CODEX_MODELS;
   const runtimeArch = platform === "win32" ? "x64" : process.arch;
   const fakeRuntime = getNodeRuntimePaths(paths, platform, runtimeArch);
   const commands = [];
@@ -808,8 +828,8 @@ async function runDryRun(platform, options) {
     assert.strictEqual(t3Settings.providerInstances.codex.enabled, true);
     assert.strictEqual(t3Settings.providerInstances.codex.config.binaryPath, managedCodex);
     assert.strictEqual(t3Settings.providerInstances.codex.config.homePath, paths.codexHome);
-    assert.deepStrictEqual(t3Settings.providerInstances.codex.config.customModels, EXPECTED_CODEX_MODELS);
-    assert.deepStrictEqual(t3Settings.providers.codex.customModels, EXPECTED_CODEX_MODELS);
+    assert.deepStrictEqual(t3Settings.providerInstances.codex.config.customModels, expectedCodexModels);
+    assert.deepStrictEqual(t3Settings.providers.codex.customModels, expectedCodexModels);
     assert.deepStrictEqual(t3Settings.providerInstances.codex.environment, expectedProviderEnvironmentVariables);
 
     const t3DevSettings = JSON.parse(fs.readFileSync(path.join(paths.t3Home, "dev", "settings.json"), "utf8"));
@@ -1074,6 +1094,47 @@ function assertT3DefaultsPatcherClearsRuntimeState() {
   }
 }
 
+function assertT3DefaultsPatcherRespectsModelAccess() {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    return;
+  }
+
+  for (const externalModelsEnabled of [true, false]) {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-model-access-"));
+    try {
+      const paths = getPaths(tempRoot, process.platform);
+      paths.externalModelsEnabled = externalModelsEnabled;
+      writeT3CodeSettings(paths);
+      const stateDbPath = path.join(path.dirname(paths.t3Settings), "state.sqlite");
+      fs.mkdirSync(path.dirname(stateDbPath), { recursive: true });
+
+      const db = new DatabaseSync(stateDbPath);
+      db.exec("CREATE TABLE projection_threads (model_selection_json TEXT)");
+      db.prepare("INSERT INTO projection_threads (model_selection_json) VALUES (?)").run(
+        JSON.stringify({ instanceId: "codex", model: "gpt-5.5" })
+      );
+      db.close();
+
+      execFileSync(process.execPath, [paths.t3DefaultsPatcher], { stdio: "ignore" });
+
+      const patched = new DatabaseSync(stateDbPath);
+      const selection = JSON.parse(
+        patched.prepare("SELECT model_selection_json FROM projection_threads").get().model_selection_json
+      );
+      patched.close();
+      assert.deepStrictEqual(selection, {
+        instanceId: "codex",
+        model: externalModelsEnabled ? "gpt-5.5" : UCSD.codexModel
+      });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }
+}
+
 function assertT3CodeUcsdCustomModelsAreCanonical() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-t3code-config-"));
   try {
@@ -1106,11 +1167,28 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
     const customModels = settings.providerInstances.codex.config.customModels;
 
     assert.deepStrictEqual(customModels, EXPECTED_CODEX_MODELS);
+    assert.deepStrictEqual(customModels, [
+      "deepseek-v4-flash",
+      "gpt-5.5",
+      "claude-opus-4-8"
+    ]);
     assert(!customModels.includes("ucsd/retired-model-from-provider"));
     assert(!customModels.includes("ucsd/retired-model-from-instance"));
     assert.deepStrictEqual(settings.providers.codex.customModels, customModels);
     assert.strictEqual(settings.providers.legacyProvider.enabled, false);
     assert.strictEqual(settings.providerInstances.legacyProvider.enabled, false);
+
+    paths.externalModelsEnabled = false;
+    writeT3CodeSettings(paths);
+    const limitedSettings = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
+    assert.deepStrictEqual(
+      limitedSettings.providerInstances.codex.config.customModels,
+      EXPECTED_DEEPSEEK_ONLY_CODEX_MODELS
+    );
+    assert.deepStrictEqual(
+      limitedSettings.providers.codex.customModels,
+      EXPECTED_DEEPSEEK_ONLY_CODEX_MODELS
+    );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

@@ -47,7 +47,7 @@ flowchart TD
 - Base URL: configured at package time through `UCSD_AI_BASE_URL`.
 - Shared API env: `TRITONAI_API_KEY`
 - Codex/TritonAI Harness default: `deepseek-v4-flash`
-- Codex/TritonAI Harness models: the UCSD upstream renders as `UCSD`; the current installer exposes `DeepSeek v4 Flash`.
+- Codex/TritonAI Harness models: every valid key receives `DeepSeek v4 Flash`; keys that pass the external-model probe also receive `GPT-5.5` and `Claude Opus 4.8`.
 - Secure skills source: nearby local `UCSD-Skills-Library-Secure` checkout when present, otherwise `main` from private `https://github.com/dbalders/UCSD-Skills-Library-Secure.git`, staged from root-level `<skill-name>/SKILL.md` folders into `vendor/skills/` at package time. Public AI Team and Community skills are fetched by TritonAI Harness and are not Installer payloads.
 - Secure ownership: the vendor and runtime manifests use `{ "version": 1, "kind": "tritonai-secure", "skills": ["..."] }`. The runtime manifest lives at `~/.tritonai-harness/codex/skills/.tritonai-managed-skills.json`. Reinstall replaces/removes only names in the previous runtime manifest, preserves all unowned folders, and refuses unowned collisions.
 - Secure update safety: all incoming skills and `SKILL.md` files are validated and copied to a same-filesystem staging directory before existing managed directories are moved. A failed staging or activation step leaves or restores the prior managed bundle.
