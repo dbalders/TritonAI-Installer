@@ -368,7 +368,7 @@ function writeMacAppLauncherBundle(launcherPath, paths, emit, arch, managedAppPa
 function validateMacLauncherBundle(launcherPath, managedAppPath, label) {
   validateMacAppBundle(launcherPath, `${label} launcher`);
   const executablePath = path.join(launcherPath, "Contents", "MacOS", MAC_LAUNCHER_EXECUTABLE_NAME);
-  if ((fs.statSync(executablePath).mode & 0o111) === 0) {
+  if (process.platform === "darwin" && (fs.statSync(executablePath).mode & 0o111) === 0) {
     throw new Error(`${label} ${TRITONAI_LAUNCHER_NAME} launcher is not executable.`);
   }
   const script = fs.readFileSync(executablePath, "utf8");
