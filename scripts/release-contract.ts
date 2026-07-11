@@ -132,7 +132,8 @@ function assertReleaseSourceIdentity({ root = defaultRoot, tag, version, remoteT
 }
 
 function assertReleaseMayBeUpdated(release) {
-  if (release && release.isDraft !== true) {
+  const isDraft = release && typeof release.draft === "boolean" ? release.draft : release?.isDraft;
+  if (release && isDraft !== true) {
     throw new Error("Refusing to modify an existing published GitHub release.");
   }
 }

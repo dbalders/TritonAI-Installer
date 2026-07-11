@@ -6,6 +6,11 @@ const {
   createManagedSkillsManifest,
   isValidSkillName
 } = require("../src/installer/skill-manifest");
+const {
+  CANONICAL_SECURE_REPOSITORY,
+  assertCanonicalSecureSkillsRepository,
+  sanitizeRepositoryUrl
+} = require("../src/installer/secure-skills-provenance");
 
 const root = path.resolve(__dirname, "..", "..");
 const localSourceOverride = process.env.UCSD_SKILLS_SOURCE;
@@ -13,7 +18,6 @@ const repo = process.env.UCSD_SKILLS_REPO || "https://github.com/dbalders/UCSD-S
 const ref = process.env.UCSD_SKILLS_REF || "main";
 const sourceSubdir = process.env.UCSD_SKILLS_SUBDIR || "";
 const vendorDir = path.join(root, "vendor", "skills");
-const CANONICAL_SECURE_REPOSITORY = "dbalders/UCSD-Skills-Library-Secure";
 const localSourceCandidates = localSourceOverride
   ? [localSourceOverride]
   : [
@@ -40,7 +44,8 @@ function main() {
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-secure-skills-vendor-"));
   try {
-    assertCanonicalSecureSkillsRepository(repo, "UCSD_SKILLS_REPO");
+    const effectiveRepository = getEffectiveCloneRepositoryUrl(repo);
+    assertCanonicalSecureSkillsRepository(effectiveRepository, "UCSD_SKILLS_REPO");
     const cloneDir = path.join(tempRoot, "repo");
     cloneSecureRepository(repo, ref, cloneDir);
     const result = stageSkillsFromSource({
@@ -49,13 +54,13 @@ function main() {
       vendorDir,
       sourceInfo: {
         type: "git",
-        repo: sanitizeRepositoryUrl(repo),
+        repo: sanitizeRepositoryUrl(effectiveRepository),
         ref,
         commit: getGitValue(cloneDir, ["rev-parse", "HEAD"])
       }
     });
 
-    console.log(`Prepared ${result.skills.length} managed secure skill${result.skills.length === 1 ? "" : "s"} from ${sanitizeRepositoryUrl(repo)}#${ref}.`);
+    console.log(`Prepared ${result.skills.length} managed secure skill${result.skills.length === 1 ? "" : "s"} from ${sanitizeRepositoryUrl(effectiveRepository)}#${ref}.`);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -110,33 +115,11 @@ function stageSkillsFromSource({ sourceRoot, sourceSubdir = "", vendorDir, sourc
 }
 
 function assertCanonicalLocalSecureSkillsSource(sourceRoot) {
-  const repository = getGitValue(sourceRoot, ["remote", "get-url", "origin"]);
+  const repository = getEffectiveRepositoryUrl(sourceRoot);
   if (!repository) {
     throw new Error(`Secure skills override must be a Git checkout of ${CANONICAL_SECURE_REPOSITORY}; no origin remote was found at ${sourceRoot}.`);
   }
-  assertCanonicalSecureSkillsRepository(repository, "UCSD_SKILLS_SOURCE");
-}
-
-function assertCanonicalSecureSkillsRepository(repository, label = "secure skills repository") {
-  const slug = repositorySlug(repository);
-  if (slug.toLowerCase() !== CANONICAL_SECURE_REPOSITORY.toLowerCase()) {
-    throw new Error(`${label} must resolve to the private ${CANONICAL_SECURE_REPOSITORY} repository; ${sanitizeRepositoryUrl(repository)} is not accepted as secure skills provenance.`);
-  }
-  return slug;
-}
-
-function repositorySlug(repository) {
-  const sanitized = sanitizeRepositoryUrl(repository).replace(/\\/g, "/").replace(/\.git$/i, "");
-  let repositoryPath = sanitized;
-  try {
-    const parsed = new URL(sanitized);
-    repositoryPath = parsed.pathname;
-  } catch (_error) {
-    const scpMatch = sanitized.match(/^[^:]+:(.+)$/);
-    if (scpMatch) repositoryPath = scpMatch[1];
-  }
-  const parts = repositoryPath.split("/").filter(Boolean);
-  return parts.slice(-2).join("/");
+  return assertCanonicalSecureSkillsRepository(repository, "UCSD_SKILLS_SOURCE");
 }
 
 function findSkillsSourceDir(sourceRoot, subdir = "") {
@@ -244,7 +227,7 @@ function activateStagedVendor(stagingDir, vendorDir) {
 
 function getLocalSourceInfo(sourceRoot) {
   const commit = getGitValue(sourceRoot, ["rev-parse", "HEAD"]);
-  const repository = getGitValue(sourceRoot, ["remote", "get-url", "origin"]);
+  const repository = getEffectiveRepositoryUrl(sourceRoot);
   const dirty = getGitValue(sourceRoot, ["status", "--porcelain"]) !== "";
   return {
     type: "local",
@@ -264,29 +247,24 @@ function sanitizeSourceInfo(sourceInfo) {
   };
 }
 
-function sanitizeRepositoryUrl(value) {
-  const raw = String(value).trim();
-  if (path.isAbsolute(raw) || raw.startsWith("file:")) {
-    return "local-repository";
-  }
+function getEffectiveRepositoryUrl(sourceRoot) {
+  return getGitValue(sourceRoot, ["remote", "get-url", "origin"]);
+}
+
+function getEffectiveCloneRepositoryUrl(repository, cwd = root) {
   try {
-    const parsed = new URL(raw);
-    if (["http:", "https:", "ssh:"].includes(parsed.protocol)) {
-      parsed.username = "";
-      parsed.password = "";
-      parsed.search = "";
-      parsed.hash = "";
-      return parsed.toString().replace(/\/$/, "");
-    }
-  } catch (_error) {
-    // SCP-style Git remotes are not URL-parseable and are handled below.
+    return execFileSync("git", ["ls-remote", "--get-url", repository], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"]
+    }).trim();
+  } catch (error) {
+    const safeRepository = sanitizeRepositoryUrl(repository);
+    const detail = String(error.stderr || error.message || "")
+      .replaceAll(String(repository), safeRepository)
+      .trim();
+    throw new Error(`Could not resolve effective Git URL for ${safeRepository}${detail ? `: ${detail}` : "."}`);
   }
-  const scpStyle = raw.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
-  if (scpStyle) {
-    const [, host, repositoryPath] = scpStyle;
-    return `${host}:${repositoryPath.replace(/[?#].*$/, "")}`;
-  }
-  return raw.replace(/[?#].*$/, "");
 }
 
 function getGitValue(cwd, args) {
@@ -328,6 +306,8 @@ module.exports = {
   findPackagedSkillNames,
   findSkillsSourceDir,
   findLocalSkillsSource,
+  getEffectiveCloneRepositoryUrl,
+  getEffectiveRepositoryUrl,
   sanitizeRepositoryUrl,
   stageSkillsFromSource
 };
