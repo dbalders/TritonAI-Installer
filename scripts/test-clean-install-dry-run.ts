@@ -1158,10 +1158,10 @@ function assertT3DefaultsPatcherClearsRuntimeState() {
     assert.strictEqual(runtime.adapter_key, "codex");
     assert.strictEqual(runtime.provider_instance_id, "codex");
     const runtimePayload = JSON.parse(runtime.runtime_payload_json);
-    assert.strictEqual(runtimePayload.model, UCSD.codexModel);
+    assert.strictEqual(runtimePayload.model, UCSD.restrictedCodexModel);
     assert.deepStrictEqual(runtimePayload.modelSelection, {
       instanceId: "codex",
-      model: UCSD.codexModel
+      model: UCSD.restrictedCodexModel
     });
     assert.strictEqual(runtimePayload.lastError, null);
     assert.strictEqual(session.provider_name, "codex");
