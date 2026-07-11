@@ -64,7 +64,6 @@ function sanitizeRepositoryUrl(value) {
 
   try {
     const parsed = new URL(raw);
-    if (parsed.protocol === "file:") return "local-repository";
     parsed.username = "";
     parsed.password = "";
     parsed.search = "";
