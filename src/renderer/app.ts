@@ -63,7 +63,7 @@ const installStepDetails = {
     { id: "image", label: "Verify the app package", match: ["verified tritonai harness installer image"] },
     { id: "mount", label: "Prepare the app for installation", match: ["mounted tritonai harness installer image", "running tritonai harness windows installer"] },
     { id: "copy", label: "Copy the app into staging", match: ["copied tritonai harness app to staging", "windows installer completed"] },
-    { id: "validate", label: "Verify the staged app", match: ["verified staged tritonai harness app", "verified tritonai harness", "after the windows installer completed"] },
+    { id: "validate", label: "Verify the staged app", match: ["verified staged tritonai harness app", "after the windows installer completed"] },
     { id: "install", label: "Install the app into its managed location", match: ["installed tritonai harness app into its managed location"] },
     { id: "cleanup", label: "Close the app package", match: ["closing tritonai harness installer image", "closed tritonai harness installer image"] },
     { id: "launcher", label: "Create the launcher users will open", match: ["launcher", "shortcut", "applications"] }
