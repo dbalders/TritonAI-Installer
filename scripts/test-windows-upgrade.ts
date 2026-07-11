@@ -205,6 +205,7 @@ async function assertEnvironmentMigrationWaitsForSuccessfulInstall() {
     fs.mkdirSync(path.dirname(nodeRuntime.npmCliJs), { recursive: true });
     fs.writeFileSync(nodeRuntime.npmCliJs, "");
     let cleanupCalls = 0;
+    const events = [];
 
     const runtime: any = {
       homeDir: fixture.homeDir,
@@ -213,10 +214,15 @@ async function assertEnvironmentMigrationWaitsForSuccessfulInstall() {
       installerVersion: "0.2.5",
       appRoot: fixture.appRoot,
       resourcesPath: null,
-      emit: () => {},
+      emit: (message) => events.push(message),
       ensurePrerequisites: async () => nodeRuntime,
       installBundledSkills: () => {},
-      saveEnvironment: async () => ({ finalize: async () => { cleanupCalls += 1; } }),
+      saveEnvironment: async () => ({
+        finalize: async () => {
+          cleanupCalls += 1;
+          events.push("migration finalized");
+        }
+      }),
       checkTritonAiConnection: async () => ({ externalModelsEnabled: true }),
       installBundledCodexCli: async () => true,
       getCodexVersion: () => CODEX_CLI_VERSION,
@@ -232,6 +238,14 @@ async function assertEnvironmentMigrationWaitsForSuccessfulInstall() {
     runtime.writeInstallerVersionMarker = () => { throw new Error("simulated marker failure"); };
     await assert.rejects(runInstall({ apiKey: "test-key" }, runtime), /simulated marker failure/);
     assert.strictEqual(cleanupCalls, 0, "marker failure must occur before legacy user environment cleanup");
+
+    runtime.writeInstallerVersionMarker = () => {};
+    await runInstall({ apiKey: "test-key" }, runtime);
+    assert.strictEqual(cleanupCalls, 1);
+    assert(
+      events.lastIndexOf("migration finalized") < events.lastIndexOf("Install flow finished."),
+      "the install must not report completion before legacy environment cleanup finishes"
+    );
   });
 }
 

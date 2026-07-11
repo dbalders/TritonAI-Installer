@@ -145,11 +145,11 @@ async function runInstall(payload, runtime) {
       installerVersion: runtime.installerVersion || packageInstallerVersion
     });
     emit("Recorded the installed TritonAI Installer version.");
-    emit("Install flow finished.");
     if (environmentMigration && typeof environmentMigration.finalize === "function") {
       emit("Removing recorded legacy TritonAI user environment variables...");
       await environmentMigration.finalize();
     }
+    emit("Install flow finished.");
     return response;
   } catch (error) {
     const diagnosticsInfo = diagnostics.writeSupportReport({
