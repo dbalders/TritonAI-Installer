@@ -43,7 +43,7 @@ function parseCanonicalPath(host, repositoryPath) {
   if (parts.length !== 2) return null;
   const owner = parts[0];
   const repository = parts[1].replace(/\.git$/i, "");
-  if (!owner || !repository || repository.includes(".git/")) return null;
+  if (!owner || !repository) return null;
   return {
     host: String(host).toLowerCase(),
     owner,
