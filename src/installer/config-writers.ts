@@ -533,7 +533,7 @@ function writeDurableTempFile(file, content, mode, label) {
   const tempPath = managedSettingsTempPath(file, label);
   let descriptor;
   try {
-    descriptor = fs.openSync(tempPath, "wx", mode || 0o600);
+    descriptor = fs.openSync(tempPath, "wx", mode ?? 0o600);
     fs.writeFileSync(descriptor, content, "utf8");
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
