@@ -134,16 +134,36 @@ async function assertMacReplacementStagesBeforeSwapAndRollsBack() {
     const sourceApp = path.join(tempRoot, "source", "TritonAI Harness.app");
     writeMacApp(managedApp, "old");
     writeMacApp(sourceApp, "new");
+    let stopCalls = 0;
     await replaceMacAppTransactionally({
       sourceAppPath: sourceApp,
       managedAppPath: managedApp,
       emit: () => {},
       copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
-      validateStagedApp: async () => {}
+      validateStagedApp: async () => {},
+      stopRunningApp: async () => {
+        stopCalls += 1;
+        assert.strictEqual(readMacAppVersion(managedApp), "old", "the running app must stop before the swap");
+      }
     });
+    assert.strictEqual(stopCalls, 1);
     assert.strictEqual(readMacAppVersion(managedApp), "new");
 
     writeMacApp(sourceApp, "newer");
+    await assert.rejects(
+      replaceMacAppTransactionally({
+        sourceAppPath: sourceApp,
+        managedAppPath: managedApp,
+        emit: () => {},
+        copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
+        validateStagedApp: async () => {},
+        stopRunningApp: async () => { throw new Error("simulated stop timeout"); }
+      }),
+      /simulated stop timeout/
+    );
+    assert.strictEqual(readMacAppVersion(managedApp), "new", "a stop failure must abort before the swap");
+
+    const stopRunningApp = async () => {};
     const originalRenameSync = fs.renameSync;
     fs.renameSync = (source, target) => {
       if (source.includes(".tritonai-harness-stage-") && target === managedApp) {
@@ -158,7 +178,8 @@ async function assertMacReplacementStagesBeforeSwapAndRollsBack() {
           managedAppPath: managedApp,
           emit: () => {},
           copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
-          validateStagedApp: async () => {}
+          validateStagedApp: async () => {},
+          stopRunningApp
         }),
         /simulated mac activation failure/
       );
@@ -183,7 +204,8 @@ async function assertMacReplacementStagesBeforeSwapAndRollsBack() {
           managedAppPath: managedApp,
           emit: () => {},
           copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
-          validateStagedApp: async () => {}
+          validateStagedApp: async () => {},
+          stopRunningApp
         }),
         /Rollback also failed: simulated mac rollback failure/
       );
@@ -197,6 +219,16 @@ async function assertMacReplacementStagesBeforeSwapAndRollsBack() {
       readMacAppVersion(path.join(path.dirname(managedApp), preservedMacBackup, path.basename(managedApp))),
       "new"
     );
+
+    fs.rmSync(managedApp, { recursive: true, force: true });
+    await replaceMacAppTransactionally({
+      sourceAppPath: sourceApp,
+      managedAppPath: managedApp,
+      emit: () => {},
+      copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
+      validateStagedApp: async () => {},
+      stopRunningApp: async () => assert.fail("a clean install must not stop an app")
+    });
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

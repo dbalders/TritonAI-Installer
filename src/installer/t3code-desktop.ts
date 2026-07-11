@@ -18,6 +18,7 @@ const WIN_MANIFEST_FILE = "latest.yml";
 const TRITONAI_LAUNCHER_NAME = TRITONAI_APP_DISPLAY_NAME;
 const MAC_LAUNCHER_EXECUTABLE_NAME = TRITONAI_APP_DISPLAY_NAME;
 const MAC_LAUNCHER_ICON_FILE = "icon.icns";
+const MAC_APP_BUNDLE_ID = "edu.ucsd.tritonai.harness";
 const MAC_SOURCE_APP_NAMES = [
   MAC_MANAGED_APP_NAME
 ];
@@ -128,7 +129,8 @@ async function replaceMacAppTransactionally({
   managedAppPath,
   emit,
   copyApp = null,
-  validateStagedApp = null
+  validateStagedApp = null,
+  stopRunningApp = stopRunningManagedMacApp
 }) {
   validateMacAppBundle(sourceAppPath, "Mounted");
   const parent = path.dirname(managedAppPath);
@@ -155,6 +157,7 @@ async function replaceMacAppTransactionally({
     }
 
     if (fs.existsSync(managedAppPath)) {
+      await stopRunningApp({ emit });
       fs.renameSync(managedAppPath, previousAppPath);
       previousMoved = true;
     }
@@ -183,6 +186,30 @@ async function replaceMacAppTransactionally({
     if (replacementCompleted || !previousMoved) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
+  }
+}
+
+async function stopRunningManagedMacApp({ emit }) {
+  if (process.platform !== "darwin") return;
+  const script = `
+ObjC.import("AppKit");
+const running = () => $.NSRunningApplication
+  .runningApplicationsWithBundleIdentifier("${MAC_APP_BUNDLE_ID}").js;
+for (const app of running()) app.terminate;
+for (let attempt = 0; attempt < 75 && running().length; attempt += 1) {
+  $.NSThread.sleepForTimeInterval(0.2);
+}
+if (running().length) throw new Error("${TRITONAI_APP_DISPLAY_NAME} is still running");
+`;
+  emit(`Stopping any running ${TRITONAI_APP_DISPLAY_NAME} app before upgrading it...`);
+  try {
+    await run("/usr/bin/osascript", ["-l", "JavaScript", "-e", script], emit, { shell: false });
+  } catch (error) {
+    throw new Error(
+      `${TRITONAI_APP_DISPLAY_NAME} did not quit. Quit it manually and retry the upgrade; `
+      + "the existing app was left unchanged.",
+      { cause: error }
+    );
   }
 }
 
@@ -249,7 +276,7 @@ async function installWindowsDesktop({
     ? await fingerprintReader(existingAppPath)
     : null;
   if (existingAppPath) {
-    emit(`Found existing ${TRITONAI_APP_DISPLAY_NAME} install; running the bundled installer to update or repair it.`);
+    emit(`Found existing ${TRITONAI_APP_DISPLAY_NAME} install; its bundled NSIS upgrade will close it before replacement.`);
   }
 
   const unblock = windowsRuntime.unblockWindowsFile || unblockWindowsFile;
