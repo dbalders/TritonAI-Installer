@@ -11,6 +11,8 @@ delete process.env.UCSD_MANAGED_CONFIG_PATH;
 delete process.env.UCSD_AI_BASE_URL;
 delete process.env.UCSD_AI_DOCS_URL;
 delete process.env.UCSD_ALLOW_MANAGED_CONFIG_ENV;
+delete process.env.UCSD_CODEX_MODEL;
+delete process.env.UCSD_RESTRICTED_CODEX_MODEL;
 
 const { runInstall } = require("../src/installer/runner");
 const { getPaths } = require("../src/installer/paths");
@@ -72,7 +74,7 @@ const {
 } = require("./prepare-codex-cli-vendor");
 
 const EXPECTED_CODEX_MODELS = Object.keys(UCSD.codexModels);
-const EXPECTED_DEEPSEEK_ONLY_CODEX_MODELS = [UCSD.codexModel];
+const EXPECTED_RESTRICTED_CODEX_MODELS = [UCSD.restrictedCodexModel];
 
 function assertIncludesPath(content, expectedPath) {
   const rawExpectedPath = String(expectedPath);
@@ -115,6 +117,13 @@ async function main() {
   await runDryRun(process.platform, {
     externalModelsEnabled: false
   });
+  await runDryRun(process.platform, {
+    connectionResult: { ok: true }
+  });
+  await runDryRun(process.platform, {
+    connectionResult: { ok: true, externalModelsEnabled: "true" }
+  });
+  await assertExternalDefaultRespectsCapabilityProbe();
   await runDryRun(process.platform, {
     managedCodexVersion: "0.140.0",
     expectBundledCodexInstall: true
@@ -210,6 +219,7 @@ async function assertEnvironmentIsHarnessScoped() {
 function assertManagedModelDefaultsUseNonMaxDeepSeek() {
   resetManagedConfigForTests();
   assert.strictEqual(UCSD.codexModel, "deepseek-v4-flash");
+  assert.strictEqual(UCSD.restrictedCodexModel, "deepseek-v4-flash");
   assert.strictEqual(UCSD.codexModels[UCSD.codexModel].name, "DeepSeek v4 Flash");
   assert.strictEqual(UCSD.codexModels["gpt-5.5"].name, "GPT-5.5");
   assert.strictEqual(UCSD.codexModels["claude-opus-4-8"].name, "Claude Opus 4.8");
@@ -259,6 +269,20 @@ function assertManagedConfigPrefersPackagedEndpoint() {
 
     fs.writeFileSync(configPath, JSON.stringify({
       baseUrl: "https://packaged.example.invalid/v1",
+      codexModel: "gpt-5.5",
+      restrictedCodexModel: "deepseek-v4-flash",
+      codexModels: {
+        "gpt-5.5": { id: "gpt-5.5", name: "GPT-5.5" }
+      }
+    }));
+    resetManagedConfigForTests();
+    assert.throws(
+      () => UCSD.codexModels,
+      /codexModels must include the configured restricted fallback model: deepseek-v4-flash/
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({
+      baseUrl: "https://packaged.example.invalid/v1",
       codexModel: "gpt-5.5"
     }));
     resetManagedConfigForTests();
@@ -278,8 +302,44 @@ function assertManagedConfigPrefersPackagedEndpoint() {
     delete process.env.UCSD_AI_BASE_URL;
     delete process.env.UCSD_AI_DOCS_URL;
     delete process.env.UCSD_ALLOW_MANAGED_CONFIG_ENV;
+    delete process.env.UCSD_CODEX_MODEL;
+    delete process.env.UCSD_RESTRICTED_CODEX_MODEL;
     resetManagedConfigForTests();
     fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertExternalDefaultRespectsCapabilityProbe() {
+  const originalAllowEnvConfig = process.env.UCSD_ALLOW_MANAGED_CONFIG_ENV;
+  const originalCodexModel = process.env.UCSD_CODEX_MODEL;
+  const originalRestrictedCodexModel = process.env.UCSD_RESTRICTED_CODEX_MODEL;
+
+  process.env.UCSD_ALLOW_MANAGED_CONFIG_ENV = "1";
+  process.env.UCSD_CODEX_MODEL = "gpt-5.5";
+  process.env.UCSD_RESTRICTED_CODEX_MODEL = "deepseek-v4-flash";
+  resetManagedConfigForTests();
+
+  try {
+    await runDryRun(process.platform, {
+      connectionResult: { ok: true, externalModelsEnabled: true }
+    });
+    await runDryRun(process.platform, {
+      connectionResult: { ok: true, externalModelsEnabled: false }
+    });
+    assertT3DefaultsPatcherRespectsModelAccess();
+  } finally {
+    restoreEnvironmentVariable("UCSD_ALLOW_MANAGED_CONFIG_ENV", originalAllowEnvConfig);
+    restoreEnvironmentVariable("UCSD_CODEX_MODEL", originalCodexModel);
+    restoreEnvironmentVariable("UCSD_RESTRICTED_CODEX_MODEL", originalRestrictedCodexModel);
+    resetManagedConfigForTests();
+  }
+}
+
+function restoreEnvironmentVariable(name, value) {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
   }
 }
 
@@ -660,9 +720,23 @@ function assertWindowsT3CodeAppDetection() {
 async function runDryRun(platform, options) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-clean-"));
   const paths = getPaths(tempRoot, platform);
-  const expectedCodexModels = options.externalModelsEnabled === false
-    ? EXPECTED_DEEPSEEK_ONLY_CODEX_MODELS
-    : EXPECTED_CODEX_MODELS;
+  const connectionResult = Object.prototype.hasOwnProperty.call(options, "connectionResult")
+    ? options.connectionResult
+    : {
+        ok: true,
+        externalModelsEnabled: options.externalModelsEnabled !== false
+      };
+  const externalModelsEnabled = Boolean(
+    connectionResult
+      && typeof connectionResult === "object"
+      && connectionResult.externalModelsEnabled === true
+  );
+  const expectedModel = externalModelsEnabled
+    ? UCSD.codexModel
+    : UCSD.restrictedCodexModel;
+  const expectedCodexModels = externalModelsEnabled
+    ? Object.keys(UCSD.codexModels)
+    : [UCSD.restrictedCodexModel];
   const runtimeArch = platform === "win32" ? "x64" : process.arch;
   const fakeRuntime = getNodeRuntimePaths(paths, platform, runtimeArch);
   const commands = [];
@@ -732,10 +806,7 @@ async function runDryRun(platform, options) {
         },
         checkTritonAiConnection: async (connectionOptions) => {
           connectionChecks.push(connectionOptions);
-          return {
-            ok: true,
-            externalModelsEnabled: options.externalModelsEnabled !== false
-          };
+          return connectionResult;
         },
         installT3CodeDesktop: async (installOptions) => {
           assert.strictEqual(connectionChecks.length, 1, "TritonAI connection should be checked before desktop app install");
@@ -831,7 +902,7 @@ async function runDryRun(platform, options) {
 
     const t3Settings = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
     assert.strictEqual(t3Settings.textGenerationModelSelection.instanceId, "codex");
-    assert.strictEqual(t3Settings.textGenerationModelSelection.model, UCSD.codexModel);
+    assert.strictEqual(t3Settings.textGenerationModelSelection.model, expectedModel);
     assert.strictEqual(t3Settings.providers.codex.enabled, true);
     assert.strictEqual(t3Settings.providers.codex.binaryPath, managedCodex);
     assert.strictEqual(t3Settings.providers.codex.homePath, paths.codexHome);
@@ -846,7 +917,7 @@ async function runDryRun(platform, options) {
 
     const t3DevSettings = JSON.parse(fs.readFileSync(path.join(paths.t3Home, "dev", "settings.json"), "utf8"));
     assert.strictEqual(t3DevSettings.textGenerationModelSelection.instanceId, "codex");
-    assert.strictEqual(t3DevSettings.textGenerationModelSelection.model, UCSD.codexModel);
+    assert.strictEqual(t3DevSettings.textGenerationModelSelection.model, expectedModel);
     assert.strictEqual(t3DevSettings.providerInstances.codex.config.binaryPath, managedCodex);
     assert.strictEqual(t3DevSettings.providerInstances.codex.config.homePath, paths.codexHome);
 
@@ -854,7 +925,7 @@ async function runDryRun(platform, options) {
     assert.match(t3DefaultsPatcher, /projection_projects/);
     assert.match(t3DefaultsPatcher, /projection_threads/);
     assertIncludesPath(t3DefaultsPatcher, path.join(paths.t3Home, "dev", "settings.json"));
-    assert(t3DefaultsPatcher.includes(UCSD.codexModel));
+    assert(t3DefaultsPatcher.includes(expectedModel));
     assertIncludesPath(t3DefaultsPatcher, managedCodex);
     assertIncludesPath(t3DefaultsPatcher, paths.codexHome);
     assertIncludesPath(t3DefaultsPatcher, path.join(paths.t3Home, "caches"));
@@ -1139,7 +1210,7 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       patched.close();
       assert.deepStrictEqual(selection, {
         instanceId: "codex",
-        model: externalModelsEnabled ? "gpt-5.5" : UCSD.codexModel
+        model: externalModelsEnabled ? "gpt-5.5" : UCSD.restrictedCodexModel
       });
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1151,6 +1222,7 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-t3code-config-"));
   try {
     const paths = getPaths(tempRoot, "darwin");
+    paths.externalModelsEnabled = true;
     fs.mkdirSync(path.dirname(paths.t3Settings), { recursive: true });
     fs.writeFileSync(paths.t3Settings, JSON.stringify({
       providers: {
@@ -1195,11 +1267,11 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
     const limitedSettings = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
     assert.deepStrictEqual(
       limitedSettings.providerInstances.codex.config.customModels,
-      EXPECTED_DEEPSEEK_ONLY_CODEX_MODELS
+      EXPECTED_RESTRICTED_CODEX_MODELS
     );
     assert.deepStrictEqual(
       limitedSettings.providers.codex.customModels,
-      EXPECTED_DEEPSEEK_ONLY_CODEX_MODELS
+      EXPECTED_RESTRICTED_CODEX_MODELS
     );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
