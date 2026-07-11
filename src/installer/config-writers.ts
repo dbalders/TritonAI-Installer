@@ -112,10 +112,11 @@ ${skillList}
 }
 
 function writeT3CodeSettings(paths) {
-  for (const settingsPath of getT3SettingsPaths(paths)) {
-    const existing = readJson(settingsPath);
-    writeJson(settingsPath, buildT3CodeSettings(existing, paths));
-  }
+  const updates = prepareManagedSettingsUpdates(
+    getT3SettingsPaths(paths),
+    (existing) => buildT3CodeSettings(existing, paths)
+  );
+  commitManagedSettingsUpdates(updates);
 
   clearT3ProviderStatusCaches(paths);
   writeT3CodeDefaultsPatcher(paths);
@@ -208,18 +209,7 @@ const codexHomePath = ${JSON.stringify(paths.codexHome)};
 const providerEnvironment = ${JSON.stringify(providerEnvironment)};
 const providerStatusCacheDirs = ${JSON.stringify(getT3ProviderStatusCacheDirs(paths))};
 
-function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function writeJson(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\\n");
-}
+${managedSettingsHelpersSource()}
 
 function mergeEnvironmentVariables(existing = [], additions = []) {
   const byName = new Map();
@@ -280,14 +270,13 @@ function disableProviderInstanceMap(instances = {}, enabledProviderId) {
   return disabled;
 }
 
-function enforceSettings(settingsPath) {
-  const existing = readJson(settingsPath);
+function buildManagedSettings(existing) {
   const providers = existing.providers || {};
   const instances = existing.providerInstances || {};
   const codexProvider = providers.codex || {};
   const codexInstance = instances.codex || {};
 
-  writeJson(settingsPath, {
+  return {
     ...existing,
     providers: {
       ...disableProviderMap(providers, "codex"),
@@ -323,7 +312,7 @@ function enforceSettings(settingsPath) {
       }
     },
     textGenerationModelSelection: modelSelection
-  });
+  };
 }
 
 function openDatabase(stateDbPath) {
@@ -392,16 +381,20 @@ function patchSessionState(db) {
     const lastErrorColumn = hasColumn(db, "projection_thread_sessions", "last_error")
       ? ", last_error = NULL"
       : "";
-    db.prepare(\`
-      UPDATE projection_thread_sessions
-      SET provider_name = 'codex',
-          status = 'stopped'
-          \${providerInstanceColumn}
-          \${providerSessionColumn}
-          \${providerThreadColumn}
-          \${activeTurnColumn}
-          \${lastErrorColumn}
-    \`).run();
+    const legacyPredicate = legacyNonCodexPredicate(db, "projection_thread_sessions");
+    if (legacyPredicate) {
+      db.prepare(\`
+        UPDATE projection_thread_sessions
+        SET provider_name = 'codex',
+            status = 'stopped'
+            \${providerInstanceColumn}
+            \${providerSessionColumn}
+            \${providerThreadColumn}
+            \${activeTurnColumn}
+            \${lastErrorColumn}
+        WHERE \${legacyPredicate}
+      \`).run();
+    }
   }
 
   if (hasTable(db, "provider_session_runtime")) {
@@ -409,30 +402,39 @@ function patchSessionState(db) {
     const providerInstanceColumn = hasProviderInstanceId
       ? "provider_instance_id = 'codex',"
       : "";
-    db.prepare(\`
-      UPDATE provider_session_runtime
-      SET provider_name = 'codex',
-          adapter_key = 'codex',
-          status = 'stopped',
-          resume_cursor_json = NULL,
-          \${providerInstanceColumn}
-          runtime_payload_json = CASE
-            WHEN json_valid(runtime_payload_json) THEN json_set(
-              runtime_payload_json,
-              '$.model', ?,
-              '$.modelSelection', json(?),
-              '$.activeTurnId', NULL,
-              '$.lastError', NULL
-            )
-            ELSE json_object('model', ?, 'modelSelection', json(?), 'activeTurnId', NULL, 'lastError', NULL)
-          END
-    \`).run(
-      modelSelection.model,
-      JSON.stringify(modelSelection),
-      modelSelection.model,
-      JSON.stringify(modelSelection),
-    );
+    const legacyPredicate = legacyNonCodexPredicate(db, "provider_session_runtime");
+    if (legacyPredicate) {
+      db.prepare(\`
+        UPDATE provider_session_runtime
+        SET provider_name = 'codex',
+            adapter_key = 'codex',
+            status = 'stopped',
+            resume_cursor_json = NULL,
+            \${providerInstanceColumn}
+            runtime_payload_json = CASE
+              WHEN json_valid(runtime_payload_json) THEN json_set(
+                runtime_payload_json,
+                '$.model', ?,
+                '$.modelSelection', json(?),
+                '$.activeTurnId', NULL,
+                '$.lastError', NULL
+              )
+              ELSE json_object('model', ?, 'modelSelection', json(?), 'activeTurnId', NULL, 'lastError', NULL)
+            END
+        WHERE \${legacyPredicate}
+      \`).run(
+        modelSelection.model,
+        JSON.stringify(modelSelection),
+        modelSelection.model,
+        JSON.stringify(modelSelection),
+      );
+    }
   }
+}
+
+function legacyNonCodexPredicate(db, table) {
+  if (!hasColumn(db, table, "provider_name")) return null;
+  return "provider_name IS NOT NULL AND provider_name != 'codex'";
 }
 
 function patchStateDatabase(stateDbPath) {
@@ -450,9 +452,8 @@ function patchStateDatabase(stateDbPath) {
   }
 }
 
-for (const settingsPath of settingsPaths) {
-  enforceSettings(settingsPath);
-}
+const settingsUpdates = prepareManagedSettingsUpdates(settingsPaths, buildManagedSettings);
+commitManagedSettingsUpdates(settingsUpdates);
 clearProviderStatusCaches();
 for (const stateDbPath of stateDbPaths) {
   patchStateDatabase(stateDbPath);
@@ -463,17 +464,212 @@ for (const stateDbPath of stateDbPaths) {
   fs.chmodSync(paths.t3DefaultsPatcher, 0o755);
 }
 
-function writeJson(file, value) {
-  writeIfChanged(file, `${JSON.stringify(value, null, 2)}\n`);
+let managedSettingsTempCounter = 0;
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function readJson(file) {
-  if (!fs.existsSync(file)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return {};
+function settingsError(action, file, error = undefined) {
+  const detail = error && error.message ? `: ${error.message}` : "";
+  return new Error(`Cannot ${action} managed TritonAI Harness settings at ${file}${detail}`, {
+    cause: error
+  });
+}
+
+function readManagedSettingsSnapshot(file) {
+  if (!fs.existsSync(file)) {
+    return { file, exists: false, raw: null, value: {}, mode: 0o600 };
   }
+
+  let raw;
+  let mode;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+    mode = fs.statSync(file).mode & 0o777;
+  } catch (error) {
+    throw settingsError("read", file, error);
+  }
+
+  if (raw.trim() === "") {
+    throw settingsError("parse empty", file);
+  }
+
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch (error) {
+    throw settingsError("parse", file, error);
+  }
+  if (!isPlainObject(value)) {
+    throw settingsError("use non-object JSON from", file);
+  }
+  return { file, exists: true, raw, value, mode };
+}
+
+function prepareManagedSettingsUpdates(files, transform) {
+  const snapshots = files.map(readManagedSettingsSnapshot);
+  return snapshots.map((snapshot) => {
+    const value = transform(snapshot.value, snapshot.file);
+    if (!isPlainObject(value)) {
+      throw settingsError("write non-object JSON to", snapshot.file);
+    }
+    return {
+      ...snapshot,
+      content: `${JSON.stringify(value, null, 2)}\n`
+    };
+  });
+}
+
+function managedSettingsTempPath(file, label) {
+  managedSettingsTempCounter += 1;
+  return path.join(
+    path.dirname(file),
+    `.${path.basename(file)}.${label}-${process.pid}-${Date.now()}-${managedSettingsTempCounter}`
+  );
+}
+
+function writeDurableTempFile(file, content, mode, label) {
+  const tempPath = managedSettingsTempPath(file, label);
+  let descriptor;
+  try {
+    descriptor = fs.openSync(tempPath, "wx", mode || 0o600);
+    fs.writeFileSync(descriptor, content, "utf8");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    return tempPath;
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch {}
+    }
+    try { fs.rmSync(tempPath, { force: true }); } catch {}
+    throw settingsError("stage an atomic replacement for", file, error);
+  }
+}
+
+function verifyManagedSettingsSnapshot(snapshot) {
+  if (!snapshot.exists) {
+    if (fs.existsSync(snapshot.file)) {
+      throw settingsError("replace concurrently created", snapshot.file);
+    }
+    return;
+  }
+
+  let current;
+  try {
+    current = fs.readFileSync(snapshot.file, "utf8");
+  } catch (error) {
+    throw settingsError("re-read before replacing", snapshot.file, error);
+  }
+  if (current !== snapshot.raw) {
+    throw settingsError("replace concurrently changed", snapshot.file);
+  }
+}
+
+function writeRecoveryBackup(update) {
+  if (!update.exists || update.raw === update.content) return;
+  const backupPath = `${update.file}.tritonai-backup`;
+  const tempPath = writeDurableTempFile(backupPath, update.raw, update.mode, "backup");
+  try {
+    fs.renameSync(tempPath, backupPath);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch {}
+    throw settingsError("preserve a recovery backup for", update.file, error);
+  }
+}
+
+function rollbackManagedSettingsUpdate(update) {
+  let current;
+  try {
+    current = fs.readFileSync(update.file, "utf8");
+  } catch (error) {
+    throw settingsError("verify before rolling back", update.file, error);
+  }
+  if (current !== update.content) {
+    throw settingsError("roll back concurrently changed", update.file);
+  }
+  if (!update.exists) {
+    fs.rmSync(update.file, { force: true });
+    return;
+  }
+  const rollbackPath = writeDurableTempFile(update.file, update.raw, update.mode, "rollback");
+  try {
+    fs.renameSync(rollbackPath, update.file);
+  } catch (error) {
+    try { fs.rmSync(rollbackPath, { force: true }); } catch {}
+    throw error;
+  }
+}
+
+function commitManagedSettingsUpdates(updates) {
+  const changed = updates.filter((update) => update.raw !== update.content);
+  if (changed.length === 0) return;
+
+  for (const update of updates) {
+    verifyManagedSettingsSnapshot(update);
+  }
+  for (const update of changed) {
+    fs.mkdirSync(path.dirname(update.file), { recursive: true });
+  }
+
+  const staged = [];
+  const committed = [];
+  try {
+    for (const update of changed) {
+      staged.push({
+        update,
+        tempPath: writeDurableTempFile(update.file, update.content, update.mode, "replacement")
+      });
+    }
+    for (const update of changed) {
+      writeRecoveryBackup(update);
+    }
+    for (const entry of staged) {
+      verifyManagedSettingsSnapshot(entry.update);
+      fs.renameSync(entry.tempPath, entry.update.file);
+      committed.push(entry.update);
+      entry.tempPath = null;
+    }
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const update of committed.reverse()) {
+      try {
+        rollbackManagedSettingsUpdate(update);
+      } catch (rollbackError) {
+        rollbackErrors.push(`${update.file}: ${rollbackError.message}`);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new Error(
+        `${error.message}. Rollback also failed for ${rollbackErrors.join("; ")}`,
+        { cause: error }
+      );
+    }
+    throw error;
+  } finally {
+    for (const entry of staged) {
+      if (entry.tempPath) {
+        try { fs.rmSync(entry.tempPath, { force: true }); } catch {}
+      }
+    }
+  }
+}
+
+function managedSettingsHelpersSource() {
+  return [
+    "let managedSettingsTempCounter = 0;",
+    isPlainObject.toString(),
+    settingsError.toString(),
+    readManagedSettingsSnapshot.toString(),
+    prepareManagedSettingsUpdates.toString(),
+    managedSettingsTempPath.toString(),
+    writeDurableTempFile.toString(),
+    verifyManagedSettingsSnapshot.toString(),
+    writeRecoveryBackup.toString(),
+    rollbackManagedSettingsUpdate.toString(),
+    commitManagedSettingsUpdates.toString()
+  ].join("\n\n");
 }
 
 function mergeEnvironmentVariables(existing = [], additions = []) {
@@ -586,5 +782,9 @@ function writeIfMissing(file, content, mode = 0o600) {
 module.exports = {
   ensureBaseFolders,
   seedOnboardingWorkspace,
-  writeT3CodeSettings
+  writeT3CodeSettings,
+  __test: {
+    commitManagedSettingsUpdates,
+    prepareManagedSettingsUpdates
+  }
 };
