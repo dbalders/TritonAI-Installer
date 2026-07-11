@@ -18,6 +18,8 @@ const WIN_MANIFEST_FILE = "latest.yml";
 const TRITONAI_LAUNCHER_NAME = TRITONAI_APP_DISPLAY_NAME;
 const MAC_LAUNCHER_EXECUTABLE_NAME = TRITONAI_APP_DISPLAY_NAME;
 const MAC_LAUNCHER_ICON_FILE = "icon.icns";
+const MAC_APP_STOP_TIMEOUT_MS = 15_000;
+const MAC_APP_STOP_POLL_MS = 200;
 const MAC_SOURCE_APP_NAMES = [
   MAC_MANAGED_APP_NAME
 ];
@@ -51,6 +53,15 @@ interface WindowsInstallRuntime {
 
 interface MacLauncherOptions {
   launcherPath?: string;
+}
+
+interface RunningMacAppProcessOptions {
+  listProcesses?: typeof findRunningMacAppProcesses;
+  terminateProcess?: typeof terminateMacAppProcess;
+  wait?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
 }
 
 async function installT3CodeDesktop({ paths, platform, arch, emit, env, resourcesPath, appRoot, packaged, windowsInstallRuntime }) {
@@ -128,7 +139,8 @@ async function replaceMacAppTransactionally({
   managedAppPath,
   emit,
   copyApp = null,
-  validateStagedApp = null
+  validateStagedApp = null,
+  stopRunningApp = stopRunningManagedMacAppIfSupported
 }) {
   validateMacAppBundle(sourceAppPath, "Mounted");
   const parent = path.dirname(managedAppPath);
@@ -155,6 +167,7 @@ async function replaceMacAppTransactionally({
     }
 
     if (fs.existsSync(managedAppPath)) {
+      await stopRunningApp({ managedAppPath, emit });
       fs.renameSync(managedAppPath, previousAppPath);
       previousMoved = true;
     }
@@ -184,6 +197,100 @@ async function replaceMacAppTransactionally({
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
   }
+}
+
+function stopRunningManagedMacAppIfSupported(options) {
+  if (process.platform !== "darwin") return false;
+  return stopRunningManagedMacApp(options);
+}
+
+async function stopRunningManagedMacApp({
+  managedAppPath,
+  emit,
+  listProcesses = findRunningMacAppProcesses,
+  terminateProcess = terminateMacAppProcess,
+  wait = delay,
+  now = Date.now,
+  timeoutMs = MAC_APP_STOP_TIMEOUT_MS,
+  pollIntervalMs = MAC_APP_STOP_POLL_MS
+}: RunningMacAppProcessOptions & { managedAppPath: string; emit: InstallerEmit }) {
+  const executablePath = getMacBundleExecutablePath(managedAppPath);
+  let runningPids = await listProcesses(executablePath, emit);
+  if (runningPids.length === 0) return false;
+
+  emit(`Stopping the running ${TRITONAI_APP_DISPLAY_NAME} app before upgrading it...`);
+  for (const pid of runningPids) {
+    try {
+      terminateProcess(pid);
+    } catch (error) {
+      if (error && error.code === "ESRCH") continue;
+      throw new Error(
+        `Could not stop the running ${TRITONAI_APP_DISPLAY_NAME} app. `
+        + `Quit ${TRITONAI_APP_DISPLAY_NAME} and retry the upgrade. The existing app was left unchanged: ${error.message}`
+      );
+    }
+  }
+
+  const deadline = now() + timeoutMs;
+  while (true) {
+    runningPids = await listProcesses(executablePath, emit);
+    if (runningPids.length === 0) {
+      emit(`${TRITONAI_APP_DISPLAY_NAME} stopped; continuing the upgrade.`);
+      return true;
+    }
+
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) {
+      throw new Error(
+        `${TRITONAI_APP_DISPLAY_NAME} did not quit within ${Math.ceil(timeoutMs / 1000)} seconds. `
+        + `Quit it manually and retry the upgrade. The existing app was left unchanged.`
+      );
+    }
+    await wait(Math.min(pollIntervalMs, remainingMs));
+  }
+}
+
+function getMacBundleExecutablePath(appPath) {
+  const plistPath = path.join(appPath, "Contents", "Info.plist");
+  const plist = fs.readFileSync(plistPath, "utf8");
+  const match = plist.match(/<key>\s*CFBundleExecutable\s*<\/key>\s*<string>\s*([^<]+)\s*<\/string>/);
+  const executableName = match ? match[1].trim() : null;
+  if (!executableName || path.basename(executableName) !== executableName) {
+    throw new Error(`Installed ${TRITONAI_APP_DISPLAY_NAME} app has an invalid CFBundleExecutable value.`);
+  }
+
+  const executablePath = path.join(appPath, "Contents", "MacOS", executableName);
+  if (!fs.existsSync(executablePath) || !fs.statSync(executablePath).isFile()) {
+    throw new Error(`Installed ${TRITONAI_APP_DISPLAY_NAME} executable was not found at ${executablePath}.`);
+  }
+  return executablePath;
+}
+
+async function findRunningMacAppProcesses(executablePath, emit) {
+  const result = await runCaptureWithStatus(
+    "/usr/sbin/lsof",
+    ["-nP", "-a", "-d", "txt", "-F", "p", "--", executablePath],
+    emit,
+    { shell: false }
+  );
+  if (result.code !== 0 && result.code !== 1) {
+    throw new Error(`Could not check whether ${TRITONAI_APP_DISPLAY_NAME} is running: ${result.stderr.trim() || `lsof exited with code ${result.code}`}`);
+  }
+
+  return [...new Set(result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.match(/^p(\d+)$/)?.[1])
+    .filter(Boolean)
+    .map(Number)
+    .filter((pid) => Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid))];
+}
+
+function terminateMacAppProcess(pid) {
+  process.kill(pid, "SIGTERM");
+}
+
+function delay(milliseconds) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function validateMacAppBundle(appPath, label) {
@@ -966,6 +1073,26 @@ function runCapture(command, args, emit, options: CommandOptions = {}) {
   });
 }
 
+function runCaptureWithStatus(command, args, emit, options: CommandOptions = {}) {
+  return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    emit(`$ ${command} ${args.join(" ")}`);
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(command, args, {
+      env: options.env || process.env,
+      shell: Object.prototype.hasOwnProperty.call(options, "shell") ? options.shell : process.platform === "win32"
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
 function runPowerShell(script, emit, options: CommandOptions = {}) {
   return run("powershell.exe", powerShellArgs(script), emit, { ...options, shell: false });
 }
@@ -1014,6 +1141,7 @@ module.exports = {
   installT3CodeDesktop,
   installWindowsDesktop,
   replaceMacAppTransactionally,
+  stopRunningManagedMacApp,
   writeMacAppLauncher,
   getBundledMacDmg,
   getBundledWindowsInstaller,

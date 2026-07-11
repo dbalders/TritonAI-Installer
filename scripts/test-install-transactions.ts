@@ -9,15 +9,130 @@ const { getPaths } = require("../src/installer/paths");
 const {
   getManagedMacAppPath,
   replaceMacAppTransactionally,
+  stopRunningManagedMacApp,
   writeMacAppLauncher
 } = require("../src/installer/t3code-desktop");
 
 async function main() {
+  await assertRunningMacAppStopsBeforeUpgrade();
+  await assertMacStopTimeoutPreservesExistingApp();
+  await assertMacCleanInstallDoesNotStopApp();
   await assertMacReplacementStagesBeforeSwapAndRollsBack();
   assertMacLauncherStagesBeforeSwapAndRollsBack();
   assertCodexVendorIdentityIsRequired();
   assertCodexReplacementStagesBeforeSwapAndRollsBack();
   console.log("Installer transaction tests passed.");
+}
+
+async function assertRunningMacAppStopsBeforeUpgrade() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-running-mac-upgrade-"));
+  try {
+    const managedApp = path.join(tempRoot, "managed", "TritonAI Harness.app");
+    const sourceApp = path.join(tempRoot, "source", "TritonAI Harness.app");
+    writeMacApp(managedApp, "old");
+    writeMacApp(sourceApp, "new");
+
+    let now = 0;
+    let lookup = 0;
+    const terminated = [];
+    const messages = [];
+    const stopRunningApp = (options) => stopRunningManagedMacApp({
+      ...options,
+      listProcesses: async (executablePath) => {
+        assert.strictEqual(
+          executablePath,
+          path.join(managedApp, "Contents", "MacOS", "TritonAI Harness")
+        );
+        lookup += 1;
+        return lookup === 1 ? [2101, 2102] : lookup === 2 ? [2102] : [];
+      },
+      terminateProcess: (pid) => terminated.push(pid),
+      wait: async (milliseconds) => { now += milliseconds; },
+      now: () => now,
+      timeoutMs: 1000,
+      pollIntervalMs: 10
+    });
+
+    await replaceMacAppTransactionally({
+      sourceAppPath: sourceApp,
+      managedAppPath: managedApp,
+      emit: (message) => messages.push(message),
+      copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
+      validateStagedApp: async () => {},
+      stopRunningApp
+    });
+
+    assert.deepStrictEqual(terminated, [2101, 2102]);
+    assert(messages.includes("Stopping the running TritonAI Harness app before upgrading it..."));
+    assert(messages.includes("TritonAI Harness stopped; continuing the upgrade."));
+    assert.strictEqual(readMacAppVersion(managedApp), "new");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertMacStopTimeoutPreservesExistingApp() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-stop-timeout-"));
+  try {
+    const managedApp = path.join(tempRoot, "managed", "TritonAI Harness.app");
+    const sourceApp = path.join(tempRoot, "source", "TritonAI Harness.app");
+    writeMacApp(managedApp, "old");
+    writeMacApp(sourceApp, "new");
+
+    let now = 0;
+    const stopRunningApp = (options) => stopRunningManagedMacApp({
+      ...options,
+      listProcesses: async () => [2201],
+      terminateProcess: () => {},
+      wait: async (milliseconds) => { now += milliseconds; },
+      now: () => now,
+      timeoutMs: 20,
+      pollIntervalMs: 10
+    });
+
+    await assert.rejects(
+      replaceMacAppTransactionally({
+        sourceAppPath: sourceApp,
+        managedAppPath: managedApp,
+        emit: () => {},
+        copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
+        validateStagedApp: async () => {},
+        stopRunningApp
+      }),
+      /did not quit within 1 seconds.*existing app was left unchanged/i
+    );
+    assert.strictEqual(
+      readMacAppVersion(managedApp),
+      "old",
+      "a stop timeout must abort before replacing the live app"
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertMacCleanInstallDoesNotStopApp() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-clean-install-"));
+  try {
+    const managedApp = path.join(tempRoot, "managed", "TritonAI Harness.app");
+    const sourceApp = path.join(tempRoot, "source", "TritonAI Harness.app");
+    writeMacApp(sourceApp, "new");
+    let stopCalls = 0;
+
+    await replaceMacAppTransactionally({
+      sourceAppPath: sourceApp,
+      managedAppPath: managedApp,
+      emit: () => {},
+      copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
+      validateStagedApp: async () => {},
+      stopRunningApp: async () => { stopCalls += 1; }
+    });
+
+    assert.strictEqual(stopCalls, 0, "a clean install must not try to stop a nonexistent app");
+    assert.strictEqual(readMacAppVersion(managedApp), "new");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertMacLauncherStagesBeforeSwapAndRollsBack() {
@@ -262,7 +377,14 @@ function assertCodexReplacementStagesBeforeSwapAndRollsBack() {
 function writeMacApp(appPath, version) {
   fs.rmSync(appPath, { recursive: true, force: true });
   fs.mkdirSync(path.join(appPath, "Contents", "MacOS"), { recursive: true });
-  fs.writeFileSync(path.join(appPath, "Contents", "Info.plist"), "<plist/>");
+  fs.writeFileSync(path.join(appPath, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>TritonAI Harness</string>
+</dict>
+</plist>
+`);
   fs.writeFileSync(path.join(appPath, "Contents", "MacOS", "TritonAI Harness"), version, { mode: 0o755 });
 }
 
