@@ -35,6 +35,7 @@ async function runInstall(payload, runtime) {
   const emit = createDiagnosticEmitter(runtime.emit || (() => {}), diagnostics);
   const desktopApps: DesktopApps = {};
   let nodeRuntime = null;
+  let environmentMigration = null;
 
   try {
     if (!apiKey) {
@@ -73,7 +74,14 @@ async function runInstall(payload, runtime) {
 
     emit("Saving TritonAI access key environment...");
     const environmentSaver = runtime.saveEnvironment || saveEnvironment;
-    await environmentSaver({ apiKey, paths, platform, nodeRuntime, emit });
+    environmentMigration = await environmentSaver({
+      apiKey,
+      paths,
+      platform,
+      nodeRuntime,
+      emit,
+      windowsEnvironmentMigrationRuntime: runtime.windowsEnvironmentMigrationRuntime
+    });
 
     diagnostics.setStep("tools");
     const tool = getTool("t3code");
@@ -113,13 +121,6 @@ async function runInstall(payload, runtime) {
       nodeRuntime,
       desktopApps
     });
-    const markerWriter = runtime.writeInstallerVersionMarker || writeInstallerVersionMarker;
-    markerWriter({
-      paths,
-      installerVersion: runtime.installerVersion || packageInstallerVersion
-    });
-    emit("Recorded the installed TritonAI Installer version.");
-    emit("Install flow finished.");
     const response = {
       ok: true,
       paths: {
@@ -138,6 +139,17 @@ async function runInstall(payload, runtime) {
       diagnostics: diagnosticsInfo
     };
     if (runtime.onDiagnostics) runtime.onDiagnostics(diagnosticsInfo);
+    const markerWriter = runtime.writeInstallerVersionMarker || writeInstallerVersionMarker;
+    markerWriter({
+      paths,
+      installerVersion: runtime.installerVersion || packageInstallerVersion
+    });
+    emit("Recorded the installed TritonAI Installer version.");
+    emit("Install flow finished.");
+    if (environmentMigration && typeof environmentMigration.finalize === "function") {
+      emit("Removing recorded legacy TritonAI user environment variables...");
+      await environmentMigration.finalize();
+    }
     return response;
   } catch (error) {
     const diagnosticsInfo = diagnostics.writeSupportReport({

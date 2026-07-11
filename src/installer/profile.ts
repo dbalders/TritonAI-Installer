@@ -1,9 +1,8 @@
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
 const { UCSD } = require("./constants");
 const { getTritonAiEnvironment } = require("./codex-environment");
-const { readApiKeyFromEnvFile } = require("./existing-api-key");
+const { prepareWindowsEnvironmentMigration } = require("./windows-environment-migration");
 
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -29,82 +28,18 @@ function buildMacEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment }) 
   ].filter(Boolean);
 }
 
-function buildWindowsEnvironmentCleanupScript({ apiKey, legacyApiKey, paths, pathEntries, tritonAiEnvironment }) {
-  const managedApiKeys = [...new Set([apiKey, legacyApiKey].filter(Boolean))];
-  const managedValues = [
-    ...Object.entries(tritonAiEnvironment),
-    [UCSD.codexHomeEnv, paths.codexHome],
-    ...managedApiKeys.map((value) => [UCSD.apiKeyEnv, value])
-  ];
-  const valueEntries = managedValues
-    .map(([name, value]) => `  [pscustomobject]@{ Name = ${powerShellLiteral(name)}; Value = ${powerShellLiteral(value)} }`)
-    .join(",\n");
-  const managedPaths = pathEntries.map((entry) => powerShellLiteral(entry)).join(", ");
-
-  return `
-$changed = $false
-$managedValues = @(
-${valueEntries}
-)
-foreach ($item in $managedValues) {
-  $current = [Environment]::GetEnvironmentVariable($item.Name, 'User')
-  if ($null -ne $current -and $current -ceq $item.Value) {
-    [Environment]::SetEnvironmentVariable($item.Name, $null, 'User')
-    $changed = $true
-  }
-}
-
-$currentPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($currentPath) {
-  $managedPaths = @(${managedPaths})
-  $keptPaths = @($currentPath -split ';' | Where-Object { $_ -and $managedPaths -notcontains $_ })
-  $updatedPath = $keptPaths -join ';'
-  if ($updatedPath -cne $currentPath) {
-    [Environment]::SetEnvironmentVariable('Path', $updatedPath, 'User')
-    $changed = $true
-  }
-}
-
-if ($changed) {
-  $signature = @'
-using System;
-using System.Runtime.InteropServices;
-
-public static class NativeMethods {
-  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-  public static extern IntPtr SendMessageTimeout(
-    IntPtr hWnd,
-    uint Msg,
-    UIntPtr wParam,
-    string lParam,
-    uint fuFlags,
-    uint uTimeout,
-    out UIntPtr lpdwResult);
-}
-'@
-  Add-Type -TypeDefinition $signature -ErrorAction SilentlyContinue
-  $result = [UIntPtr]::Zero
-  [NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result) | Out-Null
-}
-`;
-}
-
-async function saveEnvironment({ apiKey, paths, platform, nodeRuntime, emit }) {
+async function saveEnvironment({ apiKey, paths, platform, nodeRuntime, emit, windowsEnvironmentMigrationRuntime = {} }) {
   fs.mkdirSync(path.dirname(paths.envFile), { recursive: true });
   const pathEntries = [paths.binDir, paths.codexBinDir, paths.nodeGlobalBinDir, nodeRuntime && nodeRuntime.nodeBinDir].filter(Boolean);
   const tritonAiEnvironment = getTritonAiEnvironment(paths) as Record<string, string>;
 
   if (platform === "win32") {
-    if (process.platform === "win32") {
-      const legacyApiKey = readApiKeyFromEnvFile(paths.envFile);
-      const cleanupScript = buildWindowsEnvironmentCleanupScript({ apiKey, legacyApiKey, paths, pathEntries, tritonAiEnvironment });
-      await runPowerShell(cleanupScript, "removing legacy TritonAI user environment variables");
-    }
+    const migration = prepareWindowsEnvironmentMigration({ paths, ...windowsEnvironmentMigrationRuntime });
     const lines = buildWindowsEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment });
 
     fs.writeFileSync(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
     emit(`Saved private TritonAI Harness environment at ${paths.envFile}`);
-    return;
+    return migration;
   }
 
   removeLegacyShellProfileIntegration(paths.homeDir, paths.envFile);
@@ -143,23 +78,8 @@ function removeLegacyShellProfileIntegration(homeDir, envFile) {
   }
 }
 
-function runPowerShell(command, description) {
-  return new Promise<void>((resolve, reject) => {
-    const encodedCommand = Buffer.from(command, "utf16le").toString("base64");
-    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand], {
-      windowsHide: true
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`PowerShell exited with code ${code} while ${description}`));
-    });
-  });
-}
-
 module.exports = {
   buildMacEnvironmentLines,
-  buildWindowsEnvironmentCleanupScript,
   buildWindowsEnvironmentLines,
   powerShellLiteral,
   removeLegacyShellProfileIntegration,

@@ -41,6 +41,7 @@ function getPaths(homeDir = os.homedir(), platform = process.platform) {
     onboardingWorkspaceDir: path.join(homeDir, "TritonAI"),
     onboardingWorkspaceMarker: path.join(ucsdRoot, "state", "onboarding-workspace-seeded"),
     installerVersionMarker: path.join(stateDir, INSTALLER_VERSION_MARKER_FILENAME),
+    windowsEnvironmentMigrationState: path.join(stateDir, "windows-environment-migration.json"),
     envFile: isWindows ? path.join(ucsdRoot, "env.ps1") : path.join(ucsdRoot, "env"),
     t3Home: tritonAiHome,
     t3Settings: path.join(tritonAiHome, "userdata", "settings.json"),
