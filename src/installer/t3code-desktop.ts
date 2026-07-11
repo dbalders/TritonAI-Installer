@@ -84,6 +84,7 @@ async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, pa
   fs.mkdirSync(downloadDir, { recursive: true });
 
   let dmgPath;
+  let appInstalled = false;
   if (bundledDmg) {
     dmgPath = bundledDmg.dmgPath;
     verifyDownload(dmgPath, bundledDmg.expected);
@@ -102,7 +103,9 @@ async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, pa
 
   try {
     await run("hdiutil", ["verify", dmgPath], emit);
+    emit(`Verified ${TRITONAI_APP_DISPLAY_NAME} installer image.`);
     await run("hdiutil", ["attach", dmgPath, "-nobrowse", "-readonly", "-mountpoint", mountDir], emit);
+    emit(`Mounted ${TRITONAI_APP_DISPLAY_NAME} installer image.`);
 
     const mountedApp = findApp(mountDir);
     if (!mountedApp) {
@@ -114,11 +117,18 @@ async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, pa
       managedAppPath,
       emit
     });
+    appInstalled = true;
   } finally {
+    if (appInstalled) {
+      emit(`Closing ${TRITONAI_APP_DISPLAY_NAME} installer image.`);
+    }
     await run("hdiutil", ["detach", mountDir], emit, { allowFailure: true });
     fs.rmSync(mountDir, { recursive: true, force: true });
   }
 
+  if (appInstalled) {
+    emit(`Closed ${TRITONAI_APP_DISPLAY_NAME} installer image.`);
+  }
   const shortcutPath = writeMacAppLauncher(paths, emit, arch);
   emit(`${TRITONAI_LAUNCHER_NAME} launcher installed at ${shortcutPath}`);
   return { appPath: shortcutPath, shortcutPath };
@@ -149,12 +159,14 @@ async function replaceMacAppTransactionally({
     } else {
       await run("ditto", [sourceAppPath, stagedAppPath], emit);
     }
+    emit(`Copied ${TRITONAI_APP_DISPLAY_NAME} app to staging.`);
     validateMacAppBundle(stagedAppPath, "Staged");
     if (validateStagedApp) {
       await validateStagedApp(stagedAppPath);
     } else if (process.platform === "darwin") {
       await run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", stagedAppPath], emit);
     }
+    emit(`Verified staged ${TRITONAI_APP_DISPLAY_NAME} app.`);
 
     if (fs.existsSync(managedAppPath)) {
       await stopRunningApp({ emit });
@@ -164,6 +176,7 @@ async function replaceMacAppTransactionally({
     fs.renameSync(stagedAppPath, managedAppPath);
     replacementActivated = true;
     validateMacAppBundle(managedAppPath, "Installed");
+    emit(`Installed ${TRITONAI_APP_DISPLAY_NAME} app into its managed location.`);
     replacementCompleted = true;
   } catch (error) {
     if (previousMoved) {
@@ -288,6 +301,7 @@ async function installWindowsDesktop({
   await unblock(installerPath, emit);
   emit(`Running ${TRITONAI_APP_DISPLAY_NAME} Windows installer...`);
   await installerRunner(installerPath, ["/S"], emit, env);
+  emit(`${TRITONAI_APP_DISPLAY_NAME} Windows installer completed.`);
 
   const appPath = await appWaiter(paths.homeDir);
   if (!appPath) {

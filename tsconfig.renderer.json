@@ -5,6 +5,7 @@
   },
   "include": [
     "src/global.d.ts",
+    "src/renderer/install-progress.ts",
     "src/renderer/app.ts"
   ],
   "exclude": [

@@ -24,6 +24,7 @@ const required = [
   "src/installer/tool-manifest.ts",
   "src/installer/config-writers.ts",
   "src/renderer/index.html",
+  "src/renderer/install-progress.ts",
   "src/renderer/app.ts",
   "src/renderer/styles.css",
   "electron-builder.mac.json",
@@ -41,6 +42,7 @@ const required = [
   "scripts/test-windows-upgrade.ts",
   "scripts/test-release-contract.ts",
   "scripts/test-install-transactions.ts",
+  "scripts/test-renderer-progress.ts",
   "scripts/test-clean-runtime.ts",
   "scripts/write-managed-config.ts",
   "scripts/verify-macos-bundled-resources.ts",
@@ -63,7 +65,8 @@ const required = [
   "release-artifacts.json",
   "dist/src/main.js",
   "dist/src/preload.js",
-  "dist/src/renderer/app.js"
+  "dist/src/renderer/app.js",
+  "dist/src/renderer/install-progress.js"
 ];
 
 for (const file of required) {

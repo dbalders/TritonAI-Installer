@@ -37,7 +37,7 @@ const installSteps = [
   { id: "connect", label: "Connect to TritonAI", match: ["saving", "access key", "environment", "tritonai connection", "connection verified"] },
   { id: "tools", label: "Automatic TritonAI setup", match: ["codex", "backend", "cli", "configuring", "routing", "defaults"] },
   { id: "shortcut", label: `Install ${TRITONAI_APP_DISPLAY_NAME}`, match: ["desktop", "shortcut", "applications", "launcher", "bundled image"] },
-  { id: "verify", label: "Check everything works", match: ["finished"] }
+  { id: "verify", label: "Check everything works", match: ["recorded the installed tritonai installer version", "finished"] }
 ];
 
 const installStepDetails = {
@@ -53,18 +53,23 @@ const installStepDetails = {
     { id: "store", label: "Store access settings on this computer", match: ["saving", "access key", "environment", "shell environment"] }
   ],
   tools: [
-    { id: "support", label: "Install managed Codex backend", match: ["installing managed codex", "found managed codex", "codex", "cli"] },
-    { id: "defaults", label: `Apply ${TRITONAI_APP_DISPLAY_NAME} defaults`, match: ["defaults"] },
+    { id: "support", label: "Install managed Codex backend", match: ["installing managed codex", "found managed codex"] },
+    { id: "verify", label: "Verify the managed Codex backend", match: ["verifying tritonai codex"] },
     { id: "routing", label: "Configure UC San Diego routing", match: ["configuring", "routing"] },
-    { id: "verify", label: "Verify the managed Codex backend", match: ["verifying tritonai codex", "found managed codex"] }
+    { id: "defaults", label: `Apply ${TRITONAI_APP_DISPLAY_NAME} defaults`, match: ["defaults"] }
   ],
   shortcut: [
-    { id: "image", label: `Use the bundled signed ${TRITONAI_APP_DISPLAY_NAME} app`, match: ["bundled image", "signed app-bundled"] },
-    { id: "copy", label: "Install the app into the managed location", match: ["ditto", "desktop app"] },
+    { id: "package", label: `Prepare the ${TRITONAI_APP_DISPLAY_NAME} app package`, match: ["desktop app", "bundled image", "installer staged"] },
+    { id: "image", label: "Verify the app package", match: ["verified tritonai harness installer image"] },
+    { id: "mount", label: "Prepare the app for installation", match: ["mounted tritonai harness installer image", "running tritonai harness windows installer"] },
+    { id: "copy", label: "Copy the app into staging", match: ["copied tritonai harness app to staging", "windows installer completed"] },
+    { id: "validate", label: "Verify the staged app", match: ["verified staged tritonai harness app", "after the windows installer completed"] },
+    { id: "install", label: "Install the app into its managed location", match: ["installed tritonai harness app into its managed location"] },
+    { id: "cleanup", label: "Close the app package", match: ["closing tritonai harness installer image", "closed tritonai harness installer image"] },
     { id: "launcher", label: "Create the launcher users will open", match: ["launcher", "shortcut", "applications"] }
   ],
   verify: [
-    { id: "paths", label: "Confirm install paths are available", match: ["finished"] },
+    { id: "paths", label: "Record the installed setup", match: ["recorded the installed tritonai installer version"] },
     { id: "ready", label: `Mark ${TRITONAI_APP_DISPLAY_NAME} ready to open`, match: ["finished"] }
   ]
 };
@@ -401,9 +406,9 @@ function updateProgress(value) {
 }
 
 function getProgressForStep(stepIndex) {
-  const baseByStep = [14, 34, 58, 78, 92];
-  const eventBump = Math.min(8, state.events.length * 2);
-  return Math.min(96, (baseByStep[stepIndex] || 12) + eventBump);
+  const step = installSteps[stepIndex];
+  if (!step) return 0;
+  return getInstallProgress(state.platform, step.id, state.detailProgress[step.id] ?? -1);
 }
 
 function updateConnectionCopy() {
@@ -831,6 +836,7 @@ async function startInstallFlow() {
   state.installResponse = null;
   state.supportInfo = null;
   state.events = [];
+  state.detailProgress = {};
   state.progressValue = 0;
   renderInstallChecklist();
   renderEventLog();
@@ -970,6 +976,14 @@ function createPreviewInstallerApi(): InstallerApi {
         "Verifying TritonAI support components...",
         "Configuring TritonAI access for UCSD routing...",
         `Installing ${TRITONAI_APP_DISPLAY_NAME} desktop app...`,
+        `Verified ${TRITONAI_APP_DISPLAY_NAME} installer image.`,
+        `Mounted ${TRITONAI_APP_DISPLAY_NAME} installer image.`,
+        `Copied ${TRITONAI_APP_DISPLAY_NAME} app to staging.`,
+        `Verified staged ${TRITONAI_APP_DISPLAY_NAME} app.`,
+        `Installed ${TRITONAI_APP_DISPLAY_NAME} app into its managed location.`,
+        `Closing ${TRITONAI_APP_DISPLAY_NAME} installer image.`,
+        `${TRITONAI_APP_DISPLAY_NAME} launcher installed at /Applications/${TRITONAI_APP_DISPLAY_NAME}.app`,
+        "Recorded the installed TritonAI Installer version.",
         "Install flow finished."
       ];
 
