@@ -305,10 +305,7 @@ async function verifyTritonAiConnection({ apiKey, runtime, emit }) {
 }
 
 function getExternalModelsEnabled(result) {
-  if (!result || typeof result !== "object") {
-    return true;
-  }
-  return result.externalModelsEnabled !== false;
+  return result?.externalModelsEnabled === true;
 }
 
 function buildEnv(apiKey, paths, nodeRuntime, platform = process.platform) {
