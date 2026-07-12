@@ -21,6 +21,7 @@ async function main() {
   await assertNoOpWithholdsNewInstallerMarker();
   await assertPackagedMissingCodexFailsClosed();
   assertPowerShellEnvironmentUsesLiteralQuoting();
+  assertNsisProcessDetectionContract();
   console.log("Windows upgrade contract tests passed.");
 }
 
@@ -208,6 +209,27 @@ function assertPowerShellEnvironmentUsesLiteralQuoting() {
   assert(lines.some((line) => line.includes("key''$`\"value")));
   assert(lines.every((line) => !line.includes("CODEX_HOME")), "private launcher environment must not export CODEX_HOME");
   assert(lines[0].endsWith(" + $env:PATH"));
+}
+
+function assertNsisProcessDetectionContract() {
+  const source = fs.readFileSync(path.join(__dirname, "..", "..", "build", "installer.nsh"), "utf8");
+  const powerShellLine = source
+    .split("\n")
+    .find((line) => line.includes("Get-CimInstance -ClassName Win32_Process"));
+
+  assert(source.includes("TRITONAI_NSIS_TARGET_EXECUTABLE"));
+  assert(source.includes("$$_.ExecutablePath"));
+  assert(source.includes("[System.StringComparison]::OrdinalIgnoreCase"));
+  assert(source.includes("Stop-Process -Id $$proc.ProcessId -Force"));
+  assert(source.includes("MB_RETRYCANCEL|MB_ICONEXCLAMATION"));
+  assert.strictEqual(
+    source.match(/Get-CimInstance -ClassName Win32_Process -ErrorAction Stop/g)?.length,
+    2,
+    "both NSIS process queries must fail closed"
+  );
+  assert(powerShellLine, "NSIS process detection command must exist");
+  assert(!powerShellLine.includes("$INSTDIR"), "PowerShell must receive the target executable path out-of-band");
+  assert(!source.includes("$$_.Path"), "Win32_Process.Path is not the executable path property");
 }
 
 function noOpWindowsRuntime(fixture) {
