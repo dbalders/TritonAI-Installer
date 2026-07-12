@@ -138,7 +138,6 @@ async function runInstall(payload, runtime) {
       desktopApps,
       diagnostics: diagnosticsInfo
     };
-    if (runtime.onDiagnostics) runtime.onDiagnostics(diagnosticsInfo);
     const markerWriter = runtime.writeInstallerVersionMarker || writeInstallerVersionMarker;
     markerWriter({
       paths,
@@ -150,6 +149,7 @@ async function runInstall(payload, runtime) {
       await environmentMigration.finalize();
     }
     emit("Install flow finished.");
+    if (runtime.onDiagnostics) runtime.onDiagnostics(diagnosticsInfo);
     return response;
   } catch (error) {
     const diagnosticsInfo = diagnostics.writeSupportReport({

@@ -206,6 +206,8 @@ async function assertEnvironmentMigrationWaitsForSuccessfulInstall() {
     fs.mkdirSync(path.dirname(nodeRuntime.npmCliJs), { recursive: true });
     fs.writeFileSync(nodeRuntime.npmCliJs, "");
     let cleanupCalls = 0;
+    let cleanupError: Error | null = null;
+    const diagnosticStatuses = [];
     const events = [];
 
     const runtime: any = {
@@ -222,27 +224,38 @@ async function assertEnvironmentMigrationWaitsForSuccessfulInstall() {
         finalize: async () => {
           cleanupCalls += 1;
           events.push("migration finalized");
+          if (cleanupError) throw cleanupError;
         }
       }),
       checkTritonAiConnection: async () => ({ externalModelsEnabled: true }),
       installBundledCodexCli: async () => true,
       getCodexVersion: () => CODEX_CLI_VERSION,
       commandRunner: async () => {},
+      onDiagnostics: (diagnostics) => diagnosticStatuses.push(diagnostics.ok),
       writeInstallerVersionMarker: () => {},
       installT3CodeDesktop: async () => { throw new Error("simulated later install failure"); }
     };
 
     await assert.rejects(runInstall({ apiKey: "test-key" }, runtime), /simulated later install failure/);
     assert.strictEqual(cleanupCalls, 0, "later install failure must not remove recorded user environment state");
+    assert.deepStrictEqual(diagnosticStatuses, [false]);
 
     runtime.installT3CodeDesktop = async () => ({});
     runtime.writeInstallerVersionMarker = () => { throw new Error("simulated marker failure"); };
     await assert.rejects(runInstall({ apiKey: "test-key" }, runtime), /simulated marker failure/);
     assert.strictEqual(cleanupCalls, 0, "marker failure must occur before legacy user environment cleanup");
+    assert.deepStrictEqual(diagnosticStatuses, [false, false], "marker failure must not emit success diagnostics first");
 
     runtime.writeInstallerVersionMarker = () => {};
-    await runInstall({ apiKey: "test-key" }, runtime);
+    cleanupError = new Error("simulated cleanup failure");
+    await assert.rejects(runInstall({ apiKey: "test-key" }, runtime), /simulated cleanup failure/);
     assert.strictEqual(cleanupCalls, 1);
+    assert.deepStrictEqual(diagnosticStatuses, [false, false, false], "cleanup failure must emit diagnostics exactly once");
+
+    cleanupError = null;
+    await runInstall({ apiKey: "test-key" }, runtime);
+    assert.strictEqual(cleanupCalls, 2);
+    assert.deepStrictEqual(diagnosticStatuses, [false, false, false, true]);
     assert(
       events.lastIndexOf("migration finalized") < events.lastIndexOf("Install flow finished."),
       "the install must not report completion before legacy environment cleanup finishes"
