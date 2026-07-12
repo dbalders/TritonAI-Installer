@@ -9,6 +9,7 @@ function main() {
     baseUrl: requiredUrl("UCSD_AI_BASE_URL"),
     apiDocsUrl: optionalUrl("UCSD_AI_DOCS_URL"),
     codexModel: process.env.UCSD_CODEX_MODEL || "deepseek-v4-flash",
+    restrictedCodexModel: process.env.UCSD_RESTRICTED_CODEX_MODEL || "deepseek-v4-flash",
     externalModelProbe: process.env.UCSD_EXTERNAL_MODEL_PROBE || "gpt-5.5"
   };
 
