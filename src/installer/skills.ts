@@ -6,6 +6,7 @@ const {
   validateManagedSkillsManifest
 } = require("./skill-manifest");
 const { defaultAppRoot } = require("./app-root");
+const { assertCanonicalSecureSkillsRepository } = require("./secure-skills-provenance");
 
 interface SkillsBundleOptions {
   resourcesPath?: string;
@@ -90,9 +91,7 @@ function readBundledManifest(source) {
 
 function validateBundledSkillsProvenance(manifest) {
   const repository = manifest && manifest.source && manifest.source.repo;
-  if (typeof repository !== "string" || !/(?:^|[/:])dbalders\/UCSD-Skills-Library-Secure(?:\.git)?$/i.test(repository)) {
-    throw new Error("Bundled secure skills manifest must identify dbalders/UCSD-Skills-Library-Secure as its canonical source repository.");
-  }
+  assertCanonicalSecureSkillsRepository(repository, "Bundled secure skills manifest");
 }
 
 function readInstalledManagedManifest(manifestPath) {

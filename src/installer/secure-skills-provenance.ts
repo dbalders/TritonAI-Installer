@@ -1,0 +1,89 @@
+const path = require("path");
+
+const CANONICAL_GITHUB_HOST = "github.com";
+const CANONICAL_SECURE_REPOSITORY = "dbalders/UCSD-Skills-Library-Secure";
+
+function assertCanonicalSecureSkillsRepository(repository, label = "Secure skills source") {
+  const parsed = parseGitHubRepository(repository);
+  const canonical = parsed
+    && parsed.host === CANONICAL_GITHUB_HOST
+    && parsed.owner.toLowerCase() === "dbalders"
+    && parsed.repository.toLowerCase() === "ucsd-skills-library-secure";
+  if (!canonical) {
+    throw new Error(
+      `${label} must identify ${CANONICAL_GITHUB_HOST}/${CANONICAL_SECURE_REPOSITORY} as its canonical source repository; `
+      + `${sanitizeRepositoryUrl(repository)} is not accepted as secure skills provenance.`
+    );
+  }
+  return CANONICAL_SECURE_REPOSITORY;
+}
+
+function parseGitHubRepository(value) {
+  const raw = String(value || "").trim();
+  if (!raw || isLocalRepository(raw)) return null;
+
+  if (!raw.includes("://")) {
+    const scp = raw.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
+    if (!scp || /[?#]/.test(scp[2])) return null;
+    return parseCanonicalPath(scp[1], scp[2]);
+  }
+
+  try {
+    const parsed = new URL(raw);
+    if (!["https:", "ssh:"].includes(parsed.protocol)) return null;
+    if (parsed.port || parsed.search || parsed.hash || parsed.pathname.includes("%")) return null;
+    return parseCanonicalPath(parsed.hostname, parsed.pathname);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function parseCanonicalPath(host, repositoryPath) {
+  const parts = String(repositoryPath).split("/").filter(Boolean);
+  if (parts.length !== 2) return null;
+  const owner = parts[0];
+  const repository = parts[1].replace(/\.git$/i, "");
+  if (!owner || !repository) return null;
+  return {
+    host: String(host).toLowerCase(),
+    owner,
+    repository
+  };
+}
+
+function sanitizeRepositoryUrl(value) {
+  const raw = String(value || "").trim();
+  if (isLocalRepository(raw)) return "local-repository";
+
+  if (!raw.includes("://")) {
+    const scp = raw.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
+    if (scp) {
+      return `${scp[1]}:${scp[2].replace(/[?#].*$/, "")}`;
+    }
+  }
+
+  try {
+    const parsed = new URL(raw);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch (_error) {
+    return raw.replace(/[?#].*$/, "");
+  }
+}
+
+function isLocalRepository(value) {
+  return path.isAbsolute(value)
+    || path.win32.isAbsolute(value)
+    || /^file:/i.test(value);
+}
+
+module.exports = {
+  CANONICAL_GITHUB_HOST,
+  CANONICAL_SECURE_REPOSITORY,
+  assertCanonicalSecureSkillsRepository,
+  parseGitHubRepository,
+  sanitizeRepositoryUrl
+};
