@@ -35,10 +35,8 @@ const {
   findWindowsT3CodeApp,
   getManagedMacAppPath
 } = require("../src/installer/t3code-desktop");
-const {
-  buildWindowsEnvironmentCleanupScript,
-  saveEnvironment
-} = require("../src/installer/profile");
+const { saveEnvironment } = require("../src/installer/profile");
+const { buildWindowsEnvironmentCleanupScript } = require("../src/installer/windows-environment-migration");
 const {
   getTritonAiEnvironment,
   getCodexProviderEnvironmentVariables
@@ -193,14 +191,14 @@ async function assertEnvironmentIsHarnessScoped() {
 
     const previousTestValue = ["previous", "test", "value"].join("-");
     const cleanupScript = buildWindowsEnvironmentCleanupScript({
-      apiKey: "private-key",
-      legacyApiKey: previousTestValue,
-      paths: winPaths,
-      pathEntries: [winPaths.binDir, winPaths.codexBinDir, winPaths.nodeGlobalBinDir, winRuntime.nodeBinDir],
-      tritonAiEnvironment: getTritonAiEnvironment(winPaths)
+      environmentVariables: [
+        { name: "TRITONAI_API_KEY", value: previousTestValue },
+        { name: "CODEX_HOME", value: winPaths.codexHome }
+      ],
+      pathEntries: [winPaths.binDir]
     });
     assert(cleanupScript.includes("$current -ceq $item.Value"), "Windows cleanup must remove only exact Installer-owned values");
-    assert(cleanupScript.includes("$managedPaths -notcontains $_"), "Windows cleanup must preserve unrelated user PATH entries");
+    assert(cleanupScript.includes("$exactMatches.Count -eq 1 -and $semanticMatches.Count -eq 1"), "Windows cleanup must preserve ambiguous PATH entries");
     assert(cleanupScript.includes(winPaths.codexHome));
     assert(cleanupScript.includes(previousTestValue), "Windows cleanup must remove the API key recorded by the prior Installer");
 

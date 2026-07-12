@@ -19,6 +19,7 @@ async function main() {
   await assertMatchingVersionNoOpIsRejected();
   await assertPackagedInstallerRequiresBundledHarness();
   await assertNoOpWithholdsNewInstallerMarker();
+  await assertEnvironmentMigrationWaitsForSuccessfulInstall();
   await assertPackagedMissingCodexFailsClosed();
   assertPowerShellEnvironmentUsesLiteralQuoting();
   assertNsisProcessDetectionContract();
@@ -193,6 +194,72 @@ async function assertNoOpWithholdsNewInstallerMarker() {
 
     assert.strictEqual(markerCalled, false, "failed Harness updates must withhold the new Installer marker");
     assert.strictEqual(JSON.parse(fs.readFileSync(paths.installerVersionMarker, "utf8")).version, "0.2.0");
+  });
+}
+
+async function assertEnvironmentMigrationWaitsForSuccessfulInstall() {
+  await withWindowsFixture(async (fixture) => {
+    const nodeRuntime = getNodeRuntimePaths(fixture.paths, "win32", "x64");
+    fs.mkdirSync(nodeRuntime.nodeBinDir, { recursive: true });
+    fs.writeFileSync(nodeRuntime.nodeBinary, "");
+    fs.writeFileSync(nodeRuntime.npmBinary, "");
+    fs.mkdirSync(path.dirname(nodeRuntime.npmCliJs), { recursive: true });
+    fs.writeFileSync(nodeRuntime.npmCliJs, "");
+    let cleanupCalls = 0;
+    let cleanupError: Error | null = null;
+    const diagnosticStatuses = [];
+    const events = [];
+
+    const runtime: any = {
+      homeDir: fixture.homeDir,
+      platform: "win32",
+      arch: "x64",
+      installerVersion: "0.2.5",
+      appRoot: fixture.appRoot,
+      resourcesPath: null,
+      emit: (message) => events.push(message),
+      ensurePrerequisites: async () => nodeRuntime,
+      installBundledSkills: () => {},
+      saveEnvironment: async () => ({
+        finalize: async () => {
+          cleanupCalls += 1;
+          events.push("migration finalized");
+          if (cleanupError) throw cleanupError;
+        }
+      }),
+      checkTritonAiConnection: async () => ({ externalModelsEnabled: true }),
+      installBundledCodexCli: async () => true,
+      getCodexVersion: () => CODEX_CLI_VERSION,
+      commandRunner: async () => {},
+      onDiagnostics: (diagnostics) => diagnosticStatuses.push(diagnostics.ok),
+      writeInstallerVersionMarker: () => {},
+      installT3CodeDesktop: async () => { throw new Error("simulated later install failure"); }
+    };
+
+    await assert.rejects(runInstall({ apiKey: "test-key" }, runtime), /simulated later install failure/);
+    assert.strictEqual(cleanupCalls, 0, "later install failure must not remove recorded user environment state");
+    assert.deepStrictEqual(diagnosticStatuses, [false]);
+
+    runtime.installT3CodeDesktop = async () => ({});
+    runtime.writeInstallerVersionMarker = () => { throw new Error("simulated marker failure"); };
+    await assert.rejects(runInstall({ apiKey: "test-key" }, runtime), /simulated marker failure/);
+    assert.strictEqual(cleanupCalls, 0, "marker failure must occur before legacy user environment cleanup");
+    assert.deepStrictEqual(diagnosticStatuses, [false, false], "marker failure must not emit success diagnostics first");
+
+    runtime.writeInstallerVersionMarker = () => {};
+    cleanupError = new Error("simulated cleanup failure");
+    await assert.rejects(runInstall({ apiKey: "test-key" }, runtime), /simulated cleanup failure/);
+    assert.strictEqual(cleanupCalls, 1);
+    assert.deepStrictEqual(diagnosticStatuses, [false, false, false], "cleanup failure must emit diagnostics exactly once");
+
+    cleanupError = null;
+    await runInstall({ apiKey: "test-key" }, runtime);
+    assert.strictEqual(cleanupCalls, 2);
+    assert.deepStrictEqual(diagnosticStatuses, [false, false, false, true]);
+    assert(
+      events.lastIndexOf("migration finalized") < events.lastIndexOf("Install flow finished."),
+      "the install must not report completion before legacy environment cleanup finishes"
+    );
   });
 }
 
