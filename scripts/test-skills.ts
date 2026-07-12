@@ -14,6 +14,8 @@ const {
   assertCanonicalLocalSecureSkillsSource,
   assertCanonicalSecureSkillsRepository,
   findSkillsSourceDir,
+  getEffectiveCloneRepositoryUrl,
+  getEffectiveRepositoryUrl,
   sanitizeRepositoryUrl,
   stageSkillsFromSource
 } = require("./prepare-skills-vendor");
@@ -34,14 +36,39 @@ function main() {
 }
 
 function assertSecureRepositoryProvenance() {
-  assert.strictEqual(
-    assertCanonicalSecureSkillsRepository("https://github.com/dbalders/UCSD-Skills-Library-Secure.git"),
-    "dbalders/UCSD-Skills-Library-Secure"
-  );
-  assert.throws(
-    () => assertCanonicalSecureSkillsRepository("https://github.com/dbalders/UCSD-Skills-Library.git", "UCSD_SKILLS_SOURCE"),
-    /is not accepted as secure skills provenance/
-  );
+  for (const repository of [
+    "https://github.com/dbalders/UCSD-Skills-Library-Secure.git",
+    "ssh://git@github.com/dbalders/UCSD-Skills-Library-Secure.git",
+    "git@github.com:dbalders/UCSD-Skills-Library-Secure.git"
+  ]) {
+    assert.strictEqual(
+      assertCanonicalSecureSkillsRepository(repository),
+      "dbalders/UCSD-Skills-Library-Secure"
+    );
+  }
+  for (const repository of [
+    "https://github.com/dbalders/UCSD-Skills-Library.git",
+    "https://github.com.evil.example/dbalders/UCSD-Skills-Library-Secure.git",
+    "https://gitlab.com/dbalders/UCSD-Skills-Library-Secure.git",
+    "ssh://git@ssh.github.com/dbalders/UCSD-Skills-Library-Secure.git",
+    "https://github.com/extra/dbalders/UCSD-Skills-Library-Secure.git",
+    "https://github.com/dbalders/UCSD-Skills-Library-Secure/extra",
+    "git@github.com:extra/dbalders/UCSD-Skills-Library-Secure.git",
+    "file:///private/build/UCSD-Skills-Library-Secure.git",
+    "/private/build/UCSD-Skills-Library-Secure.git"
+  ]) {
+    assert.throws(
+      () => assertCanonicalSecureSkillsRepository(repository, "UCSD_SKILLS_SOURCE"),
+      /is not accepted as secure skills provenance/
+    );
+  }
+
+  const credentialed = "https://credential-user@github.com/dbalders/UCSD-Skills-Library-Secure.git?value=query-value";
+  assert.throws(() => assertCanonicalSecureSkillsRepository(credentialed), (error) => {
+    assert(!error.message.includes("credential-user"));
+    assert(!error.message.includes("query-value"));
+    return /secure skills provenance/.test(error.message);
+  });
 
   withTempRoot("tritonai-secure-provenance-", (tempRoot) => {
     execFileSync("git", ["init", "-q"], { cwd: tempRoot });
@@ -50,8 +77,36 @@ function assertSecureRepositoryProvenance() {
       () => assertCanonicalLocalSecureSkillsSource(tempRoot),
       /is not accepted as secure skills provenance/
     );
-    execFileSync("git", ["remote", "set-url", "origin", "git@github.com:dbalders/UCSD-Skills-Library-Secure.git"], { cwd: tempRoot });
+    execFileSync("git", ["remote", "set-url", "origin", "corp:dbalders/UCSD-Skills-Library-Secure.git"], { cwd: tempRoot });
+    execFileSync("git", ["config", "url.https://github.com/.insteadOf", "corp:"], { cwd: tempRoot });
+    assert.strictEqual(
+      getEffectiveRepositoryUrl(tempRoot),
+      "https://github.com/dbalders/UCSD-Skills-Library-Secure.git"
+    );
     assert.doesNotThrow(() => assertCanonicalLocalSecureSkillsSource(tempRoot));
+
+    execFileSync("git", ["config", "--unset-all", "url.https://github.com/.insteadOf"], { cwd: tempRoot });
+    execFileSync("git", ["remote", "set-url", "origin", "https://github.com/dbalders/UCSD-Skills-Library-Secure.git"], { cwd: tempRoot });
+    execFileSync("git", ["config", "url.https://github.example.invalid/.insteadOf", "https://github.com/"], { cwd: tempRoot });
+    assert.strictEqual(
+      getEffectiveRepositoryUrl(tempRoot),
+      "https://github.example.invalid/dbalders/UCSD-Skills-Library-Secure.git"
+    );
+    assert.throws(
+      () => assertCanonicalLocalSecureSkillsSource(tempRoot),
+      /github\.example\.invalid/
+    );
+
+    assert.strictEqual(
+      getEffectiveCloneRepositoryUrl("https://github.com/dbalders/UCSD-Skills-Library-Secure.git", tempRoot),
+      "https://github.example.invalid/dbalders/UCSD-Skills-Library-Secure.git"
+    );
+    assert.throws(
+      () => assertCanonicalSecureSkillsRepository(
+        getEffectiveCloneRepositoryUrl("https://github.com/dbalders/UCSD-Skills-Library-Secure.git", tempRoot)
+      ),
+      /github\.example\.invalid/
+    );
   });
 }
 
@@ -353,6 +408,27 @@ function assertRejectsInvalidBundles() {
     fs.writeFileSync(path.join(fixture.vendorDir, "manifest.json"), JSON.stringify(publicSource));
     assert.throws(() => installFixture(fixture), /canonical source repository/);
     assert.deepStrictEqual(fs.readdirSync(fixture.skillsDir), []);
+
+    for (const repository of [
+      "https://github.com.evil.example/dbalders/UCSD-Skills-Library-Secure.git",
+      "https://github.com/dbalders/UCSD-Skills-Library-Secure/extra",
+      "file:///private/build/UCSD-Skills-Library-Secure.git"
+    ]) {
+      writeVendor(fixture.vendorDir, { "secure-review": "secure-v1" });
+      const hostileSource = readJson(path.join(fixture.vendorDir, "manifest.json"));
+      hostileSource.source.repo = repository;
+      fs.writeFileSync(path.join(fixture.vendorDir, "manifest.json"), JSON.stringify(hostileSource));
+      assert.throws(() => installFixture(fixture), /canonical source repository/);
+      assert.deepStrictEqual(fs.readdirSync(fixture.skillsDir), []);
+    }
+  });
+
+  withInstallFixture((fixture) => {
+    writeVendor(fixture.vendorDir, { "secure-review": "secure-v1" });
+    const sshSource = readJson(path.join(fixture.vendorDir, "manifest.json"));
+    sshSource.source.repo = "git@github.com:dbalders/UCSD-Skills-Library-Secure.git";
+    fs.writeFileSync(path.join(fixture.vendorDir, "manifest.json"), JSON.stringify(sshSource));
+    assert.strictEqual(installFixture(fixture).installed, 1);
   });
 }
 
