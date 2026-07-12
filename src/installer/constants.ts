@@ -4,7 +4,8 @@ const { defaultAppRoot } = require("./app-root");
 
 const MANAGED_CONFIG_FILE = "managed-config.json";
 const DEFAULT_BASE_URL = "https://example.invalid/v1";
-const DEFAULT_CODEX_MODEL = "deepseek-v4-flash";
+const DEFAULT_RESTRICTED_CODEX_MODEL = "deepseek-v4-flash";
+const DEFAULT_CODEX_MODEL = DEFAULT_RESTRICTED_CODEX_MODEL;
 const DEFAULT_CODEX_MODELS = {
   [DEFAULT_CODEX_MODEL]: {
     id: DEFAULT_CODEX_MODEL,
@@ -40,6 +41,9 @@ const UCSD = {
   get codexModel() {
     return getManagedConfig().codexModel;
   },
+  get restrictedCodexModel() {
+    return getManagedConfig().restrictedCodexModel;
+  },
   get externalModelProbe() {
     return getManagedConfig().externalModelProbe;
   },
@@ -71,6 +75,7 @@ function readManagedConfigEnvOverrides() {
     baseUrl: process.env[UCSD.baseUrlEnv],
     apiDocsUrl: process.env[UCSD.docsUrlEnv],
     codexModel: process.env.UCSD_CODEX_MODEL,
+    restrictedCodexModel: process.env.UCSD_RESTRICTED_CODEX_MODEL,
     externalModelProbe: process.env.UCSD_EXTERNAL_MODEL_PROBE
   });
 }
@@ -97,16 +102,18 @@ function allowsEnvManagedConfig() {
 
 function normalizeManagedConfig(config) {
   const codexModel = config.codexModel || DEFAULT_CODEX_MODEL;
+  const restrictedCodexModel = config.restrictedCodexModel || DEFAULT_RESTRICTED_CODEX_MODEL;
   return {
     baseUrl: normalizeUrl(config.baseUrl || DEFAULT_BASE_URL),
     apiDocsUrl: normalizeOptionalUrl(config.apiDocsUrl),
     codexModel,
+    restrictedCodexModel,
     externalModelProbe: config.externalModelProbe || "gpt-5.5",
-    codexModels: normalizeCodexModels(config.codexModels, codexModel)
+    codexModels: normalizeCodexModels(config.codexModels, codexModel, restrictedCodexModel)
   };
 }
 
-function normalizeCodexModels(codexModels, codexModel) {
+function normalizeCodexModels(codexModels, codexModel, restrictedCodexModel) {
   if (codexModels && typeof codexModels === "object" && !Array.isArray(codexModels)) {
     // An explicit managed catalog is an operator policy override. Preserve it
     // exactly; key capability gating may narrow this catalog but must not add
@@ -114,22 +121,23 @@ function normalizeCodexModels(codexModels, codexModel) {
     if (!Object.prototype.hasOwnProperty.call(codexModels, codexModel)) {
       throw new Error(`Managed config codexModels must include the configured default model: ${codexModel}`);
     }
+    if (!Object.prototype.hasOwnProperty.call(codexModels, restrictedCodexModel)) {
+      throw new Error(`Managed config codexModels must include the configured restricted fallback model: ${restrictedCodexModel}`);
+    }
     return codexModels;
   }
-  if (codexModel === DEFAULT_CODEX_MODEL) {
-    return DEFAULT_CODEX_MODELS;
-  }
-  const customEntry = Object.prototype.hasOwnProperty.call(DEFAULT_CODEX_MODELS, codexModel)
-    ? {}
-    : {
-        [codexModel]: {
-          id: codexModel,
-          name: codexModel
-        }
+  const customEntries = {};
+  for (const model of [codexModel, restrictedCodexModel]) {
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_CODEX_MODELS, model)) {
+      customEntries[model] = {
+        id: model,
+        name: model
       };
+    }
+  }
   return {
     ...DEFAULT_CODEX_MODELS,
-    ...customEntry
+    ...customEntries
   };
 }
 

@@ -123,7 +123,7 @@ function writeT3CodeSettings(paths) {
 }
 
 function buildT3CodeSettings(existing, paths) {
-  const codexModel = UCSD.codexModel;
+  const codexModel = getEffectiveCodexModel(paths);
   const customModels = getCodexModelSlugs(paths);
   const codexBinaryPath = getCodexBinaryPath(paths);
   const codexHomePath = paths.codexHome;
@@ -189,7 +189,7 @@ function buildT3CodeSettings(existing, paths) {
 function writeT3CodeDefaultsPatcher(paths) {
   const modelSelection = {
     instanceId: "codex",
-    model: UCSD.codexModel
+    model: getEffectiveCodexModel(paths)
   };
   const customModels = getCodexModelSlugs(paths);
   const settingsPaths = getT3SettingsPaths(paths);
@@ -694,12 +694,18 @@ function getCodexModelSlugs(paths) {
   return Object.keys(getCodexModels(paths));
 }
 
+function getEffectiveCodexModel(paths) {
+  return paths.externalModelsEnabled === true
+    ? UCSD.codexModel
+    : UCSD.restrictedCodexModel;
+}
+
 function getCodexModels(paths) {
-  if (paths.externalModelsEnabled === false) {
+  if (paths.externalModelsEnabled !== true) {
     // Key capability is an upper bound: a packaged operator catalog cannot
     // grant models that the installed key cannot access.
     return {
-      [UCSD.codexModel]: UCSD.codexModels[UCSD.codexModel]
+      [UCSD.restrictedCodexModel]: UCSD.codexModels[UCSD.restrictedCodexModel]
     };
   }
   return UCSD.codexModels;
