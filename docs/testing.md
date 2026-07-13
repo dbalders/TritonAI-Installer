@@ -52,7 +52,7 @@ The dry run now covers:
 
 - A stale provider cache at `.tritonai-harness/caches/legacy-provider.json` reporting `version: 1.4.3` and `status: error`, which should be cleared during the Codex migration.
 - A managed Codex binary that reports `0.140.0` and should be upgraded.
-- A current managed Codex binary that reports `0.141.0` and should not reinstall.
+- A current managed Codex binary that reports `0.144.3` and should not reinstall.
 - A packaged Codex payload that should be copied instead of running npm during a normal packaged install.
 - A missing packaged Codex payload that should use the pinned npm fallback only for development/unpackaged runs.
 - A separate system `codex` outside the versioned managed prefix, which must not become TritonAI Harness's selected backend.

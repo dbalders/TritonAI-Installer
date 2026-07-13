@@ -1,8 +1,8 @@
 const NPM_POLICY = {
-  cutoffDate: "2026-07-09T18:45:25.000Z"
+  cutoffDate: "2026-07-13T18:42:26.000Z"
 };
 
-const CODEX_CLI_VERSION = "0.141.0";
+const CODEX_CLI_VERSION = "0.144.3";
 
 function guardedNpmInstall(packageSpec, paths) {
   return [
