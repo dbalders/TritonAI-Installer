@@ -92,7 +92,7 @@ function assertIncludesPath(content, expectedPath) {
 
 async function main() {
   assertManagedConfigPrefersPackagedEndpoint();
-  assertManagedModelDefaultsUseNonMaxDeepSeek();
+  assertManagedModelDefaultsUseApiDeepSeek();
   await assertExistingApiKeyLookup();
   assertOnboardingWorkspaceUsesHomeRoot();
   assertSkillsVendorStaging();
@@ -214,10 +214,10 @@ async function assertEnvironmentIsHarnessScoped() {
   }
 }
 
-function assertManagedModelDefaultsUseNonMaxDeepSeek() {
+function assertManagedModelDefaultsUseApiDeepSeek() {
   resetManagedConfigForTests();
-  assert.strictEqual(UCSD.codexModel, "deepseek-v4-flash");
-  assert.strictEqual(UCSD.restrictedCodexModel, "deepseek-v4-flash");
+  assert.strictEqual(UCSD.codexModel, "api-deepseek-v4-flash");
+  assert.strictEqual(UCSD.restrictedCodexModel, "api-deepseek-v4-flash");
   assert.strictEqual(UCSD.codexModels[UCSD.codexModel].name, "DeepSeek v4 Flash");
   assert.strictEqual(UCSD.codexModels["gpt-5.5"].name, "GPT-5.5");
   assert.strictEqual(UCSD.codexModels["claude-opus-4-8"].name, "Claude Opus 4.8");
@@ -262,13 +262,13 @@ function assertManagedConfigPrefersPackagedEndpoint() {
     resetManagedConfigForTests();
     assert.throws(
       () => UCSD.codexModels,
-      /codexModels must include the configured default model: deepseek-v4-flash/
+      /codexModels must include the configured default model: api-deepseek-v4-flash/
     );
 
     fs.writeFileSync(configPath, JSON.stringify({
       baseUrl: "https://packaged.example.invalid/v1",
       codexModel: "gpt-5.5",
-      restrictedCodexModel: "deepseek-v4-flash",
+      restrictedCodexModel: "api-deepseek-v4-flash",
       codexModels: {
         "gpt-5.5": { id: "gpt-5.5", name: "GPT-5.5" }
       }
@@ -276,7 +276,7 @@ function assertManagedConfigPrefersPackagedEndpoint() {
     resetManagedConfigForTests();
     assert.throws(
       () => UCSD.codexModels,
-      /codexModels must include the configured restricted fallback model: deepseek-v4-flash/
+      /codexModels must include the configured restricted fallback model: api-deepseek-v4-flash/
     );
 
     fs.writeFileSync(configPath, JSON.stringify({
@@ -314,7 +314,7 @@ async function assertExternalDefaultRespectsCapabilityProbe() {
 
   process.env.UCSD_ALLOW_MANAGED_CONFIG_ENV = "1";
   process.env.UCSD_CODEX_MODEL = "gpt-5.5";
-  process.env.UCSD_RESTRICTED_CODEX_MODEL = "deepseek-v4-flash";
+  process.env.UCSD_RESTRICTED_CODEX_MODEL = "api-deepseek-v4-flash";
   resetManagedConfigForTests();
 
   try {
@@ -1250,7 +1250,7 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
 
     assert.deepStrictEqual(customModels, EXPECTED_CODEX_MODELS);
     assert.deepStrictEqual(customModels, [
-      "deepseek-v4-flash",
+      "api-deepseek-v4-flash",
       "gpt-5.5",
       "claude-opus-4-8"
     ]);

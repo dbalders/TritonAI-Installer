@@ -4,7 +4,7 @@ const { defaultAppRoot } = require("./app-root");
 
 const MANAGED_CONFIG_FILE = "managed-config.json";
 const DEFAULT_BASE_URL = "https://example.invalid/v1";
-const DEFAULT_RESTRICTED_CODEX_MODEL = "deepseek-v4-flash";
+const DEFAULT_RESTRICTED_CODEX_MODEL = "api-deepseek-v4-flash";
 const DEFAULT_CODEX_MODEL = DEFAULT_RESTRICTED_CODEX_MODEL;
 const DEFAULT_CODEX_MODELS = {
   [DEFAULT_CODEX_MODEL]: {

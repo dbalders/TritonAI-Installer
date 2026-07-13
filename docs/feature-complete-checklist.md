@@ -6,7 +6,7 @@
 - [x] Keep Codex CLI as the TritonAI Harness backend dependency.
 - [x] Use an installer-owned managed Codex CLI path instead of arbitrary system Codex installs.
 - [x] Write TritonAI Harness settings that route Codex through UCSD/TritonAI.
-- [x] Default TritonAI Harness to `deepseek-v4-flash`.
+- [x] Default TritonAI Harness to `api-deepseek-v4-flash`.
 - [x] Remove onboarding tool choices.
 - [x] Bundle TritonAI Harness Desktop and the managed Codex CLI in packaged artifacts.
 - [x] Pull secure root-level skills from private `dbalders/UCSD-Skills-Library-Secure` during packaging; do not bundle public repository skills.
