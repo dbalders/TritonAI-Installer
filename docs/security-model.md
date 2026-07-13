@@ -28,7 +28,7 @@ The first-pass guardrails are config-level and file-level:
 - Stage reviewed secure skill folders from the private secure repository at build time. Public AI Team and Community skills are not bundled into the Installer.
 - Record Installer-owned secure skill names in `.tritonai-managed-skills.json`; upgrades replace/remove only those names and reject collisions with unowned skill folders.
 - Validate the versioned vendor manifest, skill names, directories, and required `SKILL.md` files before mutating an existing install, and stage the complete replacement set before activation.
-- Route TritonAI Harness through Codex by setting the provider instance to `codex`, passing `UCSD_AI_BASE_URL` and `TRITONAI_API_KEY`, exposing TritonAI-routed Codex models, defaulting to `deepseek-v4-flash`, and disabling stale non-Codex provider entries.
+- Route TritonAI Harness through Codex by setting the provider instance to `codex`, passing `UCSD_AI_BASE_URL` and `TRITONAI_API_KEY`, exposing TritonAI-routed Codex models, defaulting to `api-deepseek-v4-flash`, and disabling stale non-Codex provider entries.
 - Avoid relying on Homebrew, system Node, or global machine package state.
 
 ## Permissions
