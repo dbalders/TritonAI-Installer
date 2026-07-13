@@ -478,6 +478,7 @@ async function assertRunInstallStopsBeforeDesktopWhenConnectionFails() {
         },
         installBundledSkills: () => {},
         getCodexVersion: () => CODEX_CLI_VERSION,
+        writeManagedCodexLauncher: () => {},
         commandRunner: async () => {},
         checkTritonAiConnection: async () => {
           throw new Error("TritonAI rejected the access key. Confirm the key is active, then try again.");
@@ -753,8 +754,11 @@ async function runDryRun(platform, options) {
     fs.mkdirSync(path.dirname(fakeRuntime.npmCliJs), { recursive: true });
     fs.writeFileSync(fakeRuntime.npmCliJs, "");
     if (options.managedCodexVersion) {
+      const codexJs = path.join(paths.codexInstallRoot, "lib", "node_modules", "@openai", "codex", "bin", "codex.js");
       fs.mkdirSync(path.dirname(managedCodex), { recursive: true });
+      fs.mkdirSync(path.dirname(codexJs), { recursive: true });
       fs.writeFileSync(managedCodex, platform === "win32" ? "@echo off\r\n" : "#!/usr/bin/env sh\n");
+      fs.writeFileSync(codexJs, "");
       if (platform !== "win32") fs.chmodSync(managedCodex, 0o755);
     }
     fs.mkdirSync(path.dirname(staleLegacyStatusCache), { recursive: true });
@@ -796,8 +800,11 @@ async function runDryRun(platform, options) {
           }
           bundledCodexInstalls += 1;
           const binary = path.join(installPaths.codexBinDir, installPlatform === "win32" ? "codex.cmd" : "codex");
+          const codexJs = path.join(installPaths.codexInstallRoot, "lib", "node_modules", "@openai", "codex", "bin", "codex.js");
           fs.mkdirSync(path.dirname(binary), { recursive: true });
+          fs.mkdirSync(path.dirname(codexJs), { recursive: true });
           fs.writeFileSync(binary, installPlatform === "win32" ? "@echo off\r\n" : "#!/usr/bin/env sh\n");
+          fs.writeFileSync(codexJs, "");
           if (installPlatform !== "win32") fs.chmodSync(binary, 0o755);
           managedCodexInstalled = true;
           return true;
@@ -830,6 +837,11 @@ async function runDryRun(platform, options) {
         commandRunner: async (command, args, commandOptions) => {
           commands.push({ command, args, env: commandOptions.env, allowFailure: commandOptions.allowFailure });
           if (isNpmCommand({ command, args }, fakeRuntime)) {
+            fs.mkdirSync(path.dirname(managedCodex), { recursive: true });
+            fs.mkdirSync(path.join(paths.codexInstallRoot, "lib", "node_modules", "@openai", "codex", "bin"), { recursive: true });
+            fs.writeFileSync(managedCodex, platform === "win32" ? "@echo off\r\n" : "#!/usr/bin/env sh\n");
+            fs.writeFileSync(path.join(paths.codexInstallRoot, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"), "");
+            if (platform !== "win32") fs.chmodSync(managedCodex, 0o755);
             managedCodexInstalled = true;
           }
         },
@@ -870,6 +882,16 @@ async function runDryRun(platform, options) {
     );
     assert(!fs.existsSync(staleLegacyStatusCache), "stale legacy provider status cache should be cleared");
     assert(!fs.existsSync(staleCodexStatusCache), "stale Codex provider status cache should be cleared");
+
+    const managedCodexLauncher = fs.readFileSync(managedCodex, "utf8");
+    assert(managedCodexLauncher.includes("NODE_BIN"), "managed Codex launcher should pin managed Node");
+    if (platform === "win32") {
+      assert(managedCodexLauncher.includes('"%NODE_BIN%"'));
+      assert(!managedCodexLauncher.includes('\r\nnode "%SCRIPT_DIR%'));
+    } else {
+      assert(managedCodexLauncher.includes('exec "$NODE_BIN"'));
+      assert(!managedCodexLauncher.includes('\nexec node '));
+    }
 
     const onboardingReadme = fs.readFileSync(path.join(paths.onboardingWorkspaceDir, "README.md"), "utf8");
     assert(onboardingReadme.includes("How does TritonAI Harness work, and how can it help me?"));
@@ -1043,6 +1065,7 @@ async function assertOnboardingWorkspaceOnlySeedsOnFirstInstall() {
         shortcutPath: "/Applications/TritonAI Harness.app"
       }),
       getCodexVersion: () => CODEX_CLI_VERSION,
+      writeManagedCodexLauncher: () => {},
       commandRunner: async () => {}
     };
 

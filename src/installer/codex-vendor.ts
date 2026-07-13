@@ -16,6 +16,12 @@ interface InstallBundledCodexOptions extends BundleOptions {
   emit?: InstallerEmit;
 }
 
+interface ManagedCodexLauncherOptions {
+  installRoot: string;
+  nodeBinary: string;
+  platform?: NodeJS.Platform;
+}
+
 function installBundledCodexCli({
   paths,
   platform = process.platform,
@@ -183,10 +189,67 @@ function managedCodexBinary(paths: Record<string, string>, platform: NodeJS.Plat
   return path.join(paths.codexBinDir, platform === "win32" ? "codex.cmd" : "codex");
 }
 
+function writeManagedCodexLauncher({
+  installRoot,
+  nodeBinary,
+  platform = process.platform,
+}: ManagedCodexLauncherOptions): string {
+  const launcher = platform === "win32"
+    ? path.join(installRoot, "codex.cmd")
+    : path.join(installRoot, "bin", "codex");
+  const codexJs = path.join(installRoot, "lib", "node_modules", "@openai", "codex", "bin", "codex.js");
+  const launcherDir = path.dirname(launcher);
+  const relativeNodeBinary = path.relative(launcherDir, nodeBinary);
+
+  if (!isRegularFile(codexJs)) {
+    throw new Error(`Managed Codex entrypoint is missing: ${codexJs}`);
+  }
+  if (!isRegularFile(nodeBinary)) {
+    throw new Error(`Managed Node.js runtime is missing: ${nodeBinary}`);
+  }
+  if (!relativeNodeBinary || path.isAbsolute(relativeNodeBinary)) {
+    throw new Error(`Managed Node.js runtime must share a filesystem root with managed Codex: ${nodeBinary}`);
+  }
+
+  if (platform === "win32") {
+    const windowsNodePath = relativeNodeBinary.replaceAll("/", "\\");
+    fs.writeFileSync(launcher, [
+      "@echo off",
+      "setlocal",
+      "set \"SCRIPT_DIR=%~dp0\"",
+      `set \"NODE_BIN=%SCRIPT_DIR%${windowsNodePath}\"`,
+      "if not exist \"%NODE_BIN%\" (",
+      "  echo Managed Node.js runtime is missing: %NODE_BIN% 1>&2",
+      "  exit /b 127",
+      ")",
+      "\"%NODE_BIN%\" \"%SCRIPT_DIR%lib\\node_modules\\@openai\\codex\\bin\\codex.js\" %*",
+      "",
+    ].join("\r\n"));
+    return launcher;
+  }
+
+  const posixNodePath = relativeNodeBinary.split(path.sep).join("/");
+  fs.writeFileSync(launcher, [
+    "#!/usr/bin/env sh",
+    "set -eu",
+    "SCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)",
+    `NODE_BIN=\"$SCRIPT_DIR/${posixNodePath}\"`,
+    "if [ ! -x \"$NODE_BIN\" ]; then",
+    "  echo \"Managed Node.js runtime is missing or not executable: $NODE_BIN\" >&2",
+    "  exit 127",
+    "fi",
+    "exec \"$NODE_BIN\" \"$SCRIPT_DIR/../lib/node_modules/@openai/codex/bin/codex.js\" \"$@\"",
+    "",
+  ].join("\n"));
+  fs.chmodSync(launcher, 0o755);
+  return launcher;
+}
+
 module.exports = {
   installBundledCodexCli,
   findBundledCodexDir,
   isCodexVendorDir,
   stageAndActivateBundledCodex,
   codexTargetName,
+  writeManagedCodexLauncher,
 };

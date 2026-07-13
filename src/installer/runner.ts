@@ -8,7 +8,7 @@ const { getTool, getCommands, CODEX_CLI } = require("./tool-manifest");
 const { ensurePrerequisites } = require("./prerequisites");
 const { installT3CodeDesktop } = require("./t3code-desktop");
 const { installBundledSkills } = require("./skills");
-const { installBundledCodexCli } = require("./codex-vendor");
+const { installBundledCodexCli, writeManagedCodexLauncher } = require("./codex-vendor");
 const { checkTritonAiConnection } = require("./tritonai-connection");
 const { getTritonAiEnvironment } = require("./codex-environment");
 const configWriters = require("./config-writers");
@@ -194,11 +194,20 @@ async function ensureCodexCliForT3({ apiKey, paths, nodeRuntime, runtime, emit }
       ? `Found managed Codex ${managedVersion}; installing managed Codex ${CODEX_CLI_VERSION} for TritonAI Harness.`
       : `Installing managed Codex ${CODEX_CLI_VERSION} for TritonAI Harness.`);
     await installManagedCodexCli({ apiKey, paths, nodeRuntime, runtime, emit });
-    await verifyManagedCodexCli({ apiKey, paths, nodeRuntime, runtime, emit });
   } else {
     paths.codexBinaryPath = managedBinary;
     emit(`Found managed Codex ${managedVersion}; using it for TritonAI Harness.`);
   }
+
+  const launcherWriter = runtime.writeManagedCodexLauncher || writeManagedCodexLauncher;
+  launcherWriter({
+    installRoot: paths.codexInstallRoot,
+    nodeBinary: nodeRuntime.nodeBinary,
+    platform: runtime.platform,
+  });
+  paths.codexBinaryPath = managedBinary;
+  emit("Pinned managed Codex to the managed Node.js runtime.");
+  await verifyManagedCodexCli({ apiKey, paths, nodeRuntime, runtime, emit });
 
   emit("Verifying TritonAI Codex backend...");
   await runCommands(CODEX_CLI.verify, {

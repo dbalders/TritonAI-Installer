@@ -177,6 +177,7 @@ async function assertNoOpWithholdsNewInstallerMarker() {
         checkTritonAiConnection: async () => ({ externalModelsEnabled: true }),
         installBundledCodexCli: async () => true,
         getCodexVersion: () => CODEX_CLI_VERSION,
+        writeManagedCodexLauncher: () => {},
         commandRunner: async () => {},
         installT3CodeDesktop: (options) => installWindowsDesktop({
           ...options,
@@ -230,6 +231,7 @@ async function assertEnvironmentMigrationWaitsForSuccessfulInstall() {
       checkTritonAiConnection: async () => ({ externalModelsEnabled: true }),
       installBundledCodexCli: async () => true,
       getCodexVersion: () => CODEX_CLI_VERSION,
+      writeManagedCodexLauncher: () => {},
       commandRunner: async () => {},
       onDiagnostics: (diagnostics) => diagnosticStatuses.push(diagnostics.ok),
       writeInstallerVersionMarker: () => {},

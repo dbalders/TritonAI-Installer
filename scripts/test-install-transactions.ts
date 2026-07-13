@@ -2,10 +2,16 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { spawnSync } = require("child_process");
 
 const { CODEX_CLI_VERSION } = require("../src/installer/npm-policy");
-const { isCodexVendorDir, stageAndActivateBundledCodex } = require("../src/installer/codex-vendor");
+const {
+  isCodexVendorDir,
+  stageAndActivateBundledCodex,
+  writeManagedCodexLauncher
+} = require("../src/installer/codex-vendor");
 const { getPaths } = require("../src/installer/paths");
+const { getNodeRuntimePaths } = require("../src/installer/prerequisites");
 const {
   getManagedMacAppPath,
   replaceMacAppTransactionally,
@@ -17,7 +23,81 @@ async function main() {
   assertMacLauncherStagesBeforeSwapAndRollsBack();
   assertCodexVendorIdentityIsRequired();
   assertCodexReplacementStagesBeforeSwapAndRollsBack();
+  if (process.platform !== "win32") assertManagedCodexLauncherIgnoresAmbientNode();
+  assertWindowsManagedCodexLauncherPinsNode();
   console.log("Installer transaction tests passed.");
+}
+
+function assertManagedCodexLauncherIgnoresAmbientNode() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-codex-launcher-"));
+  try {
+    const paths = getPaths(tempRoot, "darwin");
+    const nodeRuntime = getNodeRuntimePaths(paths, "darwin", "arm64");
+    const hostileBin = path.join(tempRoot, "hostile-bin");
+    writeCodexVendor(paths.codexInstallRoot, "vendor");
+    fs.mkdirSync(path.dirname(nodeRuntime.nodeBinary), { recursive: true });
+    fs.mkdirSync(hostileBin, { recursive: true });
+    fs.writeFileSync(
+      nodeRuntime.nodeBinary,
+      "#!/bin/sh\nprintf 'managed-node:%s\\n' \"$*\"\n",
+      { mode: 0o755 }
+    );
+    fs.writeFileSync(
+      path.join(hostileBin, "node"),
+      "#!/bin/sh\nprintf 'ambient-node\\n'\n",
+      { mode: 0o755 }
+    );
+
+    const launcher = writeManagedCodexLauncher({
+      installRoot: paths.codexInstallRoot,
+      nodeBinary: nodeRuntime.nodeBinary,
+      platform: "darwin"
+    });
+    const hostilePath = [hostileBin, "/usr/bin", "/bin"].join(path.delimiter);
+    const result = spawnSync(launcher, ["--version"], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: hostilePath }
+    });
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^managed-node:/);
+    assert(result.stdout.includes("codex.js --version"));
+    assert(!result.stdout.includes("ambient-node"));
+
+    fs.rmSync(nodeRuntime.nodeBinary, { force: true });
+    const missingRuntime = spawnSync(launcher, ["--version"], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: hostilePath }
+    });
+    assert.strictEqual(missingRuntime.status, 127);
+    assert.match(missingRuntime.stderr, /Managed Node\.js runtime is missing or not executable/);
+    assert(!missingRuntime.stdout.includes("ambient-node"));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertWindowsManagedCodexLauncherPinsNode() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-codex-launcher-win-"));
+  try {
+    const paths = getPaths(tempRoot, "win32");
+    const nodeRuntime = getNodeRuntimePaths(paths, "win32", "x64");
+    writeCodexVendor(paths.codexInstallRoot, "vendor", "win32");
+    fs.mkdirSync(path.dirname(nodeRuntime.nodeBinary), { recursive: true });
+    fs.writeFileSync(nodeRuntime.nodeBinary, "managed node");
+
+    const launcher = writeManagedCodexLauncher({
+      installRoot: paths.codexInstallRoot,
+      nodeBinary: nodeRuntime.nodeBinary,
+      platform: "win32"
+    });
+    const script = fs.readFileSync(launcher, "utf8");
+    const relativeNode = path.relative(path.dirname(launcher), nodeRuntime.nodeBinary).replaceAll("/", "\\");
+    assert(script.includes(`set "NODE_BIN=%SCRIPT_DIR%${relativeNode}"`));
+    assert(script.includes('"%NODE_BIN%" "%SCRIPT_DIR%lib\\node_modules\\@openai\\codex\\bin\\codex.js" %*'));
+    assert(!script.includes('\r\nnode "%SCRIPT_DIR%'));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertMacLauncherStagesBeforeSwapAndRollsBack() {
@@ -302,17 +382,22 @@ function readMacAppVersion(appPath) {
   return fs.readFileSync(path.join(appPath, "Contents", "MacOS", "TritonAI Harness"), "utf8");
 }
 
-function writeCodexVendor(root, version) {
+function writeCodexVendor(root, version, platform = "darwin") {
   fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
   fs.mkdirSync(path.join(root, "lib", "node_modules", "@openai", "codex", "bin"), { recursive: true });
-  fs.mkdirSync(path.join(root, "lib", "node_modules", "@openai", "codex", "node_modules", "@openai", "codex-darwin-arm64"), { recursive: true });
-  fs.writeFileSync(path.join(root, "bin", "codex"), version, { mode: 0o755 });
+  const nativePackage = platform === "win32" ? "codex-win32-x64" : "codex-darwin-arm64";
+  fs.mkdirSync(path.join(root, "lib", "node_modules", "@openai", "codex", "node_modules", "@openai", nativePackage), { recursive: true });
+  if (platform === "win32") {
+    fs.writeFileSync(path.join(root, "codex.cmd"), version);
+  } else {
+    fs.writeFileSync(path.join(root, "bin", "codex"), version, { mode: 0o755 });
+  }
   fs.writeFileSync(path.join(root, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"), "");
   fs.writeFileSync(path.join(root, "manifest.json"), JSON.stringify({
     name: "@openai/codex",
     version: CODEX_CLI_VERSION,
-    target: "mac-arm64"
+    target: platform === "win32" ? "win-x64" : "mac-arm64"
   }));
 }
 
