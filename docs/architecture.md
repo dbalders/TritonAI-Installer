@@ -52,7 +52,7 @@ flowchart TD
 - Secure ownership: the vendor and runtime manifests use `{ "version": 1, "kind": "tritonai-secure", "skills": ["..."] }`. The runtime manifest lives at `~/.tritonai-harness/codex/skills/.tritonai-managed-skills.json`. Reinstall replaces/removes only names in the previous runtime manifest, preserves all unowned folders, and refuses unowned collisions.
 - Secure update safety: all incoming skills and `SKILL.md` files are validated and copied to a same-filesystem staging directory before existing managed directories are moved. A failed staging or activation step leaves or restores the prior managed bundle.
 - Runtime: pinned Node.js `v22.22.2` downloaded under `~/.agents/ucsd/runtime`
-- Codex runtime: pinned `@openai/codex@0.141.0` staged into `vendor/codex-cli/mac-arm64` and `vendor/codex-cli/win-x64`, then copied under `~/.agents/ucsd/runtime/codex/openai-codex-0.141.0`; TritonAI Harness settings reference it explicitly instead of relying on the user's `PATH`. The launcher scopes its private runtime environment to Harness and leaves the user's normal Codex configuration untouched.
+- Codex runtime: pinned `@openai/codex@0.144.3` staged into `vendor/codex-cli/mac-arm64` and `vendor/codex-cli/win-x64`, then copied under `~/.agents/ucsd/runtime/codex/openai-codex-0.144.3`; TritonAI Harness settings reference it explicitly instead of relying on the user's `PATH`. The launcher scopes its private runtime environment to Harness and leaves the user's normal Codex configuration untouched.
 - Default policy posture: local user control with UCSD routing, logs directory, and deny guidance around secrets.
 
 ## Release Work Still Needed
