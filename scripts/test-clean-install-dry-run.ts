@@ -861,10 +861,12 @@ async function runDryRun(platform, options) {
         commandRunner: async (command, args, commandOptions) => {
           commands.push({ command, args, env: commandOptions.env, allowFailure: commandOptions.allowFailure });
           if (isNpmCommand({ command, args }, fakeRuntime)) {
+            const npmModulesRoot = platform === "win32" ? "node_modules" : path.join("lib", "node_modules");
+            const npmCodexJs = path.join(paths.codexInstallRoot, npmModulesRoot, "@openai", "codex", "bin", "codex.js");
             fs.mkdirSync(path.dirname(managedCodex), { recursive: true });
-            fs.mkdirSync(path.join(paths.codexInstallRoot, "lib", "node_modules", "@openai", "codex", "bin"), { recursive: true });
+            fs.mkdirSync(path.dirname(npmCodexJs), { recursive: true });
             fs.writeFileSync(managedCodex, platform === "win32" ? "@echo off\r\n" : "#!/usr/bin/env sh\n");
-            fs.writeFileSync(path.join(paths.codexInstallRoot, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"), "");
+            fs.writeFileSync(npmCodexJs, "");
             if (platform !== "win32") fs.chmodSync(managedCodex, 0o755);
             managedCodexInstalled = true;
           }

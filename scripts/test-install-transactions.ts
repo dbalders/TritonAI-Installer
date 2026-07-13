@@ -95,6 +95,19 @@ function assertWindowsManagedCodexLauncherPinsNode() {
     assert(script.includes(`set "NODE_BIN=%SCRIPT_DIR%${relativeNode}"`));
     assert(script.includes('"%NODE_BIN%" "%SCRIPT_DIR%lib\\node_modules\\@openai\\codex\\bin\\codex.js" %*'));
     assert(!script.includes('\r\nnode "%SCRIPT_DIR%'));
+
+    const bundledCodexJs = path.join(paths.codexInstallRoot, "lib", "node_modules", "@openai", "codex", "bin", "codex.js");
+    const npmCodexJs = path.join(paths.codexInstallRoot, "node_modules", "@openai", "codex", "bin", "codex.js");
+    fs.mkdirSync(path.dirname(npmCodexJs), { recursive: true });
+    fs.copyFileSync(bundledCodexJs, npmCodexJs);
+    writeManagedCodexLauncher({
+      installRoot: paths.codexInstallRoot,
+      nodeBinary: nodeRuntime.nodeBinary,
+      platform: "win32"
+    });
+    const npmScript = fs.readFileSync(launcher, "utf8");
+    assert(npmScript.includes('"%NODE_BIN%" "%SCRIPT_DIR%node_modules\\@openai\\codex\\bin\\codex.js" %*'));
+    assert(fs.existsSync(bundledCodexJs), "npm fallback should win even when an older bundled layout remains");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
