@@ -11,6 +11,11 @@ const DEFAULT_CODEX_MODELS = {
     id: DEFAULT_CODEX_MODEL,
     name: "DeepSeek v4 Flash"
   },
+  "api-glm-5.2": {
+    id: "api-glm-5.2",
+    name: "GLM 5.2",
+    availableToRestrictedKeys: true
+  },
   "gpt-5.5": {
     id: "gpt-5.5",
     name: "GPT-5.5"

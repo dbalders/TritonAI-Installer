@@ -704,9 +704,13 @@ function getCodexModels(paths) {
   if (paths.externalModelsEnabled !== true) {
     // Key capability is an upper bound: a packaged operator catalog cannot
     // grant models that the installed key cannot access.
-    return {
-      [UCSD.restrictedCodexModel]: UCSD.codexModels[UCSD.restrictedCodexModel]
-    };
+    return Object.fromEntries(
+      Object.entries(UCSD.codexModels).filter(
+        ([slug, model]) =>
+          slug === UCSD.restrictedCodexModel ||
+          objectValue(model).availableToRestrictedKeys === true
+      )
+    );
   }
   return UCSD.codexModels;
 }

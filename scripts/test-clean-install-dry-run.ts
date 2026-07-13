@@ -72,7 +72,7 @@ const {
 } = require("./prepare-codex-cli-vendor");
 
 const EXPECTED_CODEX_MODELS = Object.keys(UCSD.codexModels);
-const EXPECTED_RESTRICTED_CODEX_MODELS = [UCSD.restrictedCodexModel];
+const EXPECTED_RESTRICTED_CODEX_MODELS = [UCSD.restrictedCodexModel, "api-glm-5.2"];
 
 function assertIncludesPath(content, expectedPath) {
   const rawExpectedPath = String(expectedPath);
@@ -219,6 +219,8 @@ function assertManagedModelDefaultsUseApiDeepSeek() {
   assert.strictEqual(UCSD.codexModel, "api-deepseek-v4-flash");
   assert.strictEqual(UCSD.restrictedCodexModel, "api-deepseek-v4-flash");
   assert.strictEqual(UCSD.codexModels[UCSD.codexModel].name, "DeepSeek v4 Flash");
+  assert.strictEqual(UCSD.codexModels["api-glm-5.2"].name, "GLM 5.2");
+  assert.strictEqual(UCSD.codexModels["api-glm-5.2"].availableToRestrictedKeys, true);
   assert.strictEqual(UCSD.codexModels["gpt-5.5"].name, "GPT-5.5");
   assert.strictEqual(UCSD.codexModels["claude-opus-4-8"].name, "Claude Opus 4.8");
   assert(!UCSD.codexModel.includes("max"), "managed default should not use the Max model");
@@ -734,7 +736,7 @@ async function runDryRun(platform, options) {
     : UCSD.restrictedCodexModel;
   const expectedCodexModels = externalModelsEnabled
     ? Object.keys(UCSD.codexModels)
-    : [UCSD.restrictedCodexModel];
+    : EXPECTED_RESTRICTED_CODEX_MODELS;
   const runtimeArch = platform === "win32" ? "x64" : process.arch;
   const fakeRuntime = getNodeRuntimePaths(paths, platform, runtimeArch);
   const commands = [];
@@ -1251,6 +1253,7 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
     assert.deepStrictEqual(customModels, EXPECTED_CODEX_MODELS);
     assert.deepStrictEqual(customModels, [
       "api-deepseek-v4-flash",
+      "api-glm-5.2",
       "gpt-5.5",
       "claude-opus-4-8"
     ]);
