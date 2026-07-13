@@ -125,6 +125,7 @@ function writeT3CodeSettings(paths) {
 function buildT3CodeSettings(existing, paths) {
   const codexModel = getEffectiveCodexModel(paths);
   const customModels = getCodexModelSlugs(paths);
+  const customModelMetadata = getCodexModelMetadata(paths);
   const codexBinaryPath = getCodexBinaryPath(paths);
   const codexHomePath = paths.codexHome;
   const existingProviders = existing.providers || {};
@@ -144,7 +145,8 @@ function buildT3CodeSettings(existing, paths) {
         enabled: true,
         binaryPath: codexBinaryPath,
         homePath: codexHomePath,
-        customModels
+        customModels,
+        customModelMetadata
       },
       claudeAgent: {
         ...existingClaudeProvider,
@@ -162,7 +164,8 @@ function buildT3CodeSettings(existing, paths) {
           enabled: true,
           binaryPath: codexBinaryPath,
           homePath: codexHomePath,
-          customModels
+          customModels,
+          customModelMetadata
         },
         environment: mergeEnvironmentVariables(
           existingCodexInstance.environment,
@@ -192,6 +195,7 @@ function writeT3CodeDefaultsPatcher(paths) {
     model: getEffectiveCodexModel(paths)
   };
   const customModels = getCodexModelSlugs(paths);
+  const customModelMetadata = getCodexModelMetadata(paths);
   const settingsPaths = getT3SettingsPaths(paths);
   const stateDbPaths = settingsPaths.map((settingsPath) => path.join(path.dirname(settingsPath), "state.sqlite"));
   const providerEnvironment = getCodexProviderEnvironmentVariables(paths)
@@ -204,6 +208,7 @@ const settingsPaths = ${JSON.stringify(settingsPaths)};
 const stateDbPaths = ${JSON.stringify(stateDbPaths)};
 const modelSelection = ${JSON.stringify(modelSelection)};
 const customModels = ${JSON.stringify(customModels)};
+const customModelMetadata = ${JSON.stringify(customModelMetadata)};
 const codexBinaryPath = ${JSON.stringify(getCodexBinaryPath(paths))};
 const codexHomePath = ${JSON.stringify(paths.codexHome)};
 const providerEnvironment = ${JSON.stringify(providerEnvironment)};
@@ -285,7 +290,8 @@ function buildManagedSettings(existing) {
         enabled: true,
         binaryPath: codexBinaryPath,
         homePath: codexHomePath,
-        customModels
+        customModels,
+        customModelMetadata
       },
       claudeAgent: { ...(providers.claudeAgent || {}), enabled: false },
     },
@@ -300,7 +306,8 @@ function buildManagedSettings(existing) {
           enabled: true,
           binaryPath: codexBinaryPath,
           homePath: codexHomePath,
-          customModels
+          customModels,
+          customModelMetadata
         },
         environment: mergeEnvironmentVariables(codexInstance.environment, providerEnvironment)
       },
@@ -692,6 +699,26 @@ function getCodexBinaryPath(paths) {
 
 function getCodexModelSlugs(paths) {
   return Object.keys(getCodexModels(paths));
+}
+
+function getCodexModelMetadata(paths) {
+  return Object.fromEntries(
+    Object.entries(getCodexModels(paths)).map(([slug, model]) => {
+      const descriptor = objectValue(model);
+      return [
+        slug,
+        {
+          name: typeof descriptor.name === "string" ? descriptor.name : slug,
+          ...(typeof descriptor.shortName === "string"
+            ? { shortName: descriptor.shortName }
+            : {}),
+          ...(descriptor.capabilities !== undefined
+            ? { capabilities: descriptor.capabilities }
+            : {})
+        }
+      ];
+    })
+  );
 }
 
 function getEffectiveCodexModel(paths) {

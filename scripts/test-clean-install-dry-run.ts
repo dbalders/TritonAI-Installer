@@ -74,6 +74,22 @@ const {
 const EXPECTED_CODEX_MODELS = Object.keys(UCSD.codexModels);
 const EXPECTED_RESTRICTED_CODEX_MODELS = [UCSD.restrictedCodexModel, "api-glm-5.2"];
 
+function expectedCodexModelMetadata(modelSlugs) {
+  return Object.fromEntries(
+    modelSlugs.map((slug) => {
+      const model = UCSD.codexModels[slug];
+      return [
+        slug,
+        {
+          name: model.name,
+          ...(model.shortName ? { shortName: model.shortName } : {}),
+          ...(model.capabilities !== undefined ? { capabilities: model.capabilities } : {})
+        }
+      ];
+    })
+  );
+}
+
 function assertIncludesPath(content, expectedPath) {
   const rawExpectedPath = String(expectedPath);
   const normalizedExpectedPath = rawExpectedPath.replace(/\\/g, "/");
@@ -219,8 +235,14 @@ function assertManagedModelDefaultsUseApiDeepSeek() {
   assert.strictEqual(UCSD.codexModel, "api-deepseek-v4-flash");
   assert.strictEqual(UCSD.restrictedCodexModel, "api-deepseek-v4-flash");
   assert.strictEqual(UCSD.codexModels[UCSD.codexModel].name, "DeepSeek v4 Flash");
+  assert.strictEqual(UCSD.codexModels[UCSD.codexModel].shortName, "DeepSeek");
   assert.strictEqual(UCSD.codexModels["api-glm-5.2"].name, "GLM 5.2");
+  assert.strictEqual(UCSD.codexModels["api-glm-5.2"].shortName, "GLM");
   assert.strictEqual(UCSD.codexModels["api-glm-5.2"].availableToRestrictedKeys, true);
+  assert.deepStrictEqual(
+    UCSD.codexModels["api-glm-5.2"].capabilities,
+    UCSD.codexModels[UCSD.codexModel].capabilities
+  );
   assert.strictEqual(UCSD.codexModels["gpt-5.5"].name, "GPT-5.5");
   assert.strictEqual(UCSD.codexModels["claude-opus-4-8"].name, "Claude Opus 4.8");
   assert(!UCSD.codexModel.includes("max"), "managed default should not use the Max model");
@@ -913,6 +935,14 @@ async function runDryRun(platform, options) {
     assert.strictEqual(t3Settings.providerInstances.codex.config.homePath, paths.codexHome);
     assert.deepStrictEqual(t3Settings.providerInstances.codex.config.customModels, expectedCodexModels);
     assert.deepStrictEqual(t3Settings.providers.codex.customModels, expectedCodexModels);
+    assert.deepStrictEqual(
+      t3Settings.providerInstances.codex.config.customModelMetadata,
+      expectedCodexModelMetadata(expectedCodexModels)
+    );
+    assert.deepStrictEqual(
+      t3Settings.providers.codex.customModelMetadata,
+      expectedCodexModelMetadata(expectedCodexModels)
+    );
     assert.deepStrictEqual(t3Settings.providerInstances.codex.environment, expectedProviderEnvironmentVariables);
 
     const t3DevSettings = JSON.parse(fs.readFileSync(path.join(paths.t3Home, "dev", "settings.json"), "utf8"));
@@ -920,6 +950,10 @@ async function runDryRun(platform, options) {
     assert.strictEqual(t3DevSettings.textGenerationModelSelection.model, expectedModel);
     assert.strictEqual(t3DevSettings.providerInstances.codex.config.binaryPath, managedCodex);
     assert.strictEqual(t3DevSettings.providerInstances.codex.config.homePath, paths.codexHome);
+    assert.deepStrictEqual(
+      t3DevSettings.providerInstances.codex.config.customModelMetadata,
+      expectedCodexModelMetadata(expectedCodexModels)
+    );
 
     const t3DefaultsPatcher = fs.readFileSync(paths.t3DefaultsPatcher, "utf8");
     assert.match(t3DefaultsPatcher, /projection_projects/);
@@ -1260,6 +1294,14 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
     assert(!customModels.includes("ucsd/retired-model-from-provider"));
     assert(!customModels.includes("ucsd/retired-model-from-instance"));
     assert.deepStrictEqual(settings.providers.codex.customModels, customModels);
+    assert.deepStrictEqual(
+      settings.providerInstances.codex.config.customModelMetadata,
+      expectedCodexModelMetadata(EXPECTED_CODEX_MODELS)
+    );
+    assert.deepStrictEqual(
+      settings.providers.codex.customModelMetadata,
+      expectedCodexModelMetadata(EXPECTED_CODEX_MODELS)
+    );
     assert.strictEqual(settings.providers.legacyProvider.enabled, false);
     assert.strictEqual(settings.providerInstances.legacyProvider.enabled, false);
 
@@ -1273,6 +1315,14 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
     assert.deepStrictEqual(
       limitedSettings.providers.codex.customModels,
       EXPECTED_RESTRICTED_CODEX_MODELS
+    );
+    assert.deepStrictEqual(
+      limitedSettings.providerInstances.codex.config.customModelMetadata,
+      expectedCodexModelMetadata(EXPECTED_RESTRICTED_CODEX_MODELS)
+    );
+    assert.deepStrictEqual(
+      limitedSettings.providers.codex.customModelMetadata,
+      expectedCodexModelMetadata(EXPECTED_RESTRICTED_CODEX_MODELS)
     );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });

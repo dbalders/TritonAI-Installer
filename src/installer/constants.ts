@@ -6,14 +6,34 @@ const MANAGED_CONFIG_FILE = "managed-config.json";
 const DEFAULT_BASE_URL = "https://example.invalid/v1";
 const DEFAULT_RESTRICTED_CODEX_MODEL = "api-deepseek-v4-flash";
 const DEFAULT_CODEX_MODEL = DEFAULT_RESTRICTED_CODEX_MODEL;
+const TRITONAI_CODEX_MODEL_CAPABILITIES = {
+  optionDescriptors: [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "minimal", label: "Minimal" },
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium", isDefault: true },
+        { id: "high", label: "High" }
+      ],
+      currentValue: "medium"
+    }
+  ]
+};
 const DEFAULT_CODEX_MODELS = {
   [DEFAULT_CODEX_MODEL]: {
     id: DEFAULT_CODEX_MODEL,
-    name: "DeepSeek v4 Flash"
+    name: "DeepSeek v4 Flash",
+    shortName: "DeepSeek",
+    capabilities: TRITONAI_CODEX_MODEL_CAPABILITIES
   },
   "api-glm-5.2": {
     id: "api-glm-5.2",
     name: "GLM 5.2",
+    shortName: "GLM",
+    capabilities: TRITONAI_CODEX_MODEL_CAPABILITIES,
     availableToRestrictedKeys: true
   },
   "gpt-5.5": {
