@@ -22,18 +22,29 @@ const TRITONAI_CODEX_MODEL_CAPABILITIES = {
     }
   ]
 };
+const withInputModalities = (inputModalities) => ({
+  ...TRITONAI_CODEX_MODEL_CAPABILITIES,
+  inputModalities
+});
 const DEFAULT_CODEX_MODELS = {
   [DEFAULT_CODEX_MODEL]: {
     id: DEFAULT_CODEX_MODEL,
     name: "DeepSeek v4 Flash",
     shortName: "DeepSeek",
-    capabilities: TRITONAI_CODEX_MODEL_CAPABILITIES
+    capabilities: withInputModalities(["text"])
   },
   "api-glm-5.2": {
     id: "api-glm-5.2",
     name: "GLM 5.2",
     shortName: "GLM",
-    capabilities: TRITONAI_CODEX_MODEL_CAPABILITIES,
+    capabilities: withInputModalities(["text"]),
+    availableToRestrictedKeys: true
+  },
+  "api-gemma-4-31b": {
+    id: "api-gemma-4-31b",
+    name: "Gemma 4 31B",
+    shortName: "Gemma",
+    capabilities: withInputModalities(["text", "image"]),
     availableToRestrictedKeys: true
   },
   "gpt-5.5": {
