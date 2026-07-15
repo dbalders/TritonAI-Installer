@@ -72,7 +72,11 @@ const {
 } = require("./prepare-codex-cli-vendor");
 
 const EXPECTED_CODEX_MODELS = Object.keys(UCSD.codexModels);
-const EXPECTED_RESTRICTED_CODEX_MODELS = [UCSD.restrictedCodexModel, "api-glm-5.2"];
+const EXPECTED_RESTRICTED_CODEX_MODELS = [
+  UCSD.restrictedCodexModel,
+  "api-glm-5.2",
+  "api-gemma-4-31b"
+];
 
 function expectedCodexModelMetadata(modelSlugs) {
   return Object.fromEntries(
@@ -239,10 +243,15 @@ function assertManagedModelDefaultsUseApiDeepSeek() {
   assert.strictEqual(UCSD.codexModels["api-glm-5.2"].name, "GLM 5.2");
   assert.strictEqual(UCSD.codexModels["api-glm-5.2"].shortName, "GLM");
   assert.strictEqual(UCSD.codexModels["api-glm-5.2"].availableToRestrictedKeys, true);
-  assert.deepStrictEqual(
-    UCSD.codexModels["api-glm-5.2"].capabilities,
-    UCSD.codexModels[UCSD.codexModel].capabilities
-  );
+  assert.deepStrictEqual(UCSD.codexModels[UCSD.codexModel].capabilities.inputModalities, ["text"]);
+  assert.deepStrictEqual(UCSD.codexModels["api-glm-5.2"].capabilities.inputModalities, ["text"]);
+  assert.strictEqual(UCSD.codexModels["api-gemma-4-31b"].name, "Gemma 4 31B");
+  assert.strictEqual(UCSD.codexModels["api-gemma-4-31b"].shortName, "Gemma");
+  assert.strictEqual(UCSD.codexModels["api-gemma-4-31b"].availableToRestrictedKeys, true);
+  assert.deepStrictEqual(UCSD.codexModels["api-gemma-4-31b"].capabilities.inputModalities, [
+    "text",
+    "image"
+  ]);
   assert.strictEqual(UCSD.codexModels["gpt-5.5"].name, "GPT-5.5");
   assert.strictEqual(UCSD.codexModels["claude-opus-4-8"].name, "Claude Opus 4.8");
   assert(!UCSD.codexModel.includes("max"), "managed default should not use the Max model");
@@ -1313,6 +1322,7 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
     assert.deepStrictEqual(customModels, [
       "api-deepseek-v4-flash",
       "api-glm-5.2",
+      "api-gemma-4-31b",
       "gpt-5.5",
       "claude-opus-4-8"
     ]);
