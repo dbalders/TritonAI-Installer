@@ -599,13 +599,26 @@ function getWindowsPowerShellExecutable() {
 
 function runWindowsManagedSettingsAcl(file, action, content = undefined) {
   const encodedCommand = Buffer.from(managedSettingsPowerShellScript(action), "utf16le").toString("base64");
+  const executable = getWindowsPowerShellExecutable();
+  const systemModulePath = path.join(path.dirname(executable), "Modules");
+  if (!fs.existsSync(systemModulePath)) {
+    throw new Error(`Cannot find the system Windows PowerShell modules at ${systemModulePath}.`);
+  }
+  const childEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => ![
+      "psmodulepath",
+      "tritonai_managed_settings_file"
+    ].includes(name.toLowerCase()))
+  );
+  childEnvironment.PSModulePath = systemModulePath;
+  childEnvironment.TRITONAI_MANAGED_SETTINGS_FILE = file;
   const result = spawnSync(
-    getWindowsPowerShellExecutable(),
+    executable,
     ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand],
     {
       encoding: "utf8",
       windowsHide: true,
-      env: { ...process.env, TRITONAI_MANAGED_SETTINGS_FILE: file },
+      env: childEnvironment,
       input: action === "create" ? Buffer.from(content, "utf8") : undefined
     }
   );
