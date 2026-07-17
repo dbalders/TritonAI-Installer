@@ -7,6 +7,7 @@ artifacts/
 out/
 release/
 build/managed-config.generated.json
+build/managed-plugin-composition.generated.json
 *.dmg
 *.exe
 *.msi
@@ -15,6 +16,7 @@ build/managed-config.generated.json
 vendor/skills/
 vendor/codex-cli/
 vendor/t3code-desktop/
+vendor/plugins/
 
 # Runtime output
 output/

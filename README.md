@@ -8,6 +8,7 @@ The installer:
 - Provides private, managed Node.js and Codex runtimes.
 - Configures TritonAI access and managed defaults.
 - Installs the reviewed secure skills bundled from the private UCSD skills repository.
+- Verifies that the bundled Harness release statically includes the exact reviewed TritonAI plugin packages selected for that Installer release.
 
 Users need a TritonAI API key and network access during setup.
 
@@ -47,6 +48,35 @@ and either one `TRITONAI_HARNESS_RELEASE_BASE` or both canonical platform-specif
 The vendoring command does not infer a version or use a moving latest-release URL.
 Packaged builds use the canonical `edu.ucsd.tritonai.installer` application identifier; legacy Installer product identifiers are not migration inputs for this new product.
 
+Managed plugins have a separate, fail-closed source contract. To produce a plugin-bearing release,
+packaging requires all three values below; when none are set, the existing no-plugin release path
+remains available only for the pinned, known plugin-free Harness `0.2.7` baseline. Later Harness
+versions must publish an artifact-bound composition proof. No nearby `TritonAI-Plugins` checkout is discovered automatically:
+
+```sh
+export TRITONAI_PLUGINS_REF="refs/tags/plugins-v1"
+export TRITONAI_PLUGINS_COMMIT="<full 40-character commit SHA>"
+export TRITONAI_PLUGIN_IDS="microsoft-365"
+```
+
+`TRITONAI_PLUGINS_REPO` may select another transport URL only when Git resolves it to canonical
+`github.com/dbalders/TritonAI-Plugins`. `TRITONAI_PLUGINS_SOURCE` is an explicit release-machine
+override and is accepted only for a clean Git checkout with that canonical origin, the pinned HEAD,
+and a ref resolving to the same commit. Dirty local validation work is rejected.
+
+`npm run prepare:plugins-vendor` validates and atomically stages only selected release package
+contents under ignored `vendor/plugins/`. It rejects symlinks, special files, unsafe paths,
+source/tests in package allowlists or provider output, malformed manifests, package/manifest drift,
+and skill/manifest drift. The staged packages are a Harness build input, not an Installer runtime
+payload.
+
+The Harness build must statically compose those packages into its immutable catalog and publish a
+`tritonai-plugin-composition.json` sidecar containing the exact generated `vendor/plugins/manifest.json`
+composition plus the filename, size, and SHA-512 of every bound release artifact. Installer packaging
+compares that proof and its artifact binding before accepting the Harness DMG or EXE. The proof is included in macOS, Windows Setup, and Windows portable paths and
+is checked again when the packaged Installer runs. This preserves the Harness trust model: the
+Installer never adds a dynamic loader and never installs raw plugin code that Harness cannot use.
+
 macOS:
 
 ```sh
@@ -59,7 +89,7 @@ Windows:
 npm run package:win-installer
 ```
 
-Release builds stage TritonAI Harness, Codex, and secure skills from the private `dbalders/UCSD-Skills-Library-Secure` repository. Public AI Team and Community skills are discovered and installed by TritonAI Harness; they are not bundled into the Installer.
+Release builds stage TritonAI Harness, Codex, secure skills from the private `dbalders/UCSD-Skills-Library-Secure` repository, and a build-only reviewed plugin composition from canonical `dbalders/TritonAI-Plugins`. Public AI Team and Community skills are discovered and installed by TritonAI Harness; they are not bundled into the Installer.
 
 The secure repository uses root-level `<skill-name>/SKILL.md` folders. For a trusted local packaging checkout, set `UCSD_SKILLS_SOURCE` explicitly:
 

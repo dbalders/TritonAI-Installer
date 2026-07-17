@@ -19,6 +19,10 @@
     {
       "from": "build/managed-config.generated.json",
       "to": "managed-config.json"
+    },
+    {
+      "from": "build/managed-plugin-composition.generated.json",
+      "to": "managed-plugin-composition.json"
     }
   ],
   "win": {
