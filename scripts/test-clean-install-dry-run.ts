@@ -57,6 +57,10 @@ const {
 } = require("../src/installer/installer-version-marker");
 const { version: packageInstallerVersion } = require(path.join(root, "package.json"));
 const { UCSD, resetManagedConfigForTests } = require("../src/installer/constants");
+
+function simulateWindowsAcl(file, action, content) {
+  if (action === "create") fs.writeFileSync(file, content, { flag: "wx", mode: 0o600 });
+}
 const {
   findSkillsSourceDir,
   stageSkillsFromSource
@@ -814,6 +818,7 @@ async function runDryRun(platform, options) {
         homeDir: tempRoot,
         platform,
         arch: runtimeArch,
+        windowsAclRunner: platform === "win32" ? simulateWindowsAcl : undefined,
         emit: () => {},
         ensurePrerequisites: async () => fakeRuntime,
         appRoot: tempRoot,
@@ -978,20 +983,17 @@ async function runDryRun(platform, options) {
     );
     assert.deepStrictEqual(t3Settings.providerInstances.codex.environment, expectedProviderEnvironmentVariables);
 
-    const t3DevSettings = JSON.parse(fs.readFileSync(path.join(paths.t3Home, "dev", "settings.json"), "utf8"));
-    assert.strictEqual(t3DevSettings.textGenerationModelSelection.instanceId, "codex");
-    assert.strictEqual(t3DevSettings.textGenerationModelSelection.model, expectedModel);
-    assert.strictEqual(t3DevSettings.providerInstances.codex.config.binaryPath, managedCodex);
-    assert.strictEqual(t3DevSettings.providerInstances.codex.config.homePath, paths.codexHome);
-    assert.deepStrictEqual(
-      t3DevSettings.providerInstances.codex.config.customModelMetadata,
-      expectedCodexModelMetadata(expectedCodexModels)
-    );
+    const t3DevSettingsPath = path.join(paths.t3Home, "dev", "settings.json");
+    assert(!fs.existsSync(t3DevSettingsPath), "production install must not create development settings");
 
     const t3DefaultsPatcher = fs.readFileSync(paths.t3DefaultsPatcher, "utf8");
     assert.match(t3DefaultsPatcher, /projection_projects/);
     assert.match(t3DefaultsPatcher, /projection_threads/);
-    assertIncludesPath(t3DefaultsPatcher, path.join(paths.t3Home, "dev", "settings.json"));
+    const escapedT3DevSettingsPath = JSON.stringify(t3DevSettingsPath).slice(1, -1);
+    assert(
+      !t3DefaultsPatcher.includes(escapedT3DevSettingsPath),
+      "production patcher must not manage development settings"
+    );
     assert(t3DefaultsPatcher.includes(expectedModel));
     assertIncludesPath(t3DefaultsPatcher, managedCodex);
     assertIncludesPath(t3DefaultsPatcher, paths.codexHome);
@@ -1078,9 +1080,10 @@ function assertWindowsShortcutTargetsApp() {
 
 async function assertOnboardingWorkspaceOnlySeedsOnFirstInstall() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-onboarding-"));
-  const paths = getPaths(tempRoot, "darwin");
+  const platform = process.platform;
+  const paths = getPaths(tempRoot, platform);
   const runtimeArch = process.arch;
-  const fakeRuntime = getNodeRuntimePaths(paths, "darwin", runtimeArch);
+  const fakeRuntime = getNodeRuntimePaths(paths, platform, runtimeArch);
 
   try {
     fs.mkdirSync(fakeRuntime.nodeBinDir, { recursive: true });
@@ -1091,15 +1094,16 @@ async function assertOnboardingWorkspaceOnlySeedsOnFirstInstall() {
 
     const runtime = {
       homeDir: tempRoot,
-      platform: "darwin",
+      platform,
       arch: runtimeArch,
+      windowsAclRunner: platform === "win32" ? simulateWindowsAcl : undefined,
       emit: () => {},
       ensurePrerequisites: async () => fakeRuntime,
       appRoot: tempRoot,
       resourcesPath: null,
       saveEnvironment: async (environmentOptions) => {
         fs.mkdirSync(path.dirname(environmentOptions.paths.envFile), { recursive: true });
-        fs.writeFileSync(environmentOptions.paths.envFile, "darwin env\n");
+        fs.writeFileSync(environmentOptions.paths.envFile, `${platform} env\n`);
       },
       installBundledSkills: ({ paths: installPaths }) => {
         const skillDir = path.join(installPaths.skillsDir, "tritonai-feedback");
@@ -1289,7 +1293,8 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
 function assertT3CodeUcsdCustomModelsAreCanonical() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-t3code-config-"));
   try {
-    const paths = getPaths(tempRoot, "darwin");
+    const paths = getPaths(tempRoot, process.platform);
+    paths.windowsAclRunner = process.platform === "win32" ? simulateWindowsAcl : undefined;
     paths.externalModelsEnabled = true;
     fs.mkdirSync(path.dirname(paths.t3Settings), { recursive: true });
     fs.writeFileSync(paths.t3Settings, JSON.stringify({

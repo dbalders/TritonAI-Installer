@@ -12,6 +12,10 @@ const { writeInstallerVersionMarker } = require("../src/installer/installer-vers
 const { buildWindowsEnvironmentLines, powerShellLiteral } = require("../src/installer/profile");
 const { installWindowsDesktop } = require("../src/installer/t3code-desktop");
 
+function simulateWindowsAcl(file, action, content) {
+  if (action === "create") fs.writeFileSync(file, content, { flag: "wx", mode: 0o600 });
+}
+
 async function main() {
   await assertExistingInstallIsUpgraded();
   await assertInstallerFailureIsNotMasked();
@@ -56,6 +60,7 @@ async function assertPackagedMissingCodexFailsClosed() {
         homeDir: fixture.homeDir,
         platform: "win32",
         arch: "x64",
+        windowsAclRunner: simulateWindowsAcl,
         packaged: true,
         installerVersion: "0.2.1",
         appRoot: fixture.appRoot,
@@ -167,6 +172,7 @@ async function assertNoOpWithholdsNewInstallerMarker() {
         homeDir: fixture.homeDir,
         platform: "win32",
         arch: "x64",
+        windowsAclRunner: simulateWindowsAcl,
         installerVersion: "0.2.1",
         appRoot: fixture.appRoot,
         resourcesPath: null,
@@ -215,6 +221,7 @@ async function assertEnvironmentMigrationWaitsForSuccessfulInstall() {
       homeDir: fixture.homeDir,
       platform: "win32",
       arch: "x64",
+      windowsAclRunner: simulateWindowsAcl,
       installerVersion: "0.2.5",
       appRoot: fixture.appRoot,
       resourcesPath: null,

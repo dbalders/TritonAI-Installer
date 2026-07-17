@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const { UCSD } = require("./constants");
 const { getCodexProviderEnvironmentVariables } = require("./codex-environment");
 const { listSkillDirs } = require("./skills");
@@ -114,7 +115,8 @@ ${skillList}
 function writeT3CodeSettings(paths) {
   const updates = prepareManagedSettingsUpdates(
     getT3SettingsPaths(paths),
-    (existing) => buildT3CodeSettings(existing, paths)
+    (existing) => buildT3CodeSettings(existing, paths),
+    { platform: paths.platform, windowsAclRunner: paths.windowsAclRunner }
   );
   commitManagedSettingsUpdates(updates);
 
@@ -203,9 +205,11 @@ function writeT3CodeDefaultsPatcher(paths) {
   const script = `#!/usr/bin/env node
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 
 const settingsPaths = ${JSON.stringify(settingsPaths)};
 const stateDbPaths = ${JSON.stringify(stateDbPaths)};
+const managedSettingsPlatform = ${JSON.stringify(paths.platform)};
 const modelSelection = ${JSON.stringify(modelSelection)};
 const customModels = ${JSON.stringify(customModels)};
 const customModelMetadata = ${JSON.stringify(customModelMetadata)};
@@ -459,7 +463,11 @@ function patchStateDatabase(stateDbPath) {
   }
 }
 
-const settingsUpdates = prepareManagedSettingsUpdates(settingsPaths, buildManagedSettings);
+const settingsUpdates = prepareManagedSettingsUpdates(
+  settingsPaths,
+  buildManagedSettings,
+  { platform: managedSettingsPlatform }
+);
 commitManagedSettingsUpdates(settingsUpdates);
 clearProviderStatusCaches();
 for (const stateDbPath of stateDbPaths) {
@@ -484,16 +492,272 @@ function settingsError(action, file, error = undefined) {
   });
 }
 
-function readManagedSettingsSnapshot(file) {
+function managedSettingsPowerShellScript(action) {
+  const resolveFileAndIdentity = `
+$ErrorActionPreference = "Stop"
+$file = $env:TRITONAI_MANAGED_SETTINGS_FILE
+if ([string]::IsNullOrWhiteSpace($file)) { throw "Managed settings path was not provided." }
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+if ($null -eq $sid) { throw "Cannot resolve the installing user's Windows SID." }
+`;
+  const verifyOwner = `
+$verifiedAcl = Get-Acl -LiteralPath $file
+$verifiedOwner = $verifiedAcl.GetOwner([System.Security.Principal.SecurityIdentifier])
+if ($verifiedOwner.Value -ne $sid.Value) {
+  throw "Managed settings owner is not the installing user."
+}
+`;
+  const verifyPrivateDacl = `
+if (-not $verifiedAcl.AreAccessRulesProtected) {
+  throw "Managed settings DACL still inherits access rules."
+}
+$verifiedRules = @($verifiedAcl.GetAccessRules(
+  $true,
+  $true,
+  [System.Security.Principal.SecurityIdentifier]
+))
+if ($verifiedRules.Count -ne 1) {
+  throw "Managed settings DACL must contain exactly one access rule with no inherited access."
+}
+$verifiedRule = $verifiedRules[0]
+if (
+  $verifiedRule.IsInherited -or
+  $verifiedRule.IdentityReference.Value -ne $sid.Value -or
+  $verifiedRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+  (($verifiedRule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne
+    [System.Security.AccessControl.FileSystemRights]::FullControl)
+) {
+  throw "Managed settings DACL is not installing-user-only full control."
+}
+`;
+
+  const privateAcl = `
+$privateAcl = [System.Security.AccessControl.FileSecurity]::new()
+$privateAcl.SetOwner($sid)
+$privateAcl.SetAccessRuleProtection($true, $false)
+$privateRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $sid,
+  [System.Security.AccessControl.FileSystemRights]::FullControl,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+[void]$privateAcl.AddAccessRule($privateRule)
+`;
+
+  if (action === "verify-owner") {
+    return `${resolveFileAndIdentity}${verifyOwner}`;
+  }
+  if (action === "verify") {
+    return `${resolveFileAndIdentity}${verifyOwner}${verifyPrivateDacl}`;
+  }
+  if (action === "create") {
+    return `${resolveFileAndIdentity}${privateAcl}
+$inputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $inputEncoding
+$content = [Console]::In.ReadToEnd()
+$encoding = [System.Text.UTF8Encoding]::new($false)
+$bytes = $encoding.GetBytes($content)
+$rights = ([System.Security.AccessControl.FileSystemRights]::Read -bor [System.Security.AccessControl.FileSystemRights]::Write)
+$stream = [System.IO.FileStream]::new(
+  $file,
+  [System.IO.FileMode]::CreateNew,
+  $rights,
+  [System.IO.FileShare]::None,
+  4096,
+  [System.IO.FileOptions]::WriteThrough,
+  $privateAcl
+)
+try {
+  $stream.Write($bytes, 0, $bytes.Length)
+  $stream.Flush($true)
+} finally {
+  $stream.Dispose()
+}
+${verifyOwner}${verifyPrivateDacl}`;
+  }
+  if (action !== "secure") {
+    throw new Error(`Unsupported managed settings ACL action: ${action}`);
+  }
+  return `${resolveFileAndIdentity}${privateAcl}
+Set-Acl -LiteralPath $file -AclObject $privateAcl
+${verifyOwner}${verifyPrivateDacl}`;
+}
+
+function getWindowsPowerShellExecutable() {
+  const systemRoot = process.env.SystemRoot || process.env.WINDIR;
+  if (!systemRoot) throw new Error("Cannot resolve the Windows system directory.");
+  const executable = path.join(
+    systemRoot,
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe"
+  );
+  if (!fs.existsSync(executable)) {
+    throw new Error(`Cannot find the system Windows PowerShell executable at ${executable}.`);
+  }
+  return executable;
+}
+
+function runWindowsManagedSettingsAcl(file, action, content = undefined) {
+  const encodedCommand = Buffer.from(managedSettingsPowerShellScript(action), "utf16le").toString("base64");
+  const executable = getWindowsPowerShellExecutable();
+  const systemModulePath = path.join(path.dirname(executable), "Modules");
+  if (!fs.existsSync(systemModulePath)) {
+    throw new Error(`Cannot find the system Windows PowerShell modules at ${systemModulePath}.`);
+  }
+  const childEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => ![
+      "psmodulepath",
+      "tritonai_managed_settings_file"
+    ].includes(name.toLowerCase()))
+  );
+  childEnvironment.PSModulePath = systemModulePath;
+  childEnvironment.TRITONAI_MANAGED_SETTINGS_FILE = file;
+  const result = spawnSync(
+    executable,
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      env: childEnvironment,
+      input: action === "create" ? Buffer.from(content, "utf8") : undefined
+    }
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || `PowerShell exited with ${result.status}`).trim();
+    throw new Error(detail);
+  }
+}
+
+function runManagedSettingsAccessAction(file, action, options = {}, content = undefined) {
+  const runner = options["windowsAclRunner"] || runWindowsManagedSettingsAcl;
+  return runner(file, action, content);
+}
+
+function runPosixManagedSettingsAcl(file, action, platform) {
+  // Linux POSIX ACL named entries are bounded by the group-class mask. The
+  // subsequent chmod(0600) sets that mask to zero, so stat mode verification
+  // proves those entries have no effective access without optional ACL tools.
+  if (platform === "linux") return;
+  let command;
+  let args;
+  if (platform === "darwin") {
+    if (action === "clear") {
+      command = "/bin/chmod";
+      args = ["-N", file];
+    } else if (action === "verify") {
+      command = "/bin/ls";
+      args = ["-lde", file];
+    }
+  }
+  if (!command || !args) {
+    throw new Error(`Unsupported POSIX ACL ${action} operation on ${platform}.`);
+  }
+
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || `${command} exited with ${result.status}`).trim();
+    throw new Error(detail);
+  }
+  const output = String(result.stdout || "");
+  if (action === "verify" && platform === "darwin") {
+    const lines = output.split(/\r?\n/);
+    const modeToken = String(lines[0] || "").trimStart().split(/\s+/, 1)[0];
+    if (modeToken.endsWith("+") || lines.slice(1).some((line) => /^\s*\d+:/.test(line))) {
+      throw new Error("managed settings still have extended ACL entries");
+    }
+  }
+}
+
+function runPosixManagedSettingsAccessAction(file, action, platform, options = {}) {
+  const runner = options["posixAclRunner"] || runPosixManagedSettingsAcl;
+  return runner(file, action, platform);
+}
+
+function assertSafeExistingManagedSettingsOwner(file, stat, options = {}) {
+  const platform = options["platform"] || process.platform;
+  try {
+    if (platform === "win32") {
+      runManagedSettingsAccessAction(file, "verify-owner", options);
+      return;
+    }
+    const getUid = options["getUid"] || process.getuid;
+    const installingUid = typeof getUid === "function" ? getUid() : undefined;
+    if (!Number.isInteger(installingUid) || stat.uid !== installingUid) {
+      throw new Error("owner is not the installing user");
+    }
+  } catch (error) {
+    throw settingsError("verify safe ownership for", file, error);
+  }
+}
+
+function verifyPrivateManagedSettingsAccess(file, options = {}) {
+  const platform = options["platform"] || process.platform;
+  try {
+    if (platform === "win32") {
+      runManagedSettingsAccessAction(file, "verify", options);
+      return;
+    }
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile()) throw new Error("path is not a regular file");
+    assertSafeExistingManagedSettingsOwner(file, stat, options);
+    if ((stat.mode & 0o777) !== 0o600) {
+      throw new Error(`mode ${(stat.mode & 0o777).toString(8)} is not 600`);
+    }
+    runPosixManagedSettingsAccessAction(file, "verify", platform, options);
+  } catch (error) {
+    throw settingsError("verify user-only access for", file, error);
+  }
+}
+
+function hasPrivateManagedSettingsAccess(file, stat, options = {}) {
+  const platform = options["platform"] || process.platform;
+  if (platform !== "win32") {
+    if ((stat.mode & 0o777) !== 0o600) return false;
+    try {
+      runPosixManagedSettingsAccessAction(file, "verify", platform, options);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  try {
+    runManagedSettingsAccessAction(file, "verify", options);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function secureManagedSettingsFile(file, options = {}) {
+  const platform = options["platform"] || process.platform;
+  try {
+    if (platform === "win32") {
+      runManagedSettingsAccessAction(file, "secure", options);
+    } else {
+      runPosixManagedSettingsAccessAction(file, "clear", platform, options);
+      fs.chmodSync(file, 0o600);
+      verifyPrivateManagedSettingsAccess(file, options);
+    }
+  } catch (error) {
+    throw settingsError("establish user-only access for", file, error);
+  }
+}
+
+function readManagedSettingsSnapshot(file, options = {}) {
   if (!fs.existsSync(file)) {
-    return { file, exists: false, raw: null, value: {}, mode: 0o600 };
+    return { file, exists: false, raw: null, value: {}, accessIsPrivate: true, accessOptions: options };
   }
 
   let raw;
-  let mode;
+  let stat;
   try {
+    stat = fs.lstatSync(file);
+    if (!stat.isFile()) throw new Error("path is not a regular file");
+    assertSafeExistingManagedSettingsOwner(file, stat, options);
     raw = fs.readFileSync(file, "utf8");
-    mode = fs.statSync(file).mode & 0o777;
   } catch (error) {
     throw settingsError("read", file, error);
   }
@@ -511,11 +775,20 @@ function readManagedSettingsSnapshot(file) {
   if (!isPlainObject(value)) {
     throw settingsError("use non-object JSON from", file);
   }
-  return { file, exists: true, raw, value, mode };
+  return {
+    file,
+    exists: true,
+    raw,
+    value,
+    device: stat.dev,
+    inode: stat.ino,
+    accessIsPrivate: hasPrivateManagedSettingsAccess(file, stat, options),
+    accessOptions: options
+  };
 }
 
-function prepareManagedSettingsUpdates(files, transform) {
-  const snapshots = files.map(readManagedSettingsSnapshot);
+function prepareManagedSettingsUpdates(files, transform, options = {}) {
+  const snapshots = files.map((file) => readManagedSettingsSnapshot(file, options));
   return snapshots.map((snapshot) => {
     const value = transform(snapshot.value, snapshot.file);
     if (!isPlainObject(value)) {
@@ -536,15 +809,22 @@ function managedSettingsTempPath(file, label) {
   );
 }
 
-function writeDurableTempFile(file, content, mode, label) {
+function writeDurableTempFile(file, content, label, accessOptions = {}) {
   const tempPath = managedSettingsTempPath(file, label);
   let descriptor;
   try {
-    descriptor = fs.openSync(tempPath, "wx", mode ?? 0o600);
+    if ((accessOptions["platform"] || process.platform) === "win32") {
+      runManagedSettingsAccessAction(tempPath, "create", accessOptions, content);
+      verifyPrivateManagedSettingsAccess(tempPath, accessOptions);
+      return tempPath;
+    }
+    descriptor = fs.openSync(tempPath, "wx", 0o600);
+    secureManagedSettingsFile(tempPath, accessOptions);
     fs.writeFileSync(descriptor, content, "utf8");
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = undefined;
+    verifyPrivateManagedSettingsAccess(tempPath, accessOptions);
     return tempPath;
   } catch (error) {
     if (descriptor !== undefined) {
@@ -564,12 +844,24 @@ function verifyManagedSettingsSnapshot(snapshot) {
   }
 
   let current;
+  let currentStat;
   try {
+    currentStat = fs.lstatSync(snapshot.file);
+    if (!currentStat.isFile()) throw new Error("path is not a regular file");
+    if (snapshot.accessIsPrivate) {
+      verifyPrivateManagedSettingsAccess(snapshot.file, snapshot.accessOptions);
+    } else {
+      assertSafeExistingManagedSettingsOwner(snapshot.file, currentStat, snapshot.accessOptions);
+    }
     current = fs.readFileSync(snapshot.file, "utf8");
   } catch (error) {
     throw settingsError("re-read before replacing", snapshot.file, error);
   }
-  if (current !== snapshot.raw) {
+  if (
+    current !== snapshot.raw
+    || currentStat.dev !== snapshot.device
+    || currentStat.ino !== snapshot.inode
+  ) {
     throw settingsError("replace concurrently changed", snapshot.file);
   }
 }
@@ -577,11 +869,17 @@ function verifyManagedSettingsSnapshot(snapshot) {
 function writeRecoveryBackup(update) {
   if (!update.exists || update.raw === update.content) return;
   const backupPath = `${update.file}.tritonai-backup`;
-  const tempPath = writeDurableTempFile(backupPath, update.raw, update.mode, "backup");
+  const tempPath = writeDurableTempFile(backupPath, update.raw, "backup", update.accessOptions);
+  let moved = false;
   try {
     fs.renameSync(tempPath, backupPath);
+    moved = true;
+    verifyPrivateManagedSettingsAccess(backupPath, update.accessOptions);
   } catch (error) {
     try { fs.rmSync(tempPath, { force: true }); } catch {}
+    if (moved) {
+      try { fs.rmSync(backupPath, { force: true }); } catch {}
+    }
     throw settingsError("preserve a recovery backup for", update.file, error);
   }
 }
@@ -600,9 +898,10 @@ function rollbackManagedSettingsUpdate(update) {
     fs.rmSync(update.file, { force: true });
     return;
   }
-  const rollbackPath = writeDurableTempFile(update.file, update.raw, update.mode, "rollback");
+  const rollbackPath = writeDurableTempFile(update.file, update.raw, "rollback", update.accessOptions);
   try {
     fs.renameSync(rollbackPath, update.file);
+    verifyPrivateManagedSettingsAccess(update.file, update.accessOptions);
   } catch (error) {
     try { fs.rmSync(rollbackPath, { force: true }); } catch {}
     throw error;
@@ -610,12 +909,13 @@ function rollbackManagedSettingsUpdate(update) {
 }
 
 function commitManagedSettingsUpdates(updates) {
-  const changed = updates.filter((update) => update.raw !== update.content);
-  if (changed.length === 0) return;
-
+  const changed = updates.filter(
+    (update) => update.raw !== update.content || !update.accessIsPrivate
+  );
   for (const update of updates) {
     verifyManagedSettingsSnapshot(update);
   }
+  if (changed.length === 0) return;
   for (const update of changed) {
     fs.mkdirSync(path.dirname(update.file), { recursive: true });
   }
@@ -626,7 +926,12 @@ function commitManagedSettingsUpdates(updates) {
     for (const update of changed) {
       staged.push({
         update,
-        tempPath: writeDurableTempFile(update.file, update.content, update.mode, "replacement")
+        tempPath: writeDurableTempFile(
+          update.file,
+          update.content,
+          "replacement",
+          update.accessOptions
+        )
       });
     }
     for (const update of changed) {
@@ -637,6 +942,7 @@ function commitManagedSettingsUpdates(updates) {
       fs.renameSync(entry.tempPath, entry.update.file);
       committed.push(entry.update);
       entry.tempPath = null;
+      verifyPrivateManagedSettingsAccess(entry.update.file, entry.update.accessOptions);
     }
   } catch (error) {
     const rollbackErrors = [];
@@ -668,6 +974,16 @@ function managedSettingsHelpersSource() {
     "let managedSettingsTempCounter = 0;",
     isPlainObject.toString(),
     settingsError.toString(),
+    managedSettingsPowerShellScript.toString(),
+    getWindowsPowerShellExecutable.toString(),
+    runWindowsManagedSettingsAcl.toString(),
+    runManagedSettingsAccessAction.toString(),
+    runPosixManagedSettingsAcl.toString(),
+    runPosixManagedSettingsAccessAction.toString(),
+    assertSafeExistingManagedSettingsOwner.toString(),
+    verifyPrivateManagedSettingsAccess.toString(),
+    hasPrivateManagedSettingsAccess.toString(),
+    secureManagedSettingsFile.toString(),
     readManagedSettingsSnapshot.toString(),
     prepareManagedSettingsUpdates.toString(),
     managedSettingsTempPath.toString(),
@@ -743,10 +1059,7 @@ function getCodexModels(paths) {
 }
 
 function getT3SettingsPaths(paths) {
-  const candidates = [
-    paths.t3Settings,
-    path.join(paths.t3Home, "dev", "settings.json")
-  ];
+  const candidates = [paths.t3Settings];
   return Array.from(new Set(candidates.filter(Boolean)));
 }
 
@@ -822,6 +1135,8 @@ module.exports = {
   writeT3CodeSettings,
   __test: {
     commitManagedSettingsUpdates,
-    prepareManagedSettingsUpdates
+    prepareManagedSettingsUpdates,
+    secureManagedSettingsFile,
+    verifyPrivateManagedSettingsAccess
   }
 };
