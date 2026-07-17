@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { validateManagedSkillsManifest } = require("../src/installer/skill-manifest");
+const { validateManagedPluginBundleManifest } = require("../src/installer/plugin-bundle-manifest");
 
 const appPath = process.argv[2];
 
@@ -14,6 +15,8 @@ if (!appPath) {
 const t3VendorDir = path.join(appPath, "Contents", "Resources", "vendor", "t3code-desktop", "mac-arm64");
 const codexVendorDir = path.join(appPath, "Contents", "Resources", "vendor", "codex-cli", "mac-arm64");
 const skillsVendorDir = path.join(appPath, "Contents", "Resources", "vendor", "skills");
+const pluginCompositionPath = path.join(t3VendorDir, "tritonai-plugin-composition.json");
+const pluginRequirementPath = path.join(appPath, "Contents", "Resources", "managed-plugin-composition.json");
 const checks = [
   {
     name: "TritonAI Harness Desktop",
@@ -28,8 +31,24 @@ for (const check of checks) {
 }
 verifyBundledSkills(skillsVendorDir);
 verifyBundledCodexCli(codexVendorDir);
+const pluginCompositionRequired = readPluginCompositionRequirement(pluginRequirementPath);
+if (pluginCompositionRequired) verifyBundledPluginComposition(pluginCompositionPath);
+else if (fs.existsSync(pluginCompositionPath)) {
+  throw new Error("No-plugin Installer build unexpectedly contains a Harness plugin composition proof.");
+}
 
 console.log("Bundled macOS resources verified.");
+
+function readPluginCompositionRequirement(file) {
+  if (!fs.existsSync(file)) throw new Error(`Managed plugin composition requirement is missing: ${file}`);
+  const value = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.version !== 1 || typeof value.required !== "boolean"
+    || Object.keys(value).some((key) => !["version", "required"].includes(key))) {
+    throw new Error("Managed plugin composition requirement has an unsupported contract.");
+  }
+  return value.required;
+}
 
 function verifyBundledFile({ name, file, manifest, appNames = [] }) {
   if (!file) {
@@ -160,6 +179,27 @@ function verifyBundledCodexCli(codexDir) {
   if (!fs.existsSync(nativeDir) || !fs.statSync(nativeDir).isDirectory()) {
     throw new Error(`Bundled Codex CLI native package is missing: ${nativeDir}`);
   }
+}
+
+function verifyBundledPluginComposition(manifestPath) {
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(`Bundled Harness plugin composition proof is missing: ${manifestPath}`);
+  }
+  const stat = fs.lstatSync(manifestPath);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`Bundled Harness plugin composition proof must be a regular file: ${manifestPath}`);
+  }
+  let value;
+  try {
+    value = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch (error) {
+    throw new Error(`Bundled Harness plugin composition proof is invalid JSON: ${error.message}`);
+  }
+  const manifest = validateManagedPluginBundleManifest(value, "Bundled Harness plugin composition proof");
+  console.log(
+    `Verified Harness composition for ${manifest.packages.length} managed plugin package${manifest.packages.length === 1 ? "" : "s"} `
+    + `at ${manifest.source.commit}.`
+  );
 }
 
 function findFirstFile(dir, pattern) {

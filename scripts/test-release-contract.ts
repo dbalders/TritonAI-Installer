@@ -14,6 +14,7 @@ const {
 const {
   activateStagedVendors,
   assertExplicitHarnessSource,
+  assertLegacyPluginFreeHarnessVersion,
   assertMatchingManifestVersions,
   assertManifestVersion,
   readHarnessSourceEnvironment,
@@ -21,6 +22,8 @@ const {
 } = require("./prepare-t3code-desktop-vendor");
 
 function main() {
+  assert.doesNotThrow(() => assertLegacyPluginFreeHarnessVersion("0.2.7"));
+  assert.throws(() => assertLegacyPluginFreeHarnessVersion("0.2.8"), /requires an artifact-bound/);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-release-contract-"));
   try {
     fs.copyFileSync(path.join(repoRoot, "release-artifacts.json"), path.join(tempRoot, "release-artifacts.json"));
@@ -65,6 +68,20 @@ function main() {
     assert.strictEqual(winConfig.portable.artifactName, "TritonAI-Installer-${version}-${arch}-portable.${ext}");
     assert.strictEqual(macConfig.appId, "edu.ucsd.tritonai.installer");
     assert.strictEqual(winConfig.appId, "edu.ucsd.tritonai.installer");
+    const macHarnessResource = macConfig.extraResources.find((resource) => resource.to === "vendor/t3code-desktop/mac-arm64");
+    assert(macHarnessResource.filter.includes("tritonai-plugin-composition.json"));
+    assert(
+      winConfig.files.includes("vendor/t3code-desktop/win-x64/**/*"),
+      "Windows Setup and portable electron-builder targets must include the Harness plugin composition proof"
+    );
+    assert(macConfig.extraResources.some((resource) => resource.to === "managed-plugin-composition.json"));
+    assert(winConfig.extraResources.some((resource) => resource.to === "managed-plugin-composition.json"));
+    const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+    assert(
+      packageJson.scripts["package:win-installer"].indexOf("prepare:plugins-vendor:compiled")
+        < packageJson.scripts["package:win-installer"].indexOf("prepare:t3code-desktop-vendor:win:compiled"),
+      "Windows packaging must prepare plugins before accepting a composed Harness release"
+    );
 
     assert.deepStrictEqual(
       readHarnessSourceEnvironment({

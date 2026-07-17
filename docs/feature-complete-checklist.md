@@ -11,6 +11,8 @@
 - [x] Bundle TritonAI Harness Desktop and the managed Codex CLI in packaged artifacts.
 - [x] Pull secure root-level skills from private `dbalders/UCSD-Skills-Library-Secure` during packaging; do not bundle public repository skills.
 - [x] Install bundled secure skills into the managed Codex home with a versioned ownership manifest.
+- [x] Fetch selected managed plugin packages only from an explicit canonical ref and commit and validate deterministic release contents.
+- [x] Require a matching Harness static-composition proof and include it in every Installer packaging path without adding a runtime plugin loader.
 - [x] Preserve public, community, and user-added skill directories across Installer upgrades.
 - [x] Replace/remove only previously Installer-owned secure skills and reject unowned name collisions.
 - [x] Migrate old installs by removing the legacy root `manifest.json` without removing its public skill directories.

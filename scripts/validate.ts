@@ -14,6 +14,9 @@ const required = [
   "src/installer/codex-environment.ts",
   "src/installer/diagnostics.ts",
   "src/installer/installer-version-marker.ts",
+  "src/installer/plugin-provenance.ts",
+  "src/installer/plugin-bundle-manifest.ts",
+  "src/installer/plugins.ts",
   "src/installer/skill-manifest.ts",
   "src/installer/existing-api-key.ts",
   "src/installer/tritonai-connection.ts",
@@ -39,6 +42,7 @@ const required = [
   "scripts/test-clean-install-dry-run.ts",
   "scripts/test-installer-version-marker.ts",
   "scripts/test-skills.ts",
+  "scripts/test-plugins.ts",
   "scripts/test-windows-upgrade.ts",
   "scripts/test-release-contract.ts",
   "scripts/test-install-transactions.ts",
@@ -47,6 +51,7 @@ const required = [
   "scripts/write-managed-config.ts",
   "scripts/verify-macos-bundled-resources.ts",
   "scripts/prepare-skills-vendor.ts",
+  "scripts/prepare-plugins-vendor.ts",
   "scripts/prepare-codex-cli-vendor.ts",
   "scripts/prepare-t3code-desktop-vendor.ts",
   "scripts/prepare-developer-id-csr.ts",
@@ -99,7 +104,8 @@ for (const scriptName of [
   "prepare:managed-config:compiled",
   "prepare:t3code-desktop-vendor:win:compiled",
   "prepare:codex-cli-vendor:win:compiled",
-  "prepare:skills-vendor:compiled"
+  "prepare:skills-vendor:compiled",
+  "prepare:plugins-vendor:compiled"
 ]) {
   const script = packageJson.scripts?.[scriptName] || "";
   if (!script || script.includes("npm run build")) {

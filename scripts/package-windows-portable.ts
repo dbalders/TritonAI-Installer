@@ -40,6 +40,8 @@ function main() {
   copyFile("README.md", path.join(resourcesApp, "README.md"));
   prepareManagedConfig();
   copyFile("build/managed-config.generated.json", path.join(resourcesApp, "managed-config.json"));
+  preparePluginsVendor();
+  copyFile("build/managed-plugin-composition.generated.json", path.join(resourcesApp, "managed-plugin-composition.json"));
   prepareSkillsVendor();
   copyTree(path.join(root, "vendor", "skills"), path.join(resourcesApp, "vendor", "skills"));
   prepareT3CodeDesktopVendor();
@@ -61,6 +63,13 @@ function main() {
 
 function prepareSkillsVendor() {
   execFileSync(process.execPath, [path.join(root, "dist", "scripts", "prepare-skills-vendor.js")], {
+    cwd: root,
+    stdio: "inherit"
+  });
+}
+
+function preparePluginsVendor() {
+  execFileSync(process.execPath, [path.join(root, "dist", "scripts", "prepare-plugins-vendor.js")], {
     cwd: root,
     stdio: "inherit"
   });

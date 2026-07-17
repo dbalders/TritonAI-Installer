@@ -16,6 +16,7 @@ const { UCSD } = require("./constants");
 const { createDiagnosticsSession } = require("./diagnostics");
 const { defaultAppRoot } = require("./app-root");
 const { writeInstallerVersionMarker } = require("./installer-version-marker");
+const { inspectBundledPluginComposition } = require("./plugins");
 const { version: packageInstallerVersion } = require(path.join(defaultAppRoot(__dirname), "package.json"));
 
 async function runInstall(payload, runtime) {
@@ -36,15 +37,30 @@ async function runInstall(payload, runtime) {
   const desktopApps: DesktopApps = {};
   let nodeRuntime = null;
   let environmentMigration = null;
+  let managedPlugins = null;
 
   try {
     if (!apiKey) {
       diagnostics.setStep("connect");
       throw new Error("A TritonAI access key is required to install TritonAI Harness.");
     }
+    diagnostics.setStep("prepare");
+    const pluginCompositionInspector = runtime.inspectBundledPluginComposition || inspectBundledPluginComposition;
+    managedPlugins = pluginCompositionInspector({
+      platform,
+      arch,
+      resourcesPath: runtime.resourcesPath,
+      appRoot: runtime.appRoot,
+      required: runtime.requirePluginComposition === true
+    });
+    if (managedPlugins) {
+      emit(
+        `Verified ${managedPlugins.packages.length} managed Harness plugin package${managedPlugins.packages.length === 1 ? "" : "s"} `
+        + `from pinned commit ${managedPlugins.source.commit}.`
+      );
+    }
     const shouldSeedOnboardingWorkspace = isFreshInstall(paths);
 
-    diagnostics.setStep("prepare");
     emit("Creating UCSD agent folders...");
     configWriters.ensureBaseFolders(paths);
     const skillsInstaller = runtime.installBundledSkills || installBundledSkills;
@@ -136,6 +152,12 @@ async function runInstall(payload, runtime) {
         npm: nodeRuntime.npmBinary
       },
       desktopApps,
+      managedPlugins: managedPlugins
+        ? {
+            source: managedPlugins.source,
+            packages: managedPlugins.packages.map(({ id, name, version, digest }) => ({ id, name, version, digest }))
+          }
+        : null,
       diagnostics: diagnosticsInfo
     };
     const markerWriter = runtime.writeInstallerVersionMarker || writeInstallerVersionMarker;

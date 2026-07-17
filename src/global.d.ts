@@ -29,6 +29,10 @@ interface InstallResponse {
   paths: Record<string, string>;
   runtime?: Record<string, string>;
   desktopApps: DesktopApps;
+  managedPlugins?: {
+    source: { repository: string; ref: string; commit: string };
+    packages: Array<{ id: string; name: string; version: string; digest: string }>;
+  } | null;
   diagnostics?: DiagnosticsInfo;
 }
 

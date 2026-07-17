@@ -6,6 +6,7 @@ const { runInstall } = require("./installer/runner");
 const { getInstallPreview } = require("./installer/tool-manifest");
 const { UCSD } = require("./installer/constants");
 const { findExistingApiKey } = require("./installer/existing-api-key");
+const { readPluginCompositionRequirement } = require("./installer/plugins");
 
 const INSTALLER_DMG_VOLUME_TITLE = "Double-click to Install";
 let installCompleted = false;
@@ -63,6 +64,11 @@ app.whenReady().then(() => {
         resourcesPath: process.resourcesPath,
         appRoot: app.getAppPath(),
         packaged: app.isPackaged,
+        requirePluginComposition: readPluginCompositionRequirement({
+          resourcesPath: process.resourcesPath,
+          appRoot: app.getAppPath(),
+          required: app.isPackaged
+        }),
         installerVersion: app.getVersion(),
         emit: (message) => event.sender.send("installer:log", message),
         onDiagnostics: (diagnostics) => {

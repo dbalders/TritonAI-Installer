@@ -43,6 +43,8 @@ This creates a temp home directory, strips PATH down to OS basics, downloads the
 - Regressions where the installer exports its managed `PATH` or `CODEX_HOME` through shell profiles, Windows user variables, or its own process environment, including upgrades from the legacy global environment behavior.
 - Regressions where the managed Codex backend is missing, stale, copied from the wrong packaged payload, or falls back to npm without the package-age cutoff.
 - Regressions where Installer upgrades overwrite public/user skills, retain retired managed secure skills, accept malformed manifests, or lose the prior secure bundle after a staged copy failure.
+- Regressions where plugin packaging accepts a noncanonical origin, moving or mismatched ref/commit, implicit dirty checkout, ambiguous package selection, source/tests, symlinks, special files, unsafe paths, or manifest/package/file drift.
+- Regressions where a Harness artifact omits or changes the exact managed plugin composition proof, or a packaged Installer omits that proof on macOS, Windows Setup, or portable paths.
 
 ## Legacy Provider Stale-State Reproduction
 

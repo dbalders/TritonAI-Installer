@@ -18,6 +18,7 @@
       "to": "vendor/t3code-desktop/mac-arm64",
       "filter": [
         "latest-mac.yml",
+        "tritonai-plugin-composition.json",
         "TritonAI-Harness-*.dmg"
       ]
     },
@@ -38,6 +39,10 @@
     {
       "from": "build/managed-config.generated.json",
       "to": "managed-config.json"
+    },
+    {
+      "from": "build/managed-plugin-composition.generated.json",
+      "to": "managed-plugin-composition.json"
     }
   ],
   "mac": {
