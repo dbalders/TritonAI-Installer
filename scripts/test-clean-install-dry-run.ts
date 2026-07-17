@@ -989,7 +989,11 @@ async function runDryRun(platform, options) {
     const t3DefaultsPatcher = fs.readFileSync(paths.t3DefaultsPatcher, "utf8");
     assert.match(t3DefaultsPatcher, /projection_projects/);
     assert.match(t3DefaultsPatcher, /projection_threads/);
-    assert(!t3DefaultsPatcher.includes(t3DevSettingsPath), "production patcher must not manage development settings");
+    const escapedT3DevSettingsPath = JSON.stringify(t3DevSettingsPath).slice(1, -1);
+    assert(
+      !t3DefaultsPatcher.includes(escapedT3DevSettingsPath),
+      "production patcher must not manage development settings"
+    );
     assert(t3DefaultsPatcher.includes(expectedModel));
     assertIncludesPath(t3DefaultsPatcher, managedCodex);
     assertIncludesPath(t3DefaultsPatcher, paths.codexHome);

@@ -517,10 +517,11 @@ $verifiedRules = @($verifiedAcl.GetAccessRules(
   [System.Security.Principal.SecurityIdentifier]
 ))
 if ($verifiedRules.Count -ne 1) {
-  throw "Managed settings DACL must contain exactly one explicit access rule."
+  throw "Managed settings DACL must contain exactly one access rule with no inherited access."
 }
 $verifiedRule = $verifiedRules[0]
 if (
+  $verifiedRule.IsInherited -or
   $verifiedRule.IdentityReference.Value -ne $sid.Value -or
   $verifiedRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
   (($verifiedRule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne
@@ -699,7 +700,8 @@ function verifyPrivateManagedSettingsAccess(file, options = {}) {
       runManagedSettingsAccessAction(file, "verify", options);
       return;
     }
-    const stat = fs.statSync(file);
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile()) throw new Error("path is not a regular file");
     assertSafeExistingManagedSettingsOwner(file, stat, options);
     if ((stat.mode & 0o777) !== 0o600) {
       throw new Error(`mode ${(stat.mode & 0o777).toString(8)} is not 600`);
@@ -846,7 +848,11 @@ function verifyManagedSettingsSnapshot(snapshot) {
   try {
     currentStat = fs.lstatSync(snapshot.file);
     if (!currentStat.isFile()) throw new Error("path is not a regular file");
-    assertSafeExistingManagedSettingsOwner(snapshot.file, currentStat, snapshot.accessOptions);
+    if (snapshot.accessIsPrivate) {
+      verifyPrivateManagedSettingsAccess(snapshot.file, snapshot.accessOptions);
+    } else {
+      assertSafeExistingManagedSettingsOwner(snapshot.file, currentStat, snapshot.accessOptions);
+    }
     current = fs.readFileSync(snapshot.file, "utf8");
   } catch (error) {
     throw settingsError("re-read before replacing", snapshot.file, error);
@@ -906,11 +912,10 @@ function commitManagedSettingsUpdates(updates) {
   const changed = updates.filter(
     (update) => update.raw !== update.content || !update.accessIsPrivate
   );
-  if (changed.length === 0) return;
-
   for (const update of updates) {
     verifyManagedSettingsSnapshot(update);
   }
+  if (changed.length === 0) return;
   for (const update of changed) {
     fs.mkdirSync(path.dirname(update.file), { recursive: true });
   }

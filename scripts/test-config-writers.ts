@@ -21,8 +21,23 @@ function getManagedSettingsPaths(paths) {
 }
 
 function writeText(file, content) {
+  const existed = fs.existsSync(file);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
+  if (process.platform === "win32" && !existed) {
+    secureManagedSettingsFile(file, { platform: "win32" });
+  }
+}
+
+function makeWindowsSettingsPermissive(file) {
+  const systemRoot = process.env.SystemRoot || process.env.WINDIR;
+  assert(systemRoot, "Windows system directory must be available");
+  const icacls = path.join(systemRoot, "System32", "icacls.exe");
+  const result = spawnSync(icacls, [file, "/grant", "*S-1-1-0:(R)"], {
+    encoding: "utf8",
+    windowsHide: true
+  });
+  assert.strictEqual(result.status, 0, result.stderr || result.stdout);
 }
 
 function runDefaultsPatcher(paths) {
@@ -477,7 +492,11 @@ function assertPermissiveSettingsAndBackupBecomePrivate() {
     const paths = getPaths(tempRoot, process.platform);
     const original = "{\n  \"unknownSetting\": \"préservé 🌊\"\n}\n";
     writeText(paths.t3Settings, original);
-    if (process.platform !== "win32") fs.chmodSync(paths.t3Settings, 0o644);
+    if (process.platform === "win32") {
+      makeWindowsSettingsPermissive(paths.t3Settings);
+    } else {
+      fs.chmodSync(paths.t3Settings, 0o644);
+    }
 
     writeT3CodeSettings(paths);
 
@@ -565,28 +584,73 @@ function assertUnsafePosixOwnershipFailsClosed() {
   }
 }
 
-function assertWindowsOwnershipAndAclFailuresFailClosed() {
+function assertPosixVerificationRejectsSymlinks() {
+  if (process.platform === "win32") return;
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-symlink-"));
+  try {
+    const targetPath = path.join(tempRoot, "target.json");
+    const settingsPath = path.join(tempRoot, "settings.json");
+    writeText(targetPath, "{}\n");
+    fs.chmodSync(targetPath, 0o600);
+    fs.symlinkSync(targetPath, settingsPath);
+
+    assert.throws(
+      () => verifyPrivateManagedSettingsAccess(settingsPath, { platform: process.platform }),
+      /path is not a regular file/
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertWindowsOwnershipAndAclFailureBehavior() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-windows-acl-fail-"));
   try {
-    const ownerPath = path.join(tempRoot, "owner", "settings.json");
+    const foreignOwnerPath = path.join(tempRoot, "foreign-owner", "settings.json");
+    const permissivePath = path.join(tempRoot, "permissive", "settings.json");
     const aclPath = path.join(tempRoot, "acl", "settings.json");
     const raw = "{\n  \"windows\": \"preserved\"\n}\n";
-    writeText(ownerPath, raw);
+    writeText(foreignOwnerPath, raw);
+    writeText(permissivePath, raw);
     writeText(aclPath, raw);
 
     assert.throws(
       () => prepareManagedSettingsUpdates(
-        [ownerPath],
+        [foreignOwnerPath],
         (existing) => ({ ...existing, managed: true }),
         {
           platform: "win32",
           windowsAclRunner: (_file, action) => {
-            if (action === "verify-owner") throw new Error("simulated unsafe Windows owner");
+            if (action === "verify-owner") throw new Error("simulated foreign Windows owner");
           }
         }
       ),
-      /simulated unsafe Windows owner/
+      /simulated foreign Windows owner/
     );
+    assert.strictEqual(fs.readFileSync(foreignOwnerPath, "utf8"), raw);
+    assert(!fs.existsSync(`${foreignOwnerPath}.tritonai-backup`));
+
+    let repairedDacl = false;
+    const permissiveUpdates = prepareManagedSettingsUpdates(
+      [permissivePath],
+      (existing) => ({ ...existing, managed: true }),
+      {
+        platform: "win32",
+        windowsAclRunner: (file, action, content) => {
+          if (action === "verify-owner") return;
+          if (action === "verify" && !repairedDacl) {
+            throw new Error("simulated inherited Windows DACL");
+          }
+          if (action === "create") {
+            fs.writeFileSync(file, content, { flag: "wx", mode: 0o600 });
+            repairedDacl = true;
+          }
+        }
+      }
+    );
+    commitManagedSettingsUpdates(permissiveUpdates);
+    assert.strictEqual(JSON.parse(fs.readFileSync(permissivePath, "utf8")).managed, true);
+    assert.strictEqual(fs.readFileSync(`${permissivePath}.tritonai-backup`, "utf8"), raw);
 
     const aclUpdates = prepareManagedSettingsUpdates(
       [aclPath],
@@ -604,9 +668,7 @@ function assertWindowsOwnershipAndAclFailuresFailClosed() {
       () => commitManagedSettingsUpdates(aclUpdates),
       /simulated Windows DACL application failure/
     );
-    assert.strictEqual(fs.readFileSync(ownerPath, "utf8"), raw);
     assert.strictEqual(fs.readFileSync(aclPath, "utf8"), raw);
-    assert(!fs.existsSync(`${ownerPath}.tritonai-backup`));
     assert(!fs.existsSync(`${aclPath}.tritonai-backup`));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -670,7 +732,8 @@ function main() {
   assertRestrictiveSettingsRemainPrivate();
   assertPermissionOnlyRepairDoesNotCreateBackup();
   assertUnsafePosixOwnershipFailsClosed();
-  assertWindowsOwnershipAndAclFailuresFailClosed();
+  assertPosixVerificationRejectsSymlinks();
+  assertWindowsOwnershipAndAclFailureBehavior();
   assertWindowsDaclCoversReplacementAndBackup();
   console.log("Config writer preservation tests passed.");
 }
