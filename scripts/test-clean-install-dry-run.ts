@@ -1291,7 +1291,8 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
 function assertT3CodeUcsdCustomModelsAreCanonical() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-t3code-config-"));
   try {
-    const paths = getPaths(tempRoot, "darwin");
+    const paths = getPaths(tempRoot, process.platform);
+    paths.windowsAclRunner = process.platform === "win32" ? simulateWindowsAcl : undefined;
     paths.externalModelsEnabled = true;
     fs.mkdirSync(path.dirname(paths.t3Settings), { recursive: true });
     fs.writeFileSync(paths.t3Settings, JSON.stringify({
