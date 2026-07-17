@@ -78,8 +78,24 @@ function verifyBundledArtifactBinding(manifest, compositionFile, options) {
   assertArtifactBinding(manifest, {
     fileName: binding.fileName,
     size: stat.size,
-    sha512: crypto.createHash("sha512").update(fs.readFileSync(artifactPath)).digest("base64")
+    sha512: sha512File(artifactPath)
   }, "Bundled Harness plugin composition");
+}
+
+function sha512File(file) {
+  const hash = crypto.createHash("sha512");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const descriptor = fs.openSync(file, "r");
+  try {
+    let bytesRead;
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return hash.digest("base64");
 }
 
 function findBundledPluginComposition(options: Record<string, any> = {}) {

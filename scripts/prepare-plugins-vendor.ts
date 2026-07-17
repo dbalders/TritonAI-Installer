@@ -660,7 +660,10 @@ function activateStagedVendor(stagingDir, targetDir) {
         rollbackErrors.push(rollbackError.message);
       }
     }
-    throw new Error(`Could not atomically activate managed plugin vendor: ${error.message}${rollbackErrors.length ? `; rollback failed: ${rollbackErrors.join("; ")}` : ""}`);
+    const rollbackFailure = rollbackErrors.length
+      ? `; rollback failed: ${rollbackErrors.join("; ")}; previous vendor kept at ${previous}`
+      : "";
+    throw new Error(`Could not atomically activate managed plugin vendor: ${error.message}${rollbackFailure}`);
   } finally {
     if (!previousMoved) fs.rmSync(backupRoot, { recursive: true, force: true });
   }

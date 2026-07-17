@@ -243,6 +243,34 @@ function assertAtomicVendorRollback() {
       "owned previous vendor\n",
       "a failed initial rename must preserve the previous vendor"
     );
+
+    const originalRenameForRollbackFailure = fs.renameSync;
+    let activationFailed = false;
+    fs.renameSync = (source, target) => {
+      if (!activationFailed && target === vendorDir && path.basename(source).startsWith(".managed-plugins-vendor-")) {
+        activationFailed = true;
+        throw new Error("simulated plugin vendor activation failure");
+      }
+      if (activationFailed && target === vendorDir && path.basename(source) === "previous") {
+        throw new Error("simulated plugin vendor rollback failure");
+      }
+      return originalRenameForRollbackFailure(source, target);
+    };
+    try {
+      assert.throws(
+        () => stagePluginsFromSource({ sourceRoot, vendorDir, selectedIds: ["alpha-reader"], source: sourceIdentity() }),
+        /rollback failed: simulated plugin vendor rollback failure; previous vendor kept at .*\.managed-plugins-vendor-backup-.*previous/
+      );
+    } finally {
+      fs.renameSync = originalRenameForRollbackFailure;
+    }
+    const preservedBackup = fs.readdirSync(path.dirname(vendorDir))
+      .find((name) => name.startsWith(".managed-plugins-vendor-backup-"));
+    assert(preservedBackup, "a rollback failure must preserve the previous plugin vendor for recovery");
+    fs.renameSync(
+      path.join(path.dirname(vendorDir), preservedBackup, "previous"),
+      vendorDir
+    );
   });
 }
 
@@ -311,7 +339,16 @@ function assertPackagedResourceInspection() {
     const boundManifest = { ...manifest, artifacts: [artifact] };
     fs.writeFileSync(compositionPath, JSON.stringify(boundManifest));
     assert.strictEqual(findBundledPluginComposition({ platform: "darwin", arch: "arm64", resourcesPath, appRoot: tempRoot }), compositionPath);
-    assert.deepStrictEqual(inspectBundledPluginComposition({ platform: "darwin", arch: "arm64", resourcesPath, appRoot: tempRoot, required: true }), boundManifest);
+    const originalReadFile = fs.readFileSync;
+    fs.readFileSync = (file, ...args) => {
+      if (file === artifactPath) throw new Error("artifact hashing must not buffer the entire release artifact");
+      return originalReadFile(file, ...args);
+    };
+    try {
+      assert.deepStrictEqual(inspectBundledPluginComposition({ platform: "darwin", arch: "arm64", resourcesPath, appRoot: tempRoot, required: true }), boundManifest);
+    } finally {
+      fs.readFileSync = originalReadFile;
+    }
     fs.writeFileSync(artifactPath, "tampered harness artifact");
     assert.throws(
       () => inspectBundledPluginComposition({ platform: "darwin", arch: "arm64", resourcesPath, appRoot: tempRoot, required: true }),
