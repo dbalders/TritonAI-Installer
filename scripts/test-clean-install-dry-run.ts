@@ -1080,9 +1080,10 @@ function assertWindowsShortcutTargetsApp() {
 
 async function assertOnboardingWorkspaceOnlySeedsOnFirstInstall() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-onboarding-"));
-  const paths = getPaths(tempRoot, "darwin");
+  const platform = process.platform;
+  const paths = getPaths(tempRoot, platform);
   const runtimeArch = process.arch;
-  const fakeRuntime = getNodeRuntimePaths(paths, "darwin", runtimeArch);
+  const fakeRuntime = getNodeRuntimePaths(paths, platform, runtimeArch);
 
   try {
     fs.mkdirSync(fakeRuntime.nodeBinDir, { recursive: true });
@@ -1093,15 +1094,16 @@ async function assertOnboardingWorkspaceOnlySeedsOnFirstInstall() {
 
     const runtime = {
       homeDir: tempRoot,
-      platform: "darwin",
+      platform,
       arch: runtimeArch,
+      windowsAclRunner: platform === "win32" ? simulateWindowsAcl : undefined,
       emit: () => {},
       ensurePrerequisites: async () => fakeRuntime,
       appRoot: tempRoot,
       resourcesPath: null,
       saveEnvironment: async (environmentOptions) => {
         fs.mkdirSync(path.dirname(environmentOptions.paths.envFile), { recursive: true });
-        fs.writeFileSync(environmentOptions.paths.envFile, "darwin env\n");
+        fs.writeFileSync(environmentOptions.paths.envFile, `${platform} env\n`);
       },
       installBundledSkills: ({ paths: installPaths }) => {
         const skillDir = path.join(installPaths.skillsDir, "tritonai-feedback");
