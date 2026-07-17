@@ -286,6 +286,12 @@ function assertCompositionContract() {
       source: sourceIdentity()
     });
     assert.deepStrictEqual(assertMatchingPluginComposition(expected, structuredClone(expected)), expected);
+    const reordered = reverseObjectKeys(expected);
+    assert.deepStrictEqual(
+      assertMatchingPluginComposition(expected, reordered),
+      reordered,
+      "composition matching must ignore JSON object key order at every schema level"
+    );
     assert.deepStrictEqual(assertPluginCompatibility(expected, "0.2.7"), expected);
     const artifact = {
       fileName: "TritonAI-Harness-0.2.7-arm64.dmg",
@@ -361,6 +367,14 @@ function assertPackagedResourceInspection() {
       /cannot be verified/
     );
   });
+}
+
+function reverseObjectKeys(value) {
+  if (Array.isArray(value)) return value.map(reverseObjectKeys);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).reverse().map(([key, entry]) => [key, reverseObjectKeys(entry)])
+  );
 }
 
 function writeSkillPlugin(sourceRoot, id, version) {

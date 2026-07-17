@@ -3,6 +3,7 @@ const {
   sanitizeRepositoryUrl
 } = require("./plugin-provenance");
 const path = require("path");
+const { isDeepStrictEqual } = require("util");
 
 const MANAGED_PLUGIN_BUNDLE_KIND = "tritonai-harness-plugin-composition";
 const MANAGED_PLUGIN_BUNDLE_VERSION = 1;
@@ -199,7 +200,7 @@ function assertMatchingPluginComposition(expected, actual, label = "TritonAI Har
   const normalizedActual = validateManagedPluginBundleManifest(actual, label);
   const { artifacts: _expectedArtifacts, ...expectedComposition } = normalizedExpected;
   const { artifacts: _actualArtifacts, ...actualComposition } = normalizedActual;
-  if (JSON.stringify(actualComposition) !== JSON.stringify(expectedComposition)) {
+  if (!isDeepStrictEqual(actualComposition, expectedComposition)) {
     throw new Error(
       `${label} does not match the exact prepared TritonAI plugin ref, commit, package selection, and file digests.`
     );
