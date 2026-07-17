@@ -57,6 +57,10 @@ const {
 } = require("../src/installer/installer-version-marker");
 const { version: packageInstallerVersion } = require(path.join(root, "package.json"));
 const { UCSD, resetManagedConfigForTests } = require("../src/installer/constants");
+
+function simulateWindowsAcl(file, action, content) {
+  if (action === "create") fs.writeFileSync(file, content, { flag: "wx", mode: 0o600 });
+}
 const {
   findSkillsSourceDir,
   stageSkillsFromSource
@@ -814,6 +818,7 @@ async function runDryRun(platform, options) {
         homeDir: tempRoot,
         platform,
         arch: runtimeArch,
+        windowsAclRunner: platform === "win32" ? simulateWindowsAcl : undefined,
         emit: () => {},
         ensurePrerequisites: async () => fakeRuntime,
         appRoot: tempRoot,
@@ -978,20 +983,13 @@ async function runDryRun(platform, options) {
     );
     assert.deepStrictEqual(t3Settings.providerInstances.codex.environment, expectedProviderEnvironmentVariables);
 
-    const t3DevSettings = JSON.parse(fs.readFileSync(path.join(paths.t3Home, "dev", "settings.json"), "utf8"));
-    assert.strictEqual(t3DevSettings.textGenerationModelSelection.instanceId, "codex");
-    assert.strictEqual(t3DevSettings.textGenerationModelSelection.model, expectedModel);
-    assert.strictEqual(t3DevSettings.providerInstances.codex.config.binaryPath, managedCodex);
-    assert.strictEqual(t3DevSettings.providerInstances.codex.config.homePath, paths.codexHome);
-    assert.deepStrictEqual(
-      t3DevSettings.providerInstances.codex.config.customModelMetadata,
-      expectedCodexModelMetadata(expectedCodexModels)
-    );
+    const t3DevSettingsPath = path.join(paths.t3Home, "dev", "settings.json");
+    assert(!fs.existsSync(t3DevSettingsPath), "production install must not create development settings");
 
     const t3DefaultsPatcher = fs.readFileSync(paths.t3DefaultsPatcher, "utf8");
     assert.match(t3DefaultsPatcher, /projection_projects/);
     assert.match(t3DefaultsPatcher, /projection_threads/);
-    assertIncludesPath(t3DefaultsPatcher, path.join(paths.t3Home, "dev", "settings.json"));
+    assert(!t3DefaultsPatcher.includes(t3DevSettingsPath), "production patcher must not manage development settings");
     assert(t3DefaultsPatcher.includes(expectedModel));
     assertIncludesPath(t3DefaultsPatcher, managedCodex);
     assertIncludesPath(t3DefaultsPatcher, paths.codexHome);

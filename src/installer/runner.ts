@@ -26,6 +26,7 @@ async function runInstall(payload, runtime) {
   const arch = runtime.arch || process.arch;
   const paths = getPaths(runtime.homeDir, platform);
   paths.tritonAiApiKey = apiKey;
+  paths.windowsAclRunner = runtime.windowsAclRunner;
   const diagnostics = createDiagnosticsSession({
     paths,
     platform,

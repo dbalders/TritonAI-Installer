@@ -9,16 +9,15 @@ const { getPaths } = require("../src/installer/paths");
 const {
   __test: {
     commitManagedSettingsUpdates,
-    prepareManagedSettingsUpdates
+    prepareManagedSettingsUpdates,
+    secureManagedSettingsFile,
+    verifyPrivateManagedSettingsAccess
   },
   writeT3CodeSettings
 } = require("../src/installer/config-writers");
 
 function getManagedSettingsPaths(paths) {
-  return [
-    paths.t3Settings,
-    path.join(paths.t3Home, "dev", "settings.json")
-  ];
+  return [paths.t3Settings];
 }
 
 function writeText(file, content) {
@@ -286,38 +285,75 @@ function assertValidUnknownSettingsSurvive() {
   });
 }
 
+function assertDevelopmentSettingsAreNotManaged() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-dev-settings-unmanaged-"));
+  try {
+    const paths = getPaths(tempRoot, process.platform);
+    const devSettings = path.join(paths.t3Home, "dev", "settings.json");
+    const devRaw = "{\n  \"developerOwned\": true,\n  \"credential\": \"leave-untouched\"\n}\n";
+    writeText(devSettings, devRaw);
+    const modeBefore = fs.statSync(devSettings).mode & 0o777;
+
+    writeT3CodeSettings(paths);
+    assert.strictEqual(fs.readFileSync(devSettings, "utf8"), devRaw);
+    assert.strictEqual(fs.statSync(devSettings).mode & 0o777, modeBefore);
+
+    const patcher = fs.readFileSync(paths.t3DefaultsPatcher, "utf8");
+    assert(!patcher.includes(devSettings), "the production patcher must not manage development settings");
+    const result = runDefaultsPatcher(paths);
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(fs.readFileSync(devSettings, "utf8"), devRaw);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 function assertInvalidMultiPathSettingsFailClosed(label, invalidRaw) {
-  withGeneratedPatcher((paths) => {
-    const [firstPath, secondPath] = getManagedSettingsPaths(paths);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `tritonai-settings-${label}-`));
+  try {
+    const firstPath = path.join(tempRoot, "one", "settings.json");
+    const secondPath = path.join(tempRoot, "two", "settings.json");
     const firstRaw = `${JSON.stringify({ userValue: `${label}-first` }, null, 2)}\n`;
     writeText(firstPath, firstRaw);
     writeText(secondPath, invalidRaw);
 
-    const result = runDefaultsPatcher(paths);
-    assert.notStrictEqual(result.status, 0, `${label} input should fail`);
-    assert(
-      result.stderr.includes(secondPath),
-      `${label} diagnostic should identify ${secondPath}: ${result.stderr}`
+    assert.throws(
+      () => prepareManagedSettingsUpdates(
+        [firstPath, secondPath],
+        (existing) => ({ ...existing, managed: true })
+      ),
+      (error) => error.message.includes(secondPath),
+      `${label} diagnostic should identify ${secondPath}`
     );
     assert.strictEqual(fs.readFileSync(firstPath, "utf8"), firstRaw);
     assert.strictEqual(fs.readFileSync(secondPath, "utf8"), invalidRaw);
-  });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertUnreadableMultiPathSettingsFailClosed() {
-  withGeneratedPatcher((paths) => {
-    const [firstPath, secondPath] = getManagedSettingsPaths(paths);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-unreadable-"));
+  try {
+    const firstPath = path.join(tempRoot, "one", "settings.json");
+    const secondPath = path.join(tempRoot, "two", "settings.json");
     const firstRaw = `${JSON.stringify({ userValue: "unreadable-first" }, null, 2)}\n`;
     writeText(firstPath, firstRaw);
-    fs.rmSync(secondPath, { force: true });
     fs.mkdirSync(secondPath, { recursive: true });
 
-    const result = runDefaultsPatcher(paths);
-    assert.notStrictEqual(result.status, 0, "an unreadable settings path should fail");
-    assert(result.stderr.includes(secondPath), result.stderr);
+    assert.throws(
+      () => prepareManagedSettingsUpdates(
+        [firstPath, secondPath],
+        (existing) => ({ ...existing, managed: true })
+      ),
+      (error) => error.message.includes(secondPath),
+      "an unreadable settings path should fail and identify the path"
+    );
     assert.strictEqual(fs.readFileSync(firstPath, "utf8"), firstRaw);
     assert(fs.statSync(secondPath).isDirectory());
-  });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertConcurrentSettingsEditIsPreserved() {
@@ -427,9 +463,202 @@ function assertRollbackPreservesConcurrentEdit() {
   }
 }
 
+function assertPrivateSettingsFile(file) {
+  verifyPrivateManagedSettingsAccess(file, { platform: process.platform });
+  if (process.platform !== "win32") {
+    assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600, `${file} must use mode 0600`);
+    assert.strictEqual(fs.statSync(file).uid, process.getuid(), `${file} must be owned by the installing user`);
+  }
+}
+
+function assertPermissiveSettingsAndBackupBecomePrivate() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-private-"));
+  try {
+    const paths = getPaths(tempRoot, process.platform);
+    const original = "{\n  \"unknownSetting\": \"préservé 🌊\"\n}\n";
+    writeText(paths.t3Settings, original);
+    if (process.platform !== "win32") fs.chmodSync(paths.t3Settings, 0o644);
+
+    writeT3CodeSettings(paths);
+
+    const updated = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
+    assert.strictEqual(updated.unknownSetting, "préservé 🌊");
+    assertPrivateSettingsFile(paths.t3Settings);
+    assert.strictEqual(fs.readFileSync(`${paths.t3Settings}.tritonai-backup`, "utf8"), original);
+    assertPrivateSettingsFile(`${paths.t3Settings}.tritonai-backup`);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertRestrictiveSettingsRemainPrivate() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-restrictive-"));
+  try {
+    const paths = getPaths(tempRoot, process.platform);
+    writeText(paths.t3Settings, "{\n  \"restrictive\": true\n}\n");
+    if (process.platform === "win32") {
+      secureManagedSettingsFile(paths.t3Settings, { platform: "win32" });
+    } else {
+      fs.chmodSync(paths.t3Settings, 0o600);
+    }
+
+    writeT3CodeSettings(paths);
+    assertPrivateSettingsFile(paths.t3Settings);
+    assertPrivateSettingsFile(`${paths.t3Settings}.tritonai-backup`);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertPermissionOnlyRepairDoesNotCreateBackup() {
+  if (process.platform === "win32") return;
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-mode-only-"));
+  try {
+    const settingsPath = path.join(tempRoot, "settings.json");
+    const raw = "{\n  \"alreadyManaged\": true\n}\n";
+    writeText(settingsPath, raw);
+    if (process.platform === "darwin") {
+      fs.chmodSync(settingsPath, 0o600);
+      const aclResult = spawnSync("/bin/chmod", ["+a", "everyone allow read", settingsPath], {
+        encoding: "utf8"
+      });
+      assert.strictEqual(aclResult.status, 0, aclResult.stderr);
+    } else {
+      fs.chmodSync(settingsPath, 0o644);
+    }
+    const updates = prepareManagedSettingsUpdates(
+      [settingsPath],
+      (existing) => existing,
+      { platform: process.platform }
+    );
+
+    commitManagedSettingsUpdates(updates);
+
+    assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), raw);
+    assertPrivateSettingsFile(settingsPath);
+    assert(!fs.existsSync(`${settingsPath}.tritonai-backup`));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertUnsafePosixOwnershipFailsClosed() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-owner-"));
+  try {
+    const settingsPath = path.join(tempRoot, "settings.json");
+    const raw = "{\n  \"owner\": \"preserved\"\n}\n";
+    writeText(settingsPath, raw);
+    const actualUid = fs.statSync(settingsPath).uid;
+
+    assert.throws(
+      () => prepareManagedSettingsUpdates(
+        [settingsPath],
+        (existing) => ({ ...existing, managed: true }),
+        { platform: "linux", getUid: () => actualUid + 1 }
+      ),
+      /owner is not the installing user/
+    );
+    assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), raw);
+    assert(!fs.existsSync(`${settingsPath}.tritonai-backup`));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertWindowsOwnershipAndAclFailuresFailClosed() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-windows-acl-fail-"));
+  try {
+    const ownerPath = path.join(tempRoot, "owner", "settings.json");
+    const aclPath = path.join(tempRoot, "acl", "settings.json");
+    const raw = "{\n  \"windows\": \"preserved\"\n}\n";
+    writeText(ownerPath, raw);
+    writeText(aclPath, raw);
+
+    assert.throws(
+      () => prepareManagedSettingsUpdates(
+        [ownerPath],
+        (existing) => ({ ...existing, managed: true }),
+        {
+          platform: "win32",
+          windowsAclRunner: (_file, action) => {
+            if (action === "verify-owner") throw new Error("simulated unsafe Windows owner");
+          }
+        }
+      ),
+      /simulated unsafe Windows owner/
+    );
+
+    const aclUpdates = prepareManagedSettingsUpdates(
+      [aclPath],
+      (existing) => ({ ...existing, managed: true }),
+      {
+        platform: "win32",
+        windowsAclRunner: (_file, action) => {
+          if (action === "verify-owner") return;
+          if (action === "verify") throw new Error("simulated inherited Windows DACL");
+          if (action === "create") throw new Error("simulated Windows DACL application failure");
+        }
+      }
+    );
+    assert.throws(
+      () => commitManagedSettingsUpdates(aclUpdates),
+      /simulated Windows DACL application failure/
+    );
+    assert.strictEqual(fs.readFileSync(ownerPath, "utf8"), raw);
+    assert.strictEqual(fs.readFileSync(aclPath, "utf8"), raw);
+    assert(!fs.existsSync(`${ownerPath}.tritonai-backup`));
+    assert(!fs.existsSync(`${aclPath}.tritonai-backup`));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertWindowsDaclCoversReplacementAndBackup() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-windows-acl-"));
+  try {
+    const settingsPath = path.join(tempRoot, "settings.json");
+    const raw = "{\n  \"windows\": \"original\"\n}\n";
+    writeText(settingsPath, raw);
+    const actions = [];
+    const securedFiles = new Set();
+    const options = {
+      platform: "win32",
+      windowsAclRunner: (file, action, content) => {
+        actions.push({ file, action });
+        if (action === "verify-owner") return;
+        if (action === "create") {
+          assert(!fs.existsSync(file), "the Windows ACL creator must use create-new semantics");
+          fs.writeFileSync(file, content, { flag: "wx", mode: 0o600 });
+          securedFiles.add(file);
+          return;
+        }
+        if (action === "verify" && securedFiles.size === 0 && file === settingsPath) {
+          throw new Error("simulated inherited Windows DACL");
+        }
+      }
+    };
+    const updates = prepareManagedSettingsUpdates(
+      [settingsPath],
+      (existing) => ({ ...existing, managed: true }),
+      options
+    );
+
+    commitManagedSettingsUpdates(updates);
+
+    assert.strictEqual(fs.readFileSync(`${settingsPath}.tritonai-backup`, "utf8"), raw);
+    assert(actions.some(({ file, action }) => action === "create" && file.includes(".replacement-")));
+    assert(actions.some(({ file, action }) => action === "create" && file.includes(".backup-")));
+    assert(actions.some(({ file, action }) => action === "verify" && file === settingsPath));
+    assert(actions.some(({ file, action }) => action === "verify" && file === `${settingsPath}.tritonai-backup`));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 function main() {
   assertSessionMigrationPreservesCurrentCodexRows();
   assertValidUnknownSettingsSurvive();
+  assertDevelopmentSettingsAreNotManaged();
   assertInvalidMultiPathSettingsFailClosed("malformed", "{not-json");
   assertInvalidMultiPathSettingsFailClosed("empty", "");
   assertInvalidMultiPathSettingsFailClosed("non-object", "[]\n");
@@ -437,6 +666,12 @@ function main() {
   assertConcurrentSettingsEditIsPreserved();
   assertAtomicFailureRollsBackAllManagedPaths();
   assertRollbackPreservesConcurrentEdit();
+  assertPermissiveSettingsAndBackupBecomePrivate();
+  assertRestrictiveSettingsRemainPrivate();
+  assertPermissionOnlyRepairDoesNotCreateBackup();
+  assertUnsafePosixOwnershipFailsClosed();
+  assertWindowsOwnershipAndAclFailuresFailClosed();
+  assertWindowsDaclCoversReplacementAndBackup();
   console.log("Config writer preservation tests passed.");
 }
 
