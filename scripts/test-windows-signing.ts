@@ -26,14 +26,16 @@ function main() {
     () => resolveAzureTrustedSigningConfiguration({}),
     /AZURE_TENANT_ID.*AZURE_TRUSTED_SIGNING_PUBLISHER_NAME/
   );
-  try {
-    resolveAzureTrustedSigningConfiguration(
+  assert.throws(
+    () => resolveAzureTrustedSigningConfiguration(
       Object.fromEntries([["AZURE_CLIENT_SECRET", completeEnvironment.AZURE_CLIENT_SECRET]])
-    );
-    assert.fail("Expected incomplete Azure configuration to fail.");
-  } catch (error) {
-    assert(!String(error.message).includes(completeEnvironment.AZURE_CLIENT_SECRET));
-  }
+    ),
+    (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      assert(!message.includes(completeEnvironment.AZURE_CLIENT_SECRET));
+      return /Stable Windows packaging requires Azure Trusted Signing configuration/.test(message);
+    }
+  );
   assert.throws(
     () => resolveAzureTrustedSigningConfiguration({ ...completeEnvironment, AZURE_TRUSTED_SIGNING_ENDPOINT: "http://insecure" }),
     /valid HTTPS URL/

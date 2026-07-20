@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const {
+  expectedWindowsExecutables,
   expectedWindowsPublisherName,
   verifyAuthenticodeExecutables
 } = require("./windows-signing");
@@ -24,10 +25,10 @@ function loadReleaseContract(root = defaultRoot) {
   if (contract.schemaVersion !== 1 || !Array.isArray(contract.artifacts) || contract.artifacts.length === 0) {
     throw new Error(`Invalid release artifact contract: ${contractPath}`);
   }
-  if (typeof contract.checksumManifest !== "string" || path.isAbsolute(contract.checksumManifest)) {
+  if (!isSafeRepositoryRelativePath(contract.checksumManifest)) {
     throw new Error("Release checksum manifest path must be repository-relative.");
   }
-  if (typeof contract.windowsAuthenticodeProof !== "string" || path.isAbsolute(contract.windowsAuthenticodeProof)) {
+  if (!isSafeRepositoryRelativePath(contract.windowsAuthenticodeProof)) {
     throw new Error("Windows Authenticode proof path must be repository-relative.");
   }
   return contract;
@@ -107,11 +108,34 @@ function assertWindowsAuthenticodeProof({
   const signatures = new Map<string, WindowsAuthenticodeSignatureProof>(
     proof.signatures.map((entry) => [String(entry.path).replaceAll("\\", "/"), entry])
   );
-  const windowsExecutables = artifacts.filter(
+  const publishedWindowsExecutables = artifacts.filter(
     (entry) => entry.platform === "windows-x64" && entry.absolutePath.toLowerCase().endsWith(".exe")
   );
+  const expectedExecutables = expectedWindowsExecutables(root, version);
+  const publishedPaths = new Set(publishedWindowsExecutables.map((entry) => path.resolve(entry.absolutePath)));
+  for (const expectedPublishedPath of expectedExecutables.slice(0, 2)) {
+    if (!publishedPaths.has(path.resolve(expectedPublishedPath))) {
+      const relativePath = path.relative(root, expectedPublishedPath).split(path.sep).join("/");
+      throw new Error(`Release artifact contract omits signed Windows executable ${relativePath}.`);
+    }
+  }
+  const executablePaths = [
+    ...publishedWindowsExecutables.map((entry) => entry.absolutePath),
+    expectedExecutables[2]
+  ];
+  const windowsExecutables = [...new Set(executablePaths.map((absolutePath) => path.resolve(absolutePath)))].map(
+    (absolutePath) => ({
+      absolutePath,
+      relativePath: path.relative(root, absolutePath).split(path.sep).join("/")
+    })
+  );
   for (const artifact of windowsExecutables) {
-    const relativePath = artifact.relativePath.replaceAll("\\", "/");
+    if (!isRegularFile(artifact.absolutePath)) {
+      throw new Error(`Missing Windows executable for Authenticode verification: ${artifact.relativePath}.`);
+    }
+  }
+  for (const artifact of windowsExecutables) {
+    const relativePath = artifact.relativePath;
     const signature = signatures.get(relativePath);
     if (!signature) throw new Error(`Windows Authenticode proof omits ${relativePath}.`);
     if (
@@ -209,6 +233,16 @@ function assertReleaseMayBeUpdated(release) {
   if (release && isDraft !== true) {
     throw new Error("Refusing to modify an existing published GitHub release.");
   }
+}
+
+function isSafeRepositoryRelativePath(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    !path.isAbsolute(value) &&
+    path.win32.parse(value).root.length === 0 &&
+    !value.split(/[\\/]/).includes("..")
+  );
 }
 
 function isRegularFile(file) {
