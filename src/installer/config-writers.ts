@@ -939,8 +939,17 @@ function commitManagedSettingsUpdates(updates) {
     }
     for (const entry of staged) {
       verifyManagedSettingsSnapshot(entry.update);
-      fs.renameSync(entry.tempPath, entry.update.file);
+      if (entry.update.exists) {
+        fs.renameSync(entry.tempPath, entry.update.file);
+      } else {
+        // Publish a newly created settings file without overwriting a file
+        // another process created after the final absence check.
+        fs.linkSync(entry.tempPath, entry.update.file);
+      }
       committed.push(entry.update);
+      if (!entry.update.exists) {
+        fs.rmSync(entry.tempPath, { force: true });
+      }
       entry.tempPath = null;
       verifyPrivateManagedSettingsAccess(entry.update.file, entry.update.accessOptions);
     }

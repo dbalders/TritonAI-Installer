@@ -6,7 +6,6 @@ const { execFileSync, spawnSync } = require("child_process");
 const {
   assertArtifactBinding,
   assertMatchingPluginComposition,
-  assertPluginCompatibility,
   validateManagedPluginBundleManifest
 } = require("../src/installer/plugin-bundle-manifest");
 
@@ -21,7 +20,13 @@ const macManifestFile = "latest-mac.yml";
 const winManifestFile = "latest.yml";
 const pluginCompositionFile = "tritonai-plugin-composition.json";
 const preparedPluginManifest = path.join(root, "vendor", "plugins", "manifest.json");
-const LEGACY_PLUGIN_FREE_HARNESS_VERSIONS = new Set(["0.2.7"]);
+
+function publishedPluginCompositionFile(platform, arch) {
+  if ((platform !== "mac" && platform !== "win") || !/^[a-z0-9]+$/.test(arch)) {
+    throw new Error(`Unsupported Harness plugin composition target: ${platform}-${arch}.`);
+  }
+  return `tritonai-plugin-composition-${platform}-${arch}.json`;
+}
 
 function readHarnessSourceEnvironment(env: NodeJS.ProcessEnv = {}) {
   const expectedVersion = env.TRITONAI_HARNESS_VERSION || "";
@@ -82,9 +87,14 @@ function stageMacVendor(arch) {
     const selected = selectManifestFile(manifest, new RegExp(`^${escapeRegExp(expectedName)}$`));
     const dmgPath = path.join(stagingDir, selected.fileName);
     downloadVerified(`${macReleaseBase}/${selected.fileName}`, dmgPath, selected.expected);
-    if (fs.existsSync(preparedPluginManifest)) {
-      downloadAndVerifyPluginComposition(macReleaseBase, stagingDir, expectedHarnessVersion, dmgPath, selected.expected);
-    } else assertLegacyPluginFreeHarnessVersion(expectedHarnessVersion);
+    downloadAndVerifyPluginComposition(
+      macReleaseBase,
+      stagingDir,
+      expectedHarnessVersion,
+      dmgPath,
+      selected.expected,
+      publishedPluginCompositionFile("mac", arch)
+    );
     verifyDmgContainsApp(dmgPath);
     return { stagingDir, vendorDir, version: manifest.version, assetName: selected.fileName };
   } catch (error) {
@@ -115,9 +125,14 @@ function stageWindowsVendor(arch) {
     const selected = selectManifestFile(manifest, new RegExp(`^${escapeRegExp(expectedName)}$`));
     const installerPath = path.join(stagingDir, selected.fileName);
     downloadVerified(`${winReleaseBase}/${selected.fileName}`, installerPath, selected.expected);
-    if (fs.existsSync(preparedPluginManifest)) {
-      downloadAndVerifyPluginComposition(winReleaseBase, stagingDir, expectedHarnessVersion, installerPath, selected.expected);
-    } else assertLegacyPluginFreeHarnessVersion(expectedHarnessVersion);
+    downloadAndVerifyPluginComposition(
+      winReleaseBase,
+      stagingDir,
+      expectedHarnessVersion,
+      installerPath,
+      selected.expected,
+      publishedPluginCompositionFile("win", arch)
+    );
     return { stagingDir, vendorDir, version: manifest.version, assetName: selected.fileName };
   } catch (error) {
     fs.rmSync(stagingDir, { recursive: true, force: true });
@@ -125,39 +140,52 @@ function stageWindowsVendor(arch) {
   }
 }
 
-function assertLegacyPluginFreeHarnessVersion(harnessVersion) {
-  if (!LEGACY_PLUGIN_FREE_HARNESS_VERSIONS.has(harnessVersion)) {
-    throw new Error(
-      `TritonAI Harness ${harnessVersion} requires an artifact-bound managed plugin composition proof. `
-      + "Select and prepare the intended plugin composition before packaging this Harness release."
-    );
-  }
-}
-
-function downloadAndVerifyPluginComposition(releaseBase, stagingDir, harnessVersion, artifactPath, expectedArtifact) {
+function downloadAndVerifyPluginComposition(
+  releaseBase,
+  stagingDir,
+  harnessVersion,
+  artifactPath,
+  expectedArtifact,
+  publishedFileName
+) {
   if (!fs.existsSync(preparedPluginManifest)) {
     throw new Error(
       "Managed plugin preparation is missing. Run prepare:plugins-vendor with an explicit ref, commit, and plugin selection before vendoring TritonAI Harness."
     );
   }
-  const expected = validateManagedPluginBundleManifest(
-    JSON.parse(fs.readFileSync(preparedPluginManifest, "utf8")),
-    "Prepared managed plugin manifest"
-  );
-  assertPluginCompatibility(expected, harnessVersion);
   const target = path.join(stagingDir, pluginCompositionFile);
   try {
-    downloadManifest(`${releaseBase}/${pluginCompositionFile}`, target);
+    downloadManifest(`${releaseBase}/${publishedFileName}`, target);
   } catch (error) {
     throw new Error(
-      `TritonAI Harness ${harnessVersion} does not publish the required ${pluginCompositionFile} build-composition proof. `
+      `TritonAI Harness ${harnessVersion} does not publish the required ${publishedFileName} build-composition proof. `
       + "Harness must compose the exact pinned plugin packages before the Installer may bundle this release. "
       + error.message
     );
   }
+  return verifyPluginCompositionProof({
+    expectedManifestPath: preparedPluginManifest,
+    proofPath: target,
+    harnessVersion,
+    artifactPath,
+    expectedArtifact
+  });
+}
+
+function verifyPluginCompositionProof({
+  expectedManifestPath,
+  proofPath,
+  harnessVersion,
+  artifactPath,
+  expectedArtifact
+}) {
+  const expected = validateManagedPluginBundleManifest(
+    JSON.parse(fs.readFileSync(expectedManifestPath, "utf8")),
+    "Prepared managed plugin manifest"
+  );
   let actual;
   try {
-    actual = JSON.parse(fs.readFileSync(target, "utf8"));
+    actual = JSON.parse(fs.readFileSync(proofPath, "utf8"));
   } catch (error) {
     throw new Error(`TritonAI Harness ${pluginCompositionFile} is not valid JSON: ${error.message}`);
   }
@@ -415,7 +443,19 @@ function cleanYamlValue(value) {
 }
 
 function sha512Base64(file) {
-  return crypto.createHash("sha512").update(fs.readFileSync(file)).digest("base64");
+  const hash = crypto.createHash("sha512");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const descriptor = fs.openSync(file, "r");
+  try {
+    let bytesRead;
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return hash.digest("base64");
 }
 
 function run(command, args) {
@@ -431,15 +471,15 @@ if (require.main === module) {
 }
 
 module.exports = {
-  LEGACY_PLUGIN_FREE_HARNESS_VERSIONS,
   activateStagedVendors,
-  assertLegacyPluginFreeHarnessVersion,
   downloadAndVerifyPluginComposition,
   assertExplicitHarnessSource,
   assertMatchingManifestVersions,
   assertManifestVersion,
   parseLatestYml,
+  publishedPluginCompositionFile,
   readHarnessSourceEnvironment,
   pluginCompositionFile,
-  selectManifestFile
+  selectManifestFile,
+  verifyPluginCompositionProof
 };

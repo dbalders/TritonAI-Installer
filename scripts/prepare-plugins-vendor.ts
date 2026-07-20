@@ -20,7 +20,6 @@ const CONTRACT_ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 const TOOL_NAME = /^[a-z][a-z0-9_.-]*$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 function main(env = process.env) {
   const input = readPluginSourceEnvironment(env);
@@ -52,7 +51,7 @@ function main(env = process.env) {
       `Prepared ${result.packages.length} managed Harness plugin package${result.packages.length === 1 ? "" : "s"} `
       + `from ${CANONICAL_PLUGIN_REPOSITORY_URL}#${input.ref} (${input.commit}).`
     );
-    console.log("Harness release composition must publish an identical tritonai-plugin-composition.json sidecar before Installer packaging can continue.");
+    console.log("Harness release composition must publish matching platform-specific composition proofs before Installer packaging can continue.");
     return result;
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -311,7 +310,6 @@ function stagePluginPackage(pluginsRoot, stagingDir, id) {
     id,
     name: packageJson.name,
     version: packageJson.version,
-    compatibility: pluginManifest.compatibility,
     digest,
     files
   };
@@ -377,9 +375,9 @@ function validateDeclaredSkillDirectories(packageRoot, manifest, id) {
 
 function validatePluginManifest(value, expectedId) {
   assertRecord(value, `${expectedId} plugin manifest`);
-  const keys = new Set(["apiVersion", "kind", "manifestVersion", "id", "name", "description", "version", "compatibility", "provider", "capabilities", "tools", "skills"]);
+  const keys = new Set(["apiVersion", "kind", "manifestVersion", "id", "name", "description", "version", "provider", "capabilities", "tools", "skills"]);
   assertOnlyKeys(value, keys, `${expectedId} plugin manifest`);
-  if (value.apiVersion !== "tritonai.harness/v1" || value.kind !== "IntegrationPlugin" || value.manifestVersion !== 1) {
+  if (value.apiVersion !== "tritonai.harness/v2" || value.kind !== "IntegrationPlugin" || value.manifestVersion !== 2) {
     throw new Error(`${expectedId}: unsupported Harness plugin manifest contract.`);
   }
   if (value.id !== expectedId || !PLUGIN_ID.test(value.id)) throw new Error(`${expectedId}: manifest id drift.`);
@@ -387,18 +385,6 @@ function validatePluginManifest(value, expectedId) {
     if (typeof value[field] !== "string" || !value[field].trim()) throw new Error(`${expectedId}: manifest ${field} is required.`);
   }
   if (!STABLE_SEMVER.test(value.version)) throw new Error(`${expectedId}: manifest version must be stable semver.`);
-  assertRecord(value.compatibility, `${expectedId} compatibility`);
-  assertOnlyKeys(value.compatibility, new Set(["harness"]), `${expectedId} compatibility`);
-  assertRecord(value.compatibility.harness, `${expectedId} Harness compatibility`);
-  assertOnlyKeys(value.compatibility.harness, new Set(["min", "maxExclusive"]), `${expectedId} Harness compatibility`);
-  for (const field of ["min", "maxExclusive"]) {
-    if (typeof value.compatibility.harness[field] !== "string" || !parseSemver(value.compatibility.harness[field])) {
-      throw new Error(`${expectedId}: explicit Harness compatibility range is required.`);
-    }
-  }
-  if (compareSemver(value.compatibility.harness.min, value.compatibility.harness.maxExclusive) >= 0) {
-    throw new Error(`${expectedId}: Harness compatibility min must be lower than maxExclusive.`);
-  }
   if (!Array.isArray(value.capabilities) || !Array.isArray(value.tools) || !Array.isArray(value.skills)) {
     throw new Error(`${expectedId}: capabilities, tools, and skills must be arrays.`);
   }
@@ -415,7 +401,7 @@ function validatePluginManifest(value, expectedId) {
     if (!stringFields(capability, ["id", "displayName", "description"])
       || capability.id.length > 64
       || !CONTRACT_ID.test(capability.id)
-      || (capability.access !== undefined && !["default", "opt-in"].includes(capability.access))
+      || !["default", "opt-in"].includes(capability.access)
       || capabilities.has(capability.id)) {
       throw new Error(`${expectedId}: capabilities must have unique ids and descriptions.`);
     }
@@ -428,74 +414,30 @@ function validatePluginManifest(value, expectedId) {
       assertOnlyKeys(
         entry,
         new Set(kind === "tool"
-          ? ["name", "displayName", "description", "capability", "capabilities", "effect"]
-          : ["name", "description", "capability", "capabilities"]),
+          ? ["name", "displayName", "description", "capabilities", "effect"]
+          : ["name", "description", "capabilities"]),
         `${expectedId} ${kind}`
       );
       if (!stringFields(entry, kind === "tool" ? ["name", "displayName", "description"] : ["name", "description"])) {
         throw new Error(`${expectedId}: invalid ${kind} metadata.`);
       }
-      const references = Array.isArray(entry.capabilities)
-        ? entry.capabilities
-        : typeof entry.capability === "string" && entry.capability.trim()
-          ? [entry.capability]
-          : [];
+      const references = entry.capabilities;
       const validName = kind === "skill"
         ? entry.name.length <= 64 && PLUGIN_ID.test(entry.name)
         : entry.name.length <= 128 && TOOL_NAME.test(entry.name);
       if (!validName
         || names.has(entry.name)
+        || !Array.isArray(references)
         || references.length === 0
         || references.some((capability) => typeof capability !== "string" || !capabilities.has(capability))
         || new Set(references).size !== references.length
-        || (entry.capability !== undefined && entry.capabilities !== undefined)
-        || (kind === "tool" && entry.effect !== undefined && !["read", "write"].includes(entry.effect))) {
+        || (kind === "tool" && !["read", "write"].includes(entry.effect))) {
         throw new Error(`${expectedId}: invalid or duplicate ${kind} declaration.`);
       }
       names.add(entry.name);
     }
   }
   return value;
-}
-
-function parseSemver(value) {
-  const match = SEMVER.exec(value);
-  if (!match) return null;
-  const prerelease = match[4]?.split(".") || [];
-  if (prerelease.some((identifier) => /^\d+$/.test(identifier) && /^0\d+/.test(identifier))) return null;
-  return { core: [match[1], match[2], match[3]], prerelease };
-}
-
-function compareSemver(left, right) {
-  const a = parseSemver(left);
-  const b = parseSemver(right);
-  if (!a || !b) throw new Error("Cannot compare invalid semantic versions.");
-  for (let index = 0; index < 3; index += 1) {
-    const compared = compareNumericIdentifier(a.core[index], b.core[index]);
-    if (compared) return compared;
-  }
-  if (a.prerelease.length === 0 || b.prerelease.length === 0) {
-    return a.prerelease.length === b.prerelease.length ? 0 : a.prerelease.length ? -1 : 1;
-  }
-  const length = Math.max(a.prerelease.length, b.prerelease.length);
-  for (let index = 0; index < length; index += 1) {
-    const x = a.prerelease[index];
-    const y = b.prerelease[index];
-    if (x === undefined) return -1;
-    if (y === undefined) return 1;
-    if (x === y) continue;
-    const xNumeric = /^\d+$/.test(x);
-    const yNumeric = /^\d+$/.test(y);
-    if (xNumeric && yNumeric) return compareNumericIdentifier(x, y);
-    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
-    return x < y ? -1 : 1;
-  }
-  return 0;
-}
-
-function compareNumericIdentifier(left, right) {
-  if (left.length !== right.length) return left.length - right.length;
-  return left === right ? 0 : left < right ? -1 : 1;
 }
 
 function stringFields(value, fields) {

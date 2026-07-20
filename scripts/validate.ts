@@ -64,6 +64,9 @@ const required = [
   "scripts/release-contract.ts",
   "scripts/clean-release-output.ts",
   "scripts/package-windows-portable.ts",
+  "scripts/windows-signing.ts",
+  "scripts/verify-windows-authenticode.ps1",
+  "scripts/test-windows-signing.ts",
   "scripts/trust-macos-dev-artifacts.ts",
   "tsconfig.json",
   "tsconfig.renderer.json",
@@ -97,6 +100,9 @@ const windowsPackageScript = packageJson.scripts?.["package:win-installer"] || "
 const windowsBuildCount = windowsPackageScript.match(/npm run build/g)?.length || 0;
 if (windowsBuildCount !== 1) {
   throw new Error(`Windows packaging must compile exactly once; found ${windowsBuildCount} build steps.`);
+}
+if (!windowsPackageScript.endsWith("node dist/scripts/windows-signing.js")) {
+  throw new Error("Windows release packaging must end at the fail-closed signing and Authenticode gate.");
 }
 
 for (const scriptName of [

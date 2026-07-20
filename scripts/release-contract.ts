@@ -2,8 +2,21 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const {
+  expectedWindowsPublisherName,
+  verifyAuthenticodeExecutables
+} = require("./windows-signing");
 
 const defaultRoot = path.resolve(__dirname, "..", "..");
+
+interface WindowsAuthenticodeSignatureProof {
+  path: string;
+  sha256: string;
+  status: string;
+  publisherName: string;
+  thumbprint: string;
+  timestampSubject: string;
+}
 
 function loadReleaseContract(root = defaultRoot) {
   const contractPath = path.join(root, "release-artifacts.json");
@@ -13,6 +26,9 @@ function loadReleaseContract(root = defaultRoot) {
   }
   if (typeof contract.checksumManifest !== "string" || path.isAbsolute(contract.checksumManifest)) {
     throw new Error("Release checksum manifest path must be repository-relative.");
+  }
+  if (typeof contract.windowsAuthenticodeProof !== "string" || path.isAbsolute(contract.windowsAuthenticodeProof)) {
+    throw new Error("Windows Authenticode proof path must be repository-relative.");
   }
   return contract;
 }
@@ -41,13 +57,19 @@ function requiredReleaseArtifacts({ root = defaultRoot, version, contract = load
   return artifacts;
 }
 
-function writeReleaseChecksumManifest({ root = defaultRoot, version, contract = loadReleaseContract(root) }) {
+function writeReleaseChecksumManifest({
+  root = defaultRoot,
+  version,
+  contract = loadReleaseContract(root),
+  verifyAuthenticode = verifyAuthenticodeExecutables
+}) {
   assertBundledHarnessVendorContract({ root });
   const artifacts = requiredReleaseArtifacts({ root, version, contract });
   const missing = artifacts.filter((entry) => !isRegularFile(entry.absolutePath));
   if (missing.length > 0) {
     throw new Error(`Missing required release artifacts: ${missing.map((entry) => entry.relativePath).join(", ")}`);
   }
+  assertWindowsAuthenticodeProof({ root, version, contract, artifacts, verifyAuthenticode });
 
   const lines = artifacts
     .map((entry) => `${sha256(entry.absolutePath)}  ${entry.fileName}`)
@@ -59,6 +81,57 @@ function writeReleaseChecksumManifest({ root = defaultRoot, version, contract = 
   fs.renameSync(temporaryPath, manifestPath);
   verifyReleaseChecksumManifest({ root, version, contract });
   return { artifacts, manifestPath };
+}
+
+function assertWindowsAuthenticodeProof({
+  root = defaultRoot,
+  version,
+  contract = loadReleaseContract(root),
+  artifacts = requiredReleaseArtifacts({ root, version, contract }),
+  verifyAuthenticode = verifyAuthenticodeExecutables
+}) {
+  const proofPath = path.join(root, contract.windowsAuthenticodeProof);
+  if (!isRegularFile(proofPath)) {
+    throw new Error(`Missing Windows Authenticode verification proof: ${contract.windowsAuthenticodeProof}`);
+  }
+  const proof = JSON.parse(fs.readFileSync(proofPath, "utf8"));
+  if (
+    proof.schemaVersion !== 1 ||
+    proof.version !== version ||
+    proof.publisherName !== expectedWindowsPublisherName ||
+    !Array.isArray(proof.signatures)
+  ) {
+    throw new Error("Invalid Windows Authenticode verification proof.");
+  }
+
+  const signatures = new Map<string, WindowsAuthenticodeSignatureProof>(
+    proof.signatures.map((entry) => [String(entry.path).replaceAll("\\", "/"), entry])
+  );
+  const windowsExecutables = artifacts.filter(
+    (entry) => entry.platform === "windows-x64" && entry.absolutePath.toLowerCase().endsWith(".exe")
+  );
+  for (const artifact of windowsExecutables) {
+    const relativePath = artifact.relativePath.replaceAll("\\", "/");
+    const signature = signatures.get(relativePath);
+    if (!signature) throw new Error(`Windows Authenticode proof omits ${relativePath}.`);
+    if (
+      signature.status !== "Valid" ||
+      signature.publisherName !== proof.publisherName ||
+      !signature.thumbprint ||
+      !signature.timestampSubject
+    ) {
+      throw new Error(`Windows Authenticode proof is not valid for ${relativePath}.`);
+    }
+    if (signature.sha256 !== sha256(artifact.absolutePath)) {
+      throw new Error(`Windows Authenticode proof hash does not match ${relativePath}.`);
+    }
+  }
+  verifyAuthenticode({
+    repositoryRoot: root,
+    executablePaths: windowsExecutables.map((artifact) => artifact.absolutePath),
+    expectedPublisherName: expectedWindowsPublisherName
+  });
+  return { proof, proofPath };
 }
 
 function assertBundledHarnessVendorContract({ root = defaultRoot }) {
@@ -165,6 +238,7 @@ if (require.main === module) main();
 
 module.exports = {
   assertBundledHarnessVendorContract,
+  assertWindowsAuthenticodeProof,
   assertReleaseMayBeUpdated,
   assertReleaseSourceIdentity,
   loadReleaseContract,

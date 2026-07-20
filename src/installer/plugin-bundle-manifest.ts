@@ -12,7 +12,9 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const SHA512_BASE64 = /^[A-Za-z0-9+/]{86}==$/;
 const ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const MAX_PLUGIN_FILES = 512;
+const MAX_PLUGIN_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_PLUGIN_PACKAGE_BYTES = 64 * 1024 * 1024;
 
 function createManagedPluginBundleManifest({ source, packages }) {
   const manifest = {
@@ -52,7 +54,7 @@ function validateManagedPluginBundleManifest(value, label = "Managed plugin comp
   let previousId = "";
   for (const plugin of value.packages) {
     assertRecord(plugin, `${label} package`);
-    assertOnlyKeys(plugin, ["id", "name", "version", "compatibility", "digest", "files"], `${label} package`);
+    assertOnlyKeys(plugin, ["id", "name", "version", "digest", "files"], `${label} package`);
     if (typeof plugin.id !== "string" || !ID.test(plugin.id)) {
       throw new Error(`${label} contains an invalid plugin id.`);
     }
@@ -67,14 +69,14 @@ function validateManagedPluginBundleManifest(value, label = "Managed plugin comp
     if (typeof plugin.version !== "string" || !STABLE_SEMVER.test(plugin.version)) {
       throw new Error(`${label} package ${plugin.id} must use stable semantic versioning.`);
     }
-    validateCompatibility(plugin.compatibility, `${label} package ${plugin.id}`);
     if (typeof plugin.digest !== "string" || !SHA256.test(plugin.digest)) {
       throw new Error(`${label} package ${plugin.id} has an invalid digest.`);
     }
-    if (!Array.isArray(plugin.files) || plugin.files.length === 0) {
+    if (!Array.isArray(plugin.files) || plugin.files.length === 0 || plugin.files.length > MAX_PLUGIN_FILES) {
       throw new Error(`${label} package ${plugin.id} must list its composed files.`);
     }
     let previousPath = "";
+    let totalBytes = 0;
     for (const file of plugin.files) {
       assertRecord(file, `${label} package ${plugin.id} file`);
       assertOnlyKeys(file, ["path", "sha256", "size"], `${label} package ${plugin.id} file`);
@@ -85,9 +87,13 @@ function validateManagedPluginBundleManifest(value, label = "Managed plugin comp
       if (typeof file.sha256 !== "string" || !SHA256.test(file.sha256)) {
         throw new Error(`${label} package ${plugin.id} file ${file.path} has an invalid digest.`);
       }
-      if (!Number.isSafeInteger(file.size) || file.size < 0) {
+      if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_PLUGIN_FILE_BYTES) {
         throw new Error(`${label} package ${plugin.id} file ${file.path} has an invalid size.`);
       }
+      totalBytes += file.size;
+    }
+    if (totalBytes > MAX_PLUGIN_PACKAGE_BYTES) {
+      throw new Error(`${label} package ${plugin.id} exceeds the managed package size limit.`);
     }
   }
   if (value.artifacts !== undefined) validateArtifacts(value.artifacts, label);
@@ -117,75 +123,6 @@ function validateArtifacts(artifacts, label) {
       throw new Error(`${label} artifact ${artifact.fileName} has invalid checksum metadata.`);
     }
   }
-}
-
-function validateCompatibility(value, label) {
-  assertRecord(value, `${label} compatibility`);
-  assertOnlyKeys(value, ["harness"], `${label} compatibility`);
-  assertRecord(value.harness, `${label} Harness compatibility`);
-  assertOnlyKeys(value.harness, ["min", "maxExclusive"], `${label} Harness compatibility`);
-  const { min, maxExclusive } = value.harness;
-  if (typeof min !== "string" || !parseSemver(min)
-    || typeof maxExclusive !== "string" || !parseSemver(maxExclusive)
-    || compareSemver(min, maxExclusive) >= 0) {
-    throw new Error(`${label} must declare a valid Harness compatibility range.`);
-  }
-}
-
-function assertPluginCompatibility(manifest, harnessVersion) {
-  const normalized = validateManagedPluginBundleManifest(manifest);
-  if (typeof harnessVersion !== "string" || !parseSemver(harnessVersion)) {
-    throw new Error(`TritonAI Harness version is not valid semantic versioning: ${String(harnessVersion)}.`);
-  }
-  for (const plugin of normalized.packages) {
-    const { min, maxExclusive } = plugin.compatibility.harness;
-    if (compareSemver(harnessVersion, min) < 0 || compareSemver(harnessVersion, maxExclusive) >= 0) {
-      throw new Error(
-        `Managed plugin ${plugin.id} ${plugin.version} requires TritonAI Harness >=${min} and <${maxExclusive}; selected Harness is ${harnessVersion}.`
-      );
-    }
-  }
-  return normalized;
-}
-
-function parseSemver(value) {
-  const match = SEMVER.exec(value);
-  if (!match) return null;
-  const prerelease = match[4]?.split(".") || [];
-  if (prerelease.some((identifier) => /^\d+$/.test(identifier) && /^0\d+/.test(identifier))) return null;
-  return { core: [match[1], match[2], match[3]], prerelease };
-}
-
-function compareSemver(left, right) {
-  const a = parseSemver(left);
-  const b = parseSemver(right);
-  if (!a || !b) throw new Error("Cannot compare invalid semantic versions.");
-  for (let index = 0; index < 3; index += 1) {
-    const compared = compareNumericIdentifier(a.core[index], b.core[index]);
-    if (compared) return compared;
-  }
-  if (a.prerelease.length === 0 || b.prerelease.length === 0) {
-    return a.prerelease.length === b.prerelease.length ? 0 : a.prerelease.length ? -1 : 1;
-  }
-  const length = Math.max(a.prerelease.length, b.prerelease.length);
-  for (let index = 0; index < length; index += 1) {
-    const x = a.prerelease[index];
-    const y = b.prerelease[index];
-    if (x === undefined) return -1;
-    if (y === undefined) return 1;
-    if (x === y) continue;
-    const xNumeric = /^\d+$/.test(x);
-    const yNumeric = /^\d+$/.test(y);
-    if (xNumeric && yNumeric) return compareNumericIdentifier(x, y);
-    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
-    return x < y ? -1 : 1;
-  }
-  return 0;
-}
-
-function compareNumericIdentifier(left, right) {
-  if (left.length !== right.length) return left.length - right.length;
-  return left === right ? 0 : left < right ? -1 : 1;
 }
 
 function isSafeRelativePath(value) {
@@ -239,7 +176,6 @@ module.exports = {
   MANAGED_PLUGIN_BUNDLE_VERSION,
   assertArtifactBinding,
   assertMatchingPluginComposition,
-  assertPluginCompatibility,
   createManagedPluginBundleManifest,
   isSafeRelativePath,
   validateManagedPluginBundleManifest
