@@ -212,7 +212,12 @@ function assertReleaseMayBeUpdated(release) {
 }
 
 function isRegularFile(file) {
-  return fs.existsSync(file) && fs.lstatSync(file).isFile() && !fs.lstatSync(file).isSymbolicLink();
+  try {
+    return fs.lstatSync(file).isFile();
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function sha256(file) {
