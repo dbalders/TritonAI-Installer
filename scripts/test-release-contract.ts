@@ -188,9 +188,18 @@ function main() {
       "Stable Windows packaging must end at the fail-closed signing and Authenticode gate"
     );
     assert(
-      packageJson.scripts["package:win-installer"].indexOf("prepare:plugins-vendor:compiled")
+      packageJson.scripts["package:win-installer"].indexOf("prepare:plugins-vendor:latest:compiled")
         < packageJson.scripts["package:win-installer"].indexOf("prepare:t3code-desktop-vendor:win:compiled"),
-      "Windows packaging must prepare plugins before accepting a composed Harness release"
+      "Windows packaging must resolve the latest stable plugins before accepting a composed Harness release"
+    );
+    assert.strictEqual(
+      packageJson.scripts["prepare:plugins-vendor:latest:compiled"],
+      "node dist/scripts/prepare-plugins-vendor.js --latest"
+    );
+    const macReleaseSource = fs.readFileSync(path.join(repoRoot, "scripts", "package-macos-release.ts"), "utf8");
+    assert(
+      macReleaseSource.includes('"prepare-plugins-vendor.js"), "--latest"'),
+      "macOS release packaging must resolve the latest stable plugins"
     );
 
     assert.deepStrictEqual(

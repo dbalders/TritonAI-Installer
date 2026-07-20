@@ -19,8 +19,12 @@ const {
   readPluginCompositionRequirement
 } = require("../src/installer/plugins");
 const {
+  compareStableVersions,
+  parseArguments,
+  parseLatestStablePluginRelease,
   parseSelectedPluginIds,
   readPluginSourceEnvironment,
+  selectPluginSourceInput,
   stagePluginsFromSource,
   validatePluginManifest,
   validateSourceInput
@@ -35,6 +39,7 @@ const COMMIT = "a".repeat(40);
 
 function main() {
   assertCanonicalProvenance();
+  assertLatestStableReleaseSelection();
   assertExplicitSourceContract();
   assertDeterministicSelectionAndStaging();
   assertRejectsUnsafePackages();
@@ -44,6 +49,71 @@ function main() {
   assertSafeCompositionPaths();
   assertPackagedResourceInspection();
   console.log("Managed Harness plugin tests passed.");
+}
+
+function assertLatestStableReleaseSelection() {
+  assert.deepStrictEqual(parseArguments([]), { latest: false });
+  assert.deepStrictEqual(parseArguments(["--latest"]), { latest: true });
+  assert.throws(() => parseArguments(["--latest", "--latest"]), /only once/);
+  assert.throws(() => parseArguments(["--main"]), /Unsupported/);
+  assert(compareStableVersions("0.10.0", "0.9.99") > 0);
+  assert(compareStableVersions("10.0.0", "2.99.99") > 0);
+  assert.strictEqual(compareStableVersions("1.2.3", "1.2.3"), 0);
+
+  const latest = parseLatestStablePluginRelease([
+    `${"1".repeat(40)}\trefs/tags/v0.1.0`,
+    `${"2".repeat(40)}\trefs/tags/v0.10.0`,
+    `${"3".repeat(40)}\trefs/tags/v1.0.0-rc.1`,
+    `${"4".repeat(40)}\trefs/tags/plugins-v99`,
+    `${"5".repeat(40)}\trefs/heads/v99.0.0`
+  ].join("\n"));
+  assert.deepStrictEqual(latest, {
+    ref: "refs/tags/v0.10.0",
+    commit: "2".repeat(40)
+  });
+
+  const annotated = parseLatestStablePluginRelease([
+    `${"a".repeat(40)}\trefs/tags/v2.0.0`,
+    `${"b".repeat(40)}\trefs/tags/v2.0.0^{}`
+  ].join("\n"));
+  assert.deepStrictEqual(annotated, {
+    ref: "refs/tags/v2.0.0",
+    commit: "b".repeat(40)
+  });
+  assert.throws(() => parseLatestStablePluginRelease(""), /no stable/);
+  assert.throws(
+    () => parseLatestStablePluginRelease([
+      `${"a".repeat(40)}\trefs/tags/v1.0.0`,
+      `${"b".repeat(40)}\trefs/tags/v1.0.0`
+    ].join("\n")),
+    /ambiguously/
+  );
+
+  const emptyInput = readPluginSourceEnvironment({});
+  let resolverCalls = 0;
+  const automatic = selectPluginSourceInput(emptyInput, { latest: true }, (repository) => {
+    resolverCalls += 1;
+    assert.strictEqual(repository, CANONICAL_PLUGIN_REPOSITORY_URL);
+    return { repository, ref: "refs/tags/v1.2.3", commit: "c".repeat(40) };
+  });
+  assert.strictEqual(resolverCalls, 1);
+  assert.strictEqual(automatic.ref, "refs/tags/v1.2.3");
+  assert.strictEqual(automatic.commit, "c".repeat(40));
+  assert.deepStrictEqual(automatic.selectedIds, ["microsoft-365"]);
+
+  const explicit = readPluginSourceEnvironment({
+    TRITONAI_PLUGINS_REF: "refs/tags/v1.2.3",
+    TRITONAI_PLUGINS_COMMIT: "d".repeat(40),
+    TRITONAI_PLUGIN_IDS: "microsoft-365"
+  });
+  assert.strictEqual(
+    selectPluginSourceInput(explicit, { latest: true }, () => { throw new Error("must not resolve latest"); }),
+    explicit
+  );
+  assert.throws(
+    () => selectPluginSourceInput({ ...explicit, commit: "" }, { latest: true }),
+    /--latest does not complete partial managed plugin pins/
+  );
 }
 
 function assertSafeCompositionPaths() {

@@ -20,9 +20,12 @@ const CONTRACT_ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 const TOOL_NAME = /^[a-z][a-z0-9_.-]*$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+// Production inclusion is an explicit reviewed allowlist, independent of packages present in a release tag.
+const DEFAULT_RELEASE_PLUGIN_IDS = ["microsoft-365"];
 
-function main(env = process.env) {
-  const input = readPluginSourceEnvironment(env);
+function main(env = process.env, args = process.argv.slice(2)) {
+  const options = parseArguments(args);
+  const input = selectPluginSourceInput(readPluginSourceEnvironment(env), options);
   const configured = Boolean(input.ref || input.commit || input.selectedIds.length || input.localSource);
   if (!configured) {
     fs.rmSync(vendorDir, { recursive: true, force: true });
@@ -56,6 +59,92 @@ function main(env = process.env) {
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+function parseArguments(args) {
+  const values = Array.from(args || []);
+  const unsupported = values.filter((value) => value !== "--latest");
+  if (unsupported.length > 0) {
+    throw new Error(`Unsupported managed plugin preparation argument: ${unsupported[0]}.`);
+  }
+  if (values.filter((value) => value === "--latest").length > 1) {
+    throw new Error("Managed plugin preparation accepts --latest only once.");
+  }
+  return { latest: values.includes("--latest") };
+}
+
+function selectPluginSourceInput(input, options, resolveLatest = resolveLatestStablePluginRelease) {
+  const configured = Boolean(input.ref || input.commit || input.selectedIds.length || input.localSource);
+  if (!options.latest) return input;
+  if (configured) {
+    try {
+      validateSourceInput(input);
+    } catch (error) {
+      throw new Error(`--latest does not complete partial managed plugin pins. ${error.message}`);
+    }
+    return input;
+  }
+  return {
+    ...input,
+    ...resolveLatest(input.repository),
+    selectedIds: DEFAULT_RELEASE_PLUGIN_IDS
+  };
+}
+
+function resolveLatestStablePluginRelease(repository) {
+  const effectiveRepository = getEffectiveRepositoryUrl(repository, root);
+  assertCanonicalPluginRepository(effectiveRepository, "TRITONAI_PLUGINS_REPO");
+  let output;
+  try {
+    output = execFileSync("git", ["ls-remote", "--tags", effectiveRepository, "refs/tags/v*"], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    const status = Number.isInteger(error?.status) ? ` (git exited ${error.status})` : "";
+    throw new Error(`Could not resolve stable managed plugin releases from ${sanitizeRepositoryUrl(repository)}${status}.`);
+  }
+  return {
+    repository: effectiveRepository,
+    ...parseLatestStablePluginRelease(output)
+  };
+}
+
+function parseLatestStablePluginRelease(output) {
+  const releases = new Map();
+  for (const line of String(output || "").split(/\r?\n/)) {
+    const [sha, ref, extra] = line.trim().split(/\s+/);
+    if (!COMMIT.test(sha || "") || !ref || extra) continue;
+    const match = ref.match(/^refs\/tags\/v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(\^\{\})?$/);
+    if (!match) continue;
+    const [, version, peeledSuffix] = match;
+    const release = releases.get(version) || { version, ref: `refs/tags/v${version}`, direct: "", peeled: "" };
+    const field = peeledSuffix ? "peeled" : "direct";
+    if (release[field] && release[field] !== sha) {
+      throw new Error(`Stable managed plugin tag v${version} resolves ambiguously.`);
+    }
+    release[field] = sha;
+    releases.set(version, release);
+  }
+  const candidates = [...releases.values()].filter((release) => release.direct || release.peeled);
+  if (candidates.length === 0) {
+    throw new Error("The canonical managed plugin repository has no stable vMAJOR.MINOR.PATCH release tag.");
+  }
+  candidates.sort((left, right) => compareStableVersions(left.version, right.version));
+  const latest = candidates[candidates.length - 1];
+  return { ref: latest.ref, commit: latest.peeled || latest.direct };
+}
+
+function compareStableVersions(left, right) {
+  const leftParts = left.split(".").map(BigInt);
+  const rightParts = right.split(".").map(BigInt);
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] < rightParts[index]) return -1;
+    if (leftParts[index] > rightParts[index]) return 1;
+  }
+  return 0;
 }
 
 function writePluginCompositionRequirement(required) {
@@ -665,13 +754,18 @@ if (require.main === module) main();
 module.exports = {
   activateStagedVendor,
   cloneValidatedLocalSource,
+  compareStableVersions,
   digestFileSet,
   isSafeGitRef,
   isSafeGitObjectPath,
   main,
   materializeSelectedPluginTrees,
+  parseArguments,
+  parseLatestStablePluginRelease,
   parseSelectedPluginIds,
   readPluginSourceEnvironment,
+  resolveLatestStablePluginRelease,
+  selectPluginSourceInput,
   stagePluginsFromSource,
   validatePluginManifest,
   validateSourceInput,

@@ -30,6 +30,7 @@
     "prepare:skills-vendor:compiled": "node dist/scripts/prepare-skills-vendor.js",
     "prepare:plugins-vendor": "npm run build && npm run prepare:plugins-vendor:compiled",
     "prepare:plugins-vendor:compiled": "node dist/scripts/prepare-plugins-vendor.js",
+    "prepare:plugins-vendor:latest:compiled": "node dist/scripts/prepare-plugins-vendor.js --latest",
     "prepare:codex-cli-vendor": "npm run build && node dist/scripts/prepare-codex-cli-vendor.js",
     "prepare:codex-cli-vendor:win": "npm run build && npm run prepare:codex-cli-vendor:win:compiled",
     "prepare:codex-cli-vendor:win:compiled": "node dist/scripts/prepare-codex-cli-vendor.js win-x64",
@@ -46,7 +47,7 @@
     "release:github": "npm run build && node dist/scripts/publish-github-release.js",
     "release:contract": "npm run build && node dist/scripts/release-contract.js",
     "clean:release-output:compiled": "node dist/scripts/clean-release-output.js",
-    "package:win-installer": "npm run build && npm run clean:release-output:compiled -- win && npm run prepare:managed-config:compiled && npm run prepare:plugins-vendor:compiled && npm run prepare:t3code-desktop-vendor:win:compiled && npm run prepare:codex-cli-vendor:win:compiled && npm run prepare:skills-vendor:compiled && node dist/scripts/windows-signing.js",
+    "package:win-installer": "npm run build && npm run clean:release-output:compiled -- win && npm run prepare:managed-config:compiled && npm run prepare:plugins-vendor:latest:compiled && npm run prepare:t3code-desktop-vendor:win:compiled && npm run prepare:codex-cli-vendor:win:compiled && npm run prepare:skills-vendor:compiled && node dist/scripts/windows-signing.js",
     "package:win-portable:unsigned-dev": "npm run build && node dist/scripts/package-windows-portable.js",
     "mac:trust-dev": "npm run build && node dist/scripts/trust-macos-dev-artifacts.js",
     "mac:open-dev": "npm run build && node dist/scripts/trust-macos-dev-artifacts.js --open"
