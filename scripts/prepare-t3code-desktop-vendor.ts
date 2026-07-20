@@ -8,6 +8,13 @@ const {
   assertMatchingPluginComposition,
   validateManagedPluginBundleManifest
 } = require("../src/installer/plugin-bundle-manifest");
+const {
+  MACOS_CODESIGN_PATH,
+  MACOS_PLUTIL_PATH,
+  assertExpectedMacHarnessBundleIdentifier,
+  macHarnessBundleIdentifierPlistArgs,
+  macHarnessCodesignVerificationArgs
+} = require("../src/installer/macos-harness-identity");
 
 const root = path.resolve(__dirname, "..", "..");
 const {
@@ -377,13 +384,30 @@ function verifyDmgContainsApp(file) {
   const mountPoint = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-desktop-vendor-"));
   try {
     run("hdiutil", ["attach", file, "-nobrowse", "-readonly", "-mountpoint", mountPoint]);
-    if (!findApp(mountPoint)) {
+    const appPath = findApp(mountPoint);
+    if (!appPath) {
       throw new Error(`Downloaded TritonAI Harness image does not contain an app bundle: ${file}`);
     }
+    verifyExpectedMacHarnessPublisher(appPath);
   } finally {
     spawnSync("hdiutil", ["detach", mountPoint], { stdio: "inherit" });
     fs.rmSync(mountPoint, { recursive: true, force: true });
   }
+}
+
+function verifyExpectedMacHarnessPublisher(
+  appPath,
+  executeCodesign = run,
+  readBundleIdentifier = readMacHarnessBundleIdentifier
+) {
+  assertExpectedMacHarnessBundleIdentifier(readBundleIdentifier(appPath));
+  for (const args of macHarnessCodesignVerificationArgs(appPath)) {
+    executeCodesign(MACOS_CODESIGN_PATH, args);
+  }
+}
+
+function readMacHarnessBundleIdentifier(appPath) {
+  return execFileSync(MACOS_PLUTIL_PATH, macHarnessBundleIdentifierPlistArgs(appPath), { encoding: "utf8" });
 }
 
 function findApp(rootDir) {
@@ -481,5 +505,6 @@ module.exports = {
   readHarnessSourceEnvironment,
   pluginCompositionFile,
   selectManifestFile,
-  verifyPluginCompositionProof
+  verifyPluginCompositionProof,
+  verifyExpectedMacHarnessPublisher
 };

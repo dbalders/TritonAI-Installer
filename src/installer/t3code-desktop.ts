@@ -4,6 +4,14 @@ const https = require("https");
 const os = require("os");
 const path = require("path");
 const { defaultAppRoot } = require("./app-root");
+const {
+  EXPECTED_MAC_HARNESS_BUNDLE_ID,
+  MACOS_CODESIGN_PATH,
+  MACOS_PLUTIL_PATH,
+  assertExpectedMacHarnessBundleIdentifier,
+  macHarnessBundleIdentifierPlistArgs,
+  macHarnessCodesignVerificationArgs
+} = require("./macos-harness-identity");
 const { getNodeRuntimePaths } = require("./prerequisites");
 const { spawn } = require("child_process");
 
@@ -18,7 +26,7 @@ const WIN_MANIFEST_FILE = "latest.yml";
 const TRITONAI_LAUNCHER_NAME = TRITONAI_APP_DISPLAY_NAME;
 const MAC_LAUNCHER_EXECUTABLE_NAME = TRITONAI_APP_DISPLAY_NAME;
 const MAC_LAUNCHER_ICON_FILE = "icon.icns";
-const MAC_APP_BUNDLE_ID = "edu.ucsd.tritonai.harness";
+const MAC_APP_BUNDLE_ID = EXPECTED_MAC_HARNESS_BUNDLE_ID;
 const MAC_SOURCE_APP_NAMES = [
   MAC_MANAGED_APP_NAME
 ];
@@ -164,7 +172,7 @@ async function replaceMacAppTransactionally({
     if (validateStagedApp) {
       await validateStagedApp(stagedAppPath);
     } else if (process.platform === "darwin") {
-      await run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", stagedAppPath], emit);
+      await verifyExpectedMacHarnessPublisher(stagedAppPath, emit);
     }
     emit(`Verified staged ${TRITONAI_APP_DISPLAY_NAME} app.`);
 
@@ -200,6 +208,22 @@ async function replaceMacAppTransactionally({
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
   }
+}
+
+async function verifyExpectedMacHarnessPublisher(
+  appPath,
+  emit,
+  executeCodesign = run,
+  readBundleIdentifier = readMacHarnessBundleIdentifier
+) {
+  assertExpectedMacHarnessBundleIdentifier(await readBundleIdentifier(appPath, emit));
+  for (const args of macHarnessCodesignVerificationArgs(appPath)) {
+    await executeCodesign(MACOS_CODESIGN_PATH, args, emit);
+  }
+}
+
+function readMacHarnessBundleIdentifier(appPath, emit) {
+  return runCapture(MACOS_PLUTIL_PATH, macHarnessBundleIdentifierPlistArgs(appPath), emit, { shell: false });
 }
 
 async function stopRunningManagedMacApp({ emit }) {
@@ -1055,6 +1079,7 @@ module.exports = {
   installT3CodeDesktop,
   installWindowsDesktop,
   replaceMacAppTransactionally,
+  verifyExpectedMacHarnessPublisher,
   writeMacAppLauncher,
   getBundledMacDmg,
   getBundledWindowsInstaller,

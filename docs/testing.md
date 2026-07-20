@@ -45,6 +45,7 @@ This creates a temp home directory, strips PATH down to OS basics, downloads the
 - Regressions where Installer upgrades overwrite public/user skills, retain retired managed secure skills, accept malformed manifests, or lose the prior secure bundle after a staged copy failure.
 - Regressions where plugin packaging accepts a noncanonical origin, moving or mismatched ref/commit, implicit dirty checkout, ambiguous package selection, source/tests, symlinks, special files, unsafe paths, or manifest/package/file drift.
 - Regressions where a Harness artifact omits or changes the exact managed plugin composition proof, or a packaged Installer omits that proof on macOS, Windows Setup, or portable paths.
+- Missing or publisher-mismatched macOS Harness signatures at both build-time vendoring and runtime activation, while allowing Developer ID certificate renewal under the pinned Team ID and bundle identifier.
 - Missing, invalid, publisher-mismatched, or stale Authenticode verification for Windows release executables, including independent Windows verification during the final release contract.
 
 ## Legacy Provider Stale-State Reproduction
