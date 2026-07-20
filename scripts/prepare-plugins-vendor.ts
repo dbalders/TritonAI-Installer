@@ -20,20 +20,14 @@ const CONTRACT_ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 const TOOL_NAME = /^[a-z][a-z0-9_.-]*$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+// Production inclusion is an explicit reviewed allowlist, independent of packages present in a release tag.
 const DEFAULT_RELEASE_PLUGIN_IDS = ["microsoft-365"];
 
 function main(env = process.env, args = process.argv.slice(2)) {
   const options = parseArguments(args);
-  let input = readPluginSourceEnvironment(env);
+  const input = selectPluginSourceInput(readPluginSourceEnvironment(env), options);
   const configured = Boolean(input.ref || input.commit || input.selectedIds.length || input.localSource);
-  if (options.latest && !configured) {
-    input = {
-      ...input,
-      ...resolveLatestStablePluginRelease(input.repository),
-      selectedIds: DEFAULT_RELEASE_PLUGIN_IDS
-    };
-  }
-  if (!configured && !options.latest) {
+  if (!configured) {
     fs.rmSync(vendorDir, { recursive: true, force: true });
     writePluginCompositionRequirement(false);
     console.log("Managed Harness plugin composition is not selected for this Installer build.");
@@ -79,6 +73,24 @@ function parseArguments(args) {
   return { latest: values.includes("--latest") };
 }
 
+function selectPluginSourceInput(input, options, resolveLatest = resolveLatestStablePluginRelease) {
+  const configured = Boolean(input.ref || input.commit || input.selectedIds.length || input.localSource);
+  if (!options.latest) return input;
+  if (configured) {
+    try {
+      validateSourceInput(input);
+    } catch (error) {
+      throw new Error(`--latest does not complete partial managed plugin pins. ${error.message}`);
+    }
+    return input;
+  }
+  return {
+    ...input,
+    ...resolveLatest(input.repository),
+    selectedIds: DEFAULT_RELEASE_PLUGIN_IDS
+  };
+}
+
 function resolveLatestStablePluginRelease(repository) {
   const effectiveRepository = getEffectiveRepositoryUrl(repository, root);
   assertCanonicalPluginRepository(effectiveRepository, "TRITONAI_PLUGINS_REPO");
@@ -90,8 +102,9 @@ function resolveLatestStablePluginRelease(repository) {
       maxBuffer: 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"]
     });
-  } catch (_error) {
-    throw new Error(`Could not resolve stable managed plugin releases from ${sanitizeRepositoryUrl(repository)}.`);
+  } catch (error) {
+    const status = Number.isInteger(error?.status) ? ` (git exited ${error.status})` : "";
+    throw new Error(`Could not resolve stable managed plugin releases from ${sanitizeRepositoryUrl(repository)}${status}.`);
   }
   return {
     repository: effectiveRepository,
@@ -752,6 +765,7 @@ module.exports = {
   parseSelectedPluginIds,
   readPluginSourceEnvironment,
   resolveLatestStablePluginRelease,
+  selectPluginSourceInput,
   stagePluginsFromSource,
   validatePluginManifest,
   validateSourceInput,

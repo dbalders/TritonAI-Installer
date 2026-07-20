@@ -53,6 +53,8 @@ packaging resolves the highest canonical `vMAJOR.MINOR.PATCH` Plugins tag at the
 freezes its exact commit, and selects the production `microsoft-365` package. Every Harness release
 must publish an artifact-bound composition proof for that exact selection. A moving branch such as
 `main` and nearby `TritonAI-Plugins` checkouts are never used automatically.
+Production package inclusion remains an explicit reviewed Installer allowlist, so publishing an
+experimental package does not silently add it to desktop releases.
 
 For an exact rebuild or a preselected composition, set all three values below. Complete explicit
 pins override automatic latest-release selection:

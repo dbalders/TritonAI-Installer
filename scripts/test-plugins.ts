@@ -24,6 +24,7 @@ const {
   parseLatestStablePluginRelease,
   parseSelectedPluginIds,
   readPluginSourceEnvironment,
+  selectPluginSourceInput,
   stagePluginsFromSource,
   validatePluginManifest,
   validateSourceInput
@@ -86,6 +87,32 @@ function assertLatestStableReleaseSelection() {
       `${"b".repeat(40)}\trefs/tags/v1.0.0`
     ].join("\n")),
     /ambiguously/
+  );
+
+  const emptyInput = readPluginSourceEnvironment({});
+  let resolverCalls = 0;
+  const automatic = selectPluginSourceInput(emptyInput, { latest: true }, (repository) => {
+    resolverCalls += 1;
+    assert.strictEqual(repository, CANONICAL_PLUGIN_REPOSITORY_URL);
+    return { repository, ref: "refs/tags/v1.2.3", commit: "c".repeat(40) };
+  });
+  assert.strictEqual(resolverCalls, 1);
+  assert.strictEqual(automatic.ref, "refs/tags/v1.2.3");
+  assert.strictEqual(automatic.commit, "c".repeat(40));
+  assert.deepStrictEqual(automatic.selectedIds, ["microsoft-365"]);
+
+  const explicit = readPluginSourceEnvironment({
+    TRITONAI_PLUGINS_REF: "refs/tags/v1.2.3",
+    TRITONAI_PLUGINS_COMMIT: "d".repeat(40),
+    TRITONAI_PLUGIN_IDS: "microsoft-365"
+  });
+  assert.strictEqual(
+    selectPluginSourceInput(explicit, { latest: true }, () => { throw new Error("must not resolve latest"); }),
+    explicit
+  );
+  assert.throws(
+    () => selectPluginSourceInput({ ...explicit, commit: "" }, { latest: true }),
+    /--latest does not complete partial managed plugin pins/
   );
 }
 
