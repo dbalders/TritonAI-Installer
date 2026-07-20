@@ -48,12 +48,17 @@ and either one `TRITONAI_HARNESS_RELEASE_BASE` or both canonical platform-specif
 The vendoring command does not infer a version or use a moving latest-release URL.
 Packaged builds use the canonical `edu.ucsd.tritonai.installer` application identifier; legacy Installer product identifiers are not migration inputs for this new product.
 
-Managed plugins have a separate, fail-closed source contract. Release packaging requires all three
-values below and every Harness release must publish an artifact-bound composition proof. No nearby
-`TritonAI-Plugins` checkout is discovered automatically:
+Managed plugins have a separate, fail-closed source contract. Stable macOS and Windows release
+packaging resolves the highest canonical `vMAJOR.MINOR.PATCH` Plugins tag at the start of the run,
+freezes its exact commit, and selects the production `microsoft-365` package. Every Harness release
+must publish an artifact-bound composition proof for that exact selection. A moving branch such as
+`main` and nearby `TritonAI-Plugins` checkouts are never used automatically.
+
+For an exact rebuild or a preselected composition, set all three values below. Complete explicit
+pins override automatic latest-release selection:
 
 ```sh
-export TRITONAI_PLUGINS_REF="refs/tags/plugins-v1"
+export TRITONAI_PLUGINS_REF="refs/tags/v0.1.0"
 export TRITONAI_PLUGINS_COMMIT="<full 40-character commit SHA>"
 export TRITONAI_PLUGIN_IDS="microsoft-365"
 ```
@@ -63,7 +68,9 @@ export TRITONAI_PLUGIN_IDS="microsoft-365"
 override and is accepted only for a clean Git checkout with that canonical origin, the pinned HEAD,
 and a ref resolving to the same commit. Dirty local validation work is rejected.
 
-`npm run prepare:plugins-vendor` validates and atomically stages only selected release package
+`npm run prepare:plugins-vendor` retains the explicit/manual behavior above; without pins it disables
+managed plugins for a development build. Stable packaging invokes the same tool with `--latest`.
+It validates and atomically stages only selected release package
 contents under ignored `vendor/plugins/`. It rejects symlinks, special files, unsafe paths,
 source/tests in package allowlists or provider output, malformed manifests, package/manifest drift,
 and skill/manifest drift. The staged packages are a Harness build input, not an Installer runtime

@@ -111,7 +111,8 @@ for (const scriptName of [
   "prepare:t3code-desktop-vendor:win:compiled",
   "prepare:codex-cli-vendor:win:compiled",
   "prepare:skills-vendor:compiled",
-  "prepare:plugins-vendor:compiled"
+  "prepare:plugins-vendor:compiled",
+  "prepare:plugins-vendor:latest:compiled"
 ]) {
   const script = packageJson.scripts?.[scriptName] || "";
   if (!script || script.includes("npm run build")) {
