@@ -48,10 +48,9 @@ and either one `TRITONAI_HARNESS_RELEASE_BASE` or both canonical platform-specif
 The vendoring command does not infer a version or use a moving latest-release URL.
 Packaged builds use the canonical `edu.ucsd.tritonai.installer` application identifier; legacy Installer product identifiers are not migration inputs for this new product.
 
-Managed plugins have a separate, fail-closed source contract. To produce a plugin-bearing release,
-packaging requires all three values below; when none are set, the existing no-plugin release path
-remains available only for the pinned, known plugin-free Harness `0.2.7` baseline. Later Harness
-versions must publish an artifact-bound composition proof. No nearby `TritonAI-Plugins` checkout is discovered automatically:
+Managed plugins have a separate, fail-closed source contract. Release packaging requires all three
+values below and every Harness release must publish an artifact-bound composition proof. No nearby
+`TritonAI-Plugins` checkout is discovered automatically:
 
 ```sh
 export TRITONAI_PLUGINS_REF="refs/tags/plugins-v1"
@@ -70,12 +69,14 @@ source/tests in package allowlists or provider output, malformed manifests, pack
 and skill/manifest drift. The staged packages are a Harness build input, not an Installer runtime
 payload.
 
-The Harness build must statically compose those packages into its immutable catalog and publish a
-`tritonai-plugin-composition.json` sidecar containing the exact generated `vendor/plugins/manifest.json`
-composition plus the filename, size, and SHA-512 of every bound release artifact. Installer packaging
-compares that proof and its artifact binding before accepting the Harness DMG or EXE. The proof is included in macOS, Windows Setup, and Windows portable paths and
-is checked again when the packaged Installer runs. This preserves the Harness trust model: the
-Installer never adds a dynamic loader and never installs raw plugin code that Harness cannot use.
+The Harness build must statically compose those packages into its immutable catalog. After all
+signing, notarization, and stapling, it publishes `tritonai-plugin-composition-mac-arm64.json` and
+`tritonai-plugin-composition-win-x64.json`. Each proof contains the exact generated
+`vendor/plugins/manifest.json` composition plus the filename, size, and SHA-512 of that platform's
+final release artifact. Installer packaging downloads the matching platform proof, stores it beside
+the Harness artifact as `tritonai-plugin-composition.json`, and rechecks it when the packaged
+Installer runs. This preserves the Harness trust model: the Installer never adds a dynamic loader
+and never installs raw plugin code that Harness cannot use.
 
 macOS:
 
@@ -88,6 +89,26 @@ Windows:
 ```sh
 npm run package:win-installer
 ```
+
+Stable Windows packaging is fail-closed. It requires the seven Azure Trusted Signing environment
+values, enables Electron Builder `forceCodeSigning`, verifies Authenticode on the
+Setup, portable, and unpacked application executables, and writes a hash-bound verification proof.
+`npm run release:contract` must run on Windows; it rejects artifacts that do not match that proof
+and independently re-verifies the exact release executables against the pinned UCSD publisher.
+Direct unsigned
+Electron Builder runs are development outputs and are not distributable release artifacts.
+The legacy portable ZIP is available only as `package:win-portable:unsigned-dev` and additionally
+requires `TRITONAI_ALLOW_UNSIGNED_WINDOWS_DEV_BUILD=1`.
+
+Required release environment variables:
+
+- `AZURE_TENANT_ID`
+- `AZURE_CLIENT_ID`
+- `AZURE_CLIENT_SECRET`
+- `AZURE_TRUSTED_SIGNING_ENDPOINT`
+- `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`
+- `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`
+- `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME` (exact certificate Common Name)
 
 Release builds stage TritonAI Harness, Codex, secure skills from the private `dbalders/UCSD-Skills-Library-Secure` repository, and a build-only reviewed plugin composition from canonical `dbalders/TritonAI-Plugins`. Public AI Team and Community skills are discovered and installed by TritonAI Harness; they are not bundled into the Installer.
 
@@ -103,7 +124,8 @@ At runtime the Installer owns only the secure skill names recorded in `~/.triton
 
 Publish the Harness release before building the Installer so the intended Harness assets are available.
 
-After both platforms are packaged, run `npm run release:contract`. The machine-readable
+After both platforms are packaged and available on the Windows release host, run
+`npm run release:contract`. The machine-readable
 [`release-artifacts.json`](release-artifacts.json) contract requires the canonical
 `TritonAI-Installer-*` DMG, Windows Setup, portable EXE, Setup blockmap, and Windows update
 manifest. It writes one `artifacts/SHA256SUMS.txt` with relative basenames only. The GitHub

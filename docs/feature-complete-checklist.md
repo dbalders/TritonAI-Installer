@@ -16,4 +16,5 @@
 - [x] Preserve public, community, and user-added skill directories across Installer upgrades.
 - [x] Replace/remove only previously Installer-owned secure skills and reject unowned name collisions.
 - [x] Migrate old installs by removing the legacy root `manifest.json` without removing its public skill directories.
+- [x] Fail closed on stable Windows packaging unless Azure Trusted Signing succeeds and every distributable EXE passes publisher-bound Authenticode verification.
 - [ ] Verify end-to-end on clean macOS and Windows VMs with a real UCSD/TritonAI key.

@@ -8,25 +8,57 @@ const repoRoot = path.resolve(__dirname, "..", "..");
 const {
   assertReleaseMayBeUpdated,
   assertReleaseSourceIdentity,
+  assertWindowsAuthenticodeProof,
+  loadReleaseContract,
   requiredReleaseArtifacts,
   writeReleaseChecksumManifest
 } = require("./release-contract");
+const { expectedWindowsExecutables } = require("./windows-signing");
 const {
   activateStagedVendors,
   assertExplicitHarnessSource,
-  assertLegacyPluginFreeHarnessVersion,
   assertMatchingManifestVersions,
   assertManifestVersion,
   readHarnessSourceEnvironment,
   selectManifestFile
 } = require("./prepare-t3code-desktop-vendor");
 
+function verifyFixtureAuthenticode({ executablePaths, expectedPublisherName }) {
+  assert.strictEqual(expectedPublisherName, "University of California San Diego");
+  assert(Array.isArray(executablePaths) && executablePaths.length > 0);
+  return executablePaths.map((executablePath) => {
+    assert(fs.lstatSync(executablePath).isFile());
+    return {
+      path: executablePath,
+      status: "Valid",
+      publisherName: expectedPublisherName,
+      thumbprint: "ABC123",
+      timestampSubject: "CN=Microsoft Time-Stamp Service"
+    };
+  });
+}
+
+function writeFixtureChecksumManifest(options) {
+  return writeReleaseChecksumManifest({ ...options, verifyAuthenticode: verifyFixtureAuthenticode });
+}
+
+function assertFixtureWindowsProof(options) {
+  return assertWindowsAuthenticodeProof({ ...options, verifyAuthenticode: verifyFixtureAuthenticode });
+}
+
 function main() {
-  assert.doesNotThrow(() => assertLegacyPluginFreeHarnessVersion("0.2.7"));
-  assert.throws(() => assertLegacyPluginFreeHarnessVersion("0.2.8"), /requires an artifact-bound/);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-release-contract-"));
   try {
-    fs.copyFileSync(path.join(repoRoot, "release-artifacts.json"), path.join(tempRoot, "release-artifacts.json"));
+    const contractPath = path.join(tempRoot, "release-artifacts.json");
+    fs.copyFileSync(path.join(repoRoot, "release-artifacts.json"), contractPath);
+    const releaseContract = JSON.parse(fs.readFileSync(contractPath, "utf8"));
+    for (const field of ["checksumManifest", "windowsAuthenticodeProof"]) {
+      for (const unsafePath of ["../outside.json", "C:outside.json", "C:\\outside.json"]) {
+        fs.writeFileSync(contractPath, JSON.stringify({ ...releaseContract, [field]: unsafePath }));
+        assert.throws(() => loadReleaseContract(tempRoot), /repository-relative/);
+      }
+    }
+    fs.writeFileSync(contractPath, JSON.stringify(releaseContract));
     fs.writeFileSync(path.join(tempRoot, "package.json"), JSON.stringify({ version: "0.2.1" }));
     writeHarnessVendorFixture(tempRoot, "mac-arm64", "latest-mac.yml", "dmg", "0.2.1");
     writeHarnessVendorFixture(tempRoot, "win-x64", "latest.yml", "exe", "0.2.1");
@@ -45,18 +77,92 @@ function main() {
       fs.mkdirSync(path.dirname(artifact.absolutePath), { recursive: true });
       fs.writeFileSync(artifact.absolutePath, `fixture:${artifact.id}\n`);
     }
+    const unpackedExecutable = expectedWindowsExecutables(tempRoot, "0.2.1")[2];
+    fs.mkdirSync(path.dirname(unpackedExecutable), { recursive: true });
+    fs.writeFileSync(unpackedExecutable, "fixture:windows-unpacked\n");
+    writeWindowsAuthenticodeProof(tempRoot, "0.2.1", artifacts);
 
-    const result = writeReleaseChecksumManifest({ root: tempRoot, version: "0.2.1" });
+    const result = writeFixtureChecksumManifest({ root: tempRoot, version: "0.2.1" });
     const manifestLines = fs.readFileSync(result.manifestPath, "utf8").trim().split(/\r?\n/);
     assert.strictEqual(manifestLines.length, artifacts.length);
     for (const line of manifestLines) {
       const fileName = line.replace(/^[a-f0-9]{64}\s+/, "");
       assert.strictEqual(fileName, path.basename(fileName), "checksum entries must use basenames, never build-machine paths");
     }
+    assert.doesNotThrow(() => assertFixtureWindowsProof({ root: tempRoot, version: "0.2.1" }));
+    const extraExecutable = {
+      id: "windows-extra",
+      platform: "windows-x64",
+      relativePath: "artifacts/windows-installer/TritonAI-Installer-Tool-0.2.1-x64.exe",
+      absolutePath: path.join(
+        tempRoot,
+        "artifacts",
+        "windows-installer",
+        "TritonAI-Installer-Tool-0.2.1-x64.exe"
+      )
+    };
+    fs.writeFileSync(extraExecutable.absolutePath, "fixture:windows-extra\n");
+    assert.throws(
+      () => assertFixtureWindowsProof({
+        root: tempRoot,
+        version: "0.2.1",
+        artifacts: [...artifacts, extraExecutable]
+      }),
+      /Windows Authenticode proof omits/
+    );
+    writeWindowsAuthenticodeProof(tempRoot, "0.2.1", [...artifacts, extraExecutable]);
+    assert.doesNotThrow(() => assertFixtureWindowsProof({
+      root: tempRoot,
+      version: "0.2.1",
+      artifacts: [...artifacts, extraExecutable]
+    }));
+    writeWindowsAuthenticodeProof(tempRoot, "0.2.1", artifacts);
+    if (process.platform !== "win32") {
+      assert.throws(
+        () => assertWindowsAuthenticodeProof({ root: tempRoot, version: "0.2.1" }),
+        /Authenticode verification must run on Windows/
+      );
+    }
+    fs.rmSync(unpackedExecutable);
+    assert.throws(
+      () => assertFixtureWindowsProof({ root: tempRoot, version: "0.2.1" }),
+      /Missing Windows executable for Authenticode verification/
+    );
+    fs.writeFileSync(unpackedExecutable, "fixture:windows-unpacked\n");
+    const proofPath = path.join(
+      tempRoot,
+      "artifacts",
+      "windows-installer",
+      "authenticode-signatures.json"
+    );
+    const wrongPublisherProof = JSON.parse(fs.readFileSync(proofPath, "utf8"));
+    wrongPublisherProof.publisherName = "Caller Selected Publisher";
+    fs.writeFileSync(proofPath, JSON.stringify(wrongPublisherProof));
+    assert.throws(
+      () => assertFixtureWindowsProof({ root: tempRoot, version: "0.2.1" }),
+      /Invalid Windows Authenticode verification proof/
+    );
+    writeWindowsAuthenticodeProof(tempRoot, "0.2.1", artifacts);
+    const untimestampedProof = JSON.parse(fs.readFileSync(proofPath, "utf8"));
+    untimestampedProof.signatures[0].timestampSubject = null;
+    fs.writeFileSync(proofPath, JSON.stringify(untimestampedProof));
+    assert.throws(
+      () => assertFixtureWindowsProof({ root: tempRoot, version: "0.2.1" }),
+      /proof is not valid/
+    );
+    writeWindowsAuthenticodeProof(tempRoot, "0.2.1", artifacts);
+    const setupArtifact = artifacts.find((entry) => entry.id === "windows-setup");
+    fs.appendFileSync(setupArtifact.absolutePath, "tampered");
+    assert.throws(
+      () => assertFixtureWindowsProof({ root: tempRoot, version: "0.2.1" }),
+      /proof hash does not match/
+    );
+    fs.writeFileSync(setupArtifact.absolutePath, "fixture:windows-setup\n");
+    writeWindowsAuthenticodeProof(tempRoot, "0.2.1", artifacts);
 
     writeHarnessVendorFixture(tempRoot, "win-x64", "latest.yml", "exe", "0.2.0");
     assert.throws(
-      () => writeReleaseChecksumManifest({ root: tempRoot, version: "0.2.1" }),
+      () => writeFixtureChecksumManifest({ root: tempRoot, version: "0.2.1" }),
       /versions must match/
     );
     writeHarnessVendorFixture(tempRoot, "win-x64", "latest.yml", "exe", "0.2.1");
@@ -77,6 +183,10 @@ function main() {
     assert(macConfig.extraResources.some((resource) => resource.to === "managed-plugin-composition.json"));
     assert(winConfig.extraResources.some((resource) => resource.to === "managed-plugin-composition.json"));
     const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+    assert(
+      packageJson.scripts["package:win-installer"].endsWith("node dist/scripts/windows-signing.js"),
+      "Stable Windows packaging must end at the fail-closed signing and Authenticode gate"
+    );
     assert(
       packageJson.scripts["package:win-installer"].indexOf("prepare:plugins-vendor:compiled")
         < packageJson.scripts["package:win-installer"].indexOf("prepare:t3code-desktop-vendor:win:compiled"),
@@ -172,7 +282,7 @@ function main() {
 
     fs.rmSync(artifacts[0].absolutePath);
     assert.throws(
-      () => writeReleaseChecksumManifest({ root: tempRoot, version: "0.2.1" }),
+      () => writeFixtureChecksumManifest({ root: tempRoot, version: "0.2.1" }),
       /Missing required release artifacts/
     );
   } finally {
@@ -196,6 +306,39 @@ function writeHarnessVendorFixture(repositoryRoot, target, manifestName, extensi
     "    size: 7",
     ""
   ].join("\n"));
+}
+
+function writeWindowsAuthenticodeProof(repositoryRoot, version, artifacts) {
+  const crypto = require("crypto");
+  const releaseExecutablePaths = artifacts
+    .filter((entry) => entry.platform === "windows-x64" && entry.absolutePath.toLowerCase().endsWith(".exe"))
+    .map((entry) => entry.absolutePath);
+  const signatures = [...new Set([
+    ...releaseExecutablePaths,
+    expectedWindowsExecutables(repositoryRoot, version)[2]
+  ].map((absolutePath) => path.resolve(absolutePath)))]
+    .map((absolutePath) => ({
+      relativePath: path.relative(repositoryRoot, absolutePath).split(path.sep).join("/"),
+      absolutePath
+    }))
+    .map((entry) => ({
+      path: entry.relativePath,
+      sha256: crypto.createHash("sha256").update(fs.readFileSync(entry.absolutePath)).digest("hex"),
+      status: "Valid",
+      publisherName: "University of California San Diego",
+      subject: "CN=University of California San Diego",
+      thumbprint: "ABC123",
+      timestampSubject: "CN=Microsoft Time-Stamp Service"
+    }));
+  const proofPath = path.join(repositoryRoot, "artifacts", "windows-installer", "authenticode-signatures.json");
+  fs.mkdirSync(path.dirname(proofPath), { recursive: true });
+  fs.writeFileSync(proofPath, JSON.stringify({
+    schemaVersion: 1,
+    version,
+    publisherName: "University of California San Diego",
+    verifiedAt: "2026-07-18T00:00:00.000Z",
+    signatures
+  }));
 }
 
 function assertVendorActivationRollback(tempRoot) {

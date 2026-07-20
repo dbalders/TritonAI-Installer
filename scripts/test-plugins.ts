@@ -1,4 +1,5 @@
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -9,7 +10,6 @@ const {
 const {
   assertArtifactBinding,
   assertMatchingPluginComposition,
-  assertPluginCompatibility,
   isSafeRelativePath,
   validateManagedPluginBundleManifest
 } = require("../src/installer/plugin-bundle-manifest");
@@ -25,6 +25,11 @@ const {
   validatePluginManifest,
   validateSourceInput
 } = require("./prepare-plugins-vendor");
+const {
+  pluginCompositionFile,
+  publishedPluginCompositionFile,
+  verifyPluginCompositionProof
+} = require("./prepare-t3code-desktop-vendor");
 
 const COMMIT = "a".repeat(40);
 
@@ -35,6 +40,7 @@ function main() {
   assertRejectsUnsafePackages();
   assertAtomicVendorRollback();
   assertCompositionContract();
+  assertPlatformSpecificProofContract();
   assertSafeCompositionPaths();
   assertPackagedResourceInspection();
   console.log("Managed Harness plugin tests passed.");
@@ -196,6 +202,24 @@ function assertRejectsUnsafePackages() {
     const badManifest: Record<string, any> = pluginManifest("alpha-reader", "1.0.0");
     badManifest.unsupported = true;
     assert.throws(() => validatePluginManifest(badManifest, "alpha-reader"), /unsupported fields/);
+
+    const legacyRange: Record<string, any> = pluginManifest("alpha-reader", "1.0.0");
+    legacyRange.compatibility = { harness: { min: "0.2.0", maxExclusive: "0.3.0" } };
+    assert.throws(() => validatePluginManifest(legacyRange, "alpha-reader"), /unsupported fields/);
+
+    const previousContract: Record<string, any> = pluginManifest("alpha-reader", "1.0.0");
+    previousContract.apiVersion = "tritonai.harness/v1";
+    previousContract.manifestVersion = 1;
+    assert.throws(() => validatePluginManifest(previousContract, "alpha-reader"), /unsupported Harness/);
+
+    const legacyCapability: Record<string, any> = pluginManifest("alpha-reader", "1.0.0");
+    legacyCapability.skills[0].capability = legacyCapability.skills[0].capabilities[0];
+    delete legacyCapability.skills[0].capabilities;
+    assert.throws(() => validatePluginManifest(legacyCapability, "alpha-reader"), /unsupported fields/);
+
+    const missingAccess: Record<string, any> = pluginManifest("alpha-reader", "1.0.0");
+    delete missingAccess.capabilities[0].access;
+    assert.throws(() => validatePluginManifest(missingAccess, "alpha-reader"), /capabilities/);
   });
 }
 
@@ -292,7 +316,6 @@ function assertCompositionContract() {
       reordered,
       "composition matching must ignore JSON object key order at every schema level"
     );
-    assert.deepStrictEqual(assertPluginCompatibility(expected, "0.2.7"), expected);
     const artifact = {
       fileName: "TritonAI-Harness-0.2.7-arm64.dmg",
       sha512: `${"A".repeat(86)}==`,
@@ -305,13 +328,88 @@ function assertCompositionContract() {
       () => assertArtifactBinding(bound, { ...artifact, size: artifact.size + 1 }),
       /not bound to the exact/
     );
-    const incompatible = structuredClone(expected);
-    incompatible.packages[0].compatibility.harness = { min: "0.3.0", maxExclusive: "0.4.0" };
-    assert.throws(() => assertPluginCompatibility(incompatible, "0.2.7"), /requires TritonAI Harness/);
+    const legacyRange = structuredClone(expected);
+    legacyRange.packages[0].compatibility = { harness: { min: "0.3.0", maxExclusive: "0.4.0" } };
+    assert.throws(() => validateManagedPluginBundleManifest(legacyRange), /unsupported fields/);
     const drifted = structuredClone(expected);
     drifted.packages[0].version = "1.0.1";
     assert.throws(() => assertMatchingPluginComposition(expected, drifted), /does not match the exact prepared/);
   });
+}
+
+function assertPlatformSpecificProofContract() {
+  withTempRoot("tritonai-platform-proofs-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    const releaseDir = path.join(tempRoot, "release");
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.0");
+    const expected = stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["alpha-reader"],
+      source: sourceIdentity()
+    });
+    fs.mkdirSync(releaseDir, { recursive: true });
+
+    const targets = [
+      { platform: "mac", arch: "arm64", extension: "dmg" },
+      { platform: "win", arch: "x64", extension: "exe" }
+    ];
+    for (const target of targets) {
+      const artifactPath = path.join(
+        releaseDir,
+        `TritonAI-Harness-0.3.0-${target.arch}.${target.extension}`
+      );
+      fs.writeFileSync(artifactPath, `final signed ${target.platform} artifact bytes`);
+      const binding = artifactBinding(artifactPath);
+      const proofName = publishedPluginCompositionFile(target.platform, target.arch);
+      const proofPath = path.join(releaseDir, proofName);
+      fs.writeFileSync(proofPath, JSON.stringify({ ...expected, artifacts: [binding] }));
+
+      assert.deepStrictEqual(
+        verifyPluginCompositionProof({
+          expectedManifestPath: path.join(vendorDir, "manifest.json"),
+          proofPath,
+          harnessVersion: "0.3.0",
+          artifactPath,
+          expectedArtifact: binding
+        }).artifacts,
+        [binding],
+        `${target.platform} vendoring must accept its published proof`
+      );
+
+      fs.appendFileSync(artifactPath, "\npost-proof mutation");
+      assert.throws(
+        () => verifyPluginCompositionProof({
+          expectedManifestPath: path.join(vendorDir, "manifest.json"),
+          proofPath,
+          harnessVersion: "0.3.0",
+          artifactPath,
+          expectedArtifact: artifactBinding(artifactPath)
+        }),
+        /not bound to the exact/,
+        "signing, notarization, or stapling after proof generation must invalidate the proof"
+      );
+    }
+
+    assert.strictEqual(pluginCompositionFile, "tritonai-plugin-composition.json");
+    assert.strictEqual(
+      publishedPluginCompositionFile("mac", "arm64"),
+      "tritonai-plugin-composition-mac-arm64.json"
+    );
+    assert.strictEqual(
+      publishedPluginCompositionFile("win", "x64"),
+      "tritonai-plugin-composition-win-x64.json"
+    );
+  });
+}
+
+function artifactBinding(artifactPath) {
+  return {
+    fileName: path.basename(artifactPath),
+    size: fs.statSync(artifactPath).size,
+    sha512: crypto.createHash("sha512").update(fs.readFileSync(artifactPath)).digest("base64")
+  };
 }
 
 function assertPackagedResourceInspection() {
@@ -400,14 +498,13 @@ function writeSkillPlugin(sourceRoot, id, version) {
 
 function pluginManifest(id, version) {
   return {
-    apiVersion: "tritonai.harness/v1",
+    apiVersion: "tritonai.harness/v2",
     kind: "IntegrationPlugin",
-    manifestVersion: 1,
+    manifestVersion: 2,
     id,
     name: id,
     description: `Read ${id} data.`,
     version,
-    compatibility: { harness: { min: "0.2.0", maxExclusive: "0.3.0" } },
     capabilities: [{ id: `${id}.read`, displayName: "Read", description: "Read data.", access: "default" }],
     tools: [],
     skills: [{ name: id, description: `Read ${id} data.`, capabilities: [`${id}.read`] }]

@@ -398,6 +398,39 @@ function assertConcurrentSettingsEditIsPreserved() {
   }
 }
 
+function assertConcurrentSettingsCreationIsPreserved() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-create-race-"));
+  try {
+    const settingsPath = path.join(tempRoot, "settings.json");
+    const updates = prepareManagedSettingsUpdates(
+      [settingsPath],
+      (existing) => ({ ...existing, managed: true })
+    );
+    const concurrentRaw = "{\n  \"user\": \"concurrent create\"\n}\n";
+    const originalLinkSync = fs.linkSync;
+    fs.linkSync = (source, destination) => {
+      if (destination === settingsPath && !fs.existsSync(destination)) {
+        fs.writeFileSync(destination, concurrentRaw);
+      }
+      return originalLinkSync(source, destination);
+    };
+    try {
+      assert.throws(
+        () => commitManagedSettingsUpdates(updates),
+        (error) => error && error.code === "EEXIST"
+      );
+    } finally {
+      fs.linkSync = originalLinkSync;
+    }
+
+    assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), concurrentRaw);
+    const leftovers = fs.readdirSync(tempRoot).filter((name) => name.includes(".replacement-"));
+    assert.deepStrictEqual(leftovers, []);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 function assertAtomicFailureRollsBackAllManagedPaths() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-atomic-"));
   try {
@@ -726,6 +759,7 @@ function main() {
   assertInvalidMultiPathSettingsFailClosed("non-object", "[]\n");
   assertUnreadableMultiPathSettingsFailClosed();
   assertConcurrentSettingsEditIsPreserved();
+  assertConcurrentSettingsCreationIsPreserved();
   assertAtomicFailureRollsBackAllManagedPaths();
   assertRollbackPreservesConcurrentEdit();
   assertPermissiveSettingsAndBackupBecomePrivate();

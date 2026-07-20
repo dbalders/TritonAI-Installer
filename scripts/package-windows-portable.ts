@@ -19,6 +19,11 @@ const resourcesApp = path.join(appDir, "resources", "app");
 const outputZip = path.join(artifactsDir, `${PRODUCT_NAME.replaceAll(" ", "-")}-win32-x64-portable.zip`);
 
 function main() {
+  if (process.env.TRITONAI_ALLOW_UNSIGNED_WINDOWS_DEV_BUILD !== "1") {
+    throw new Error(
+      "This command creates an unsigned development artifact. Set TRITONAI_ALLOW_UNSIGNED_WINDOWS_DEV_BUILD=1 to opt in. Stable releases must use npm run package:win-installer."
+    );
+  }
   fs.mkdirSync(artifactsDir, { recursive: true });
   fs.mkdirSync(cacheDir, { recursive: true });
   fs.rmSync(buildRoot, { recursive: true, force: true });

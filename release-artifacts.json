@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "checksumManifest": "artifacts/SHA256SUMS.txt",
+  "windowsAuthenticodeProof": "artifacts/windows-installer/authenticode-signatures.json",
   "artifacts": [
     {
       "id": "macos-dmg",
