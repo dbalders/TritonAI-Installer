@@ -77,7 +77,7 @@ function assertPublisherRequirementIsPinnedAndRotationSafe() {
       "raw",
       "-o",
       "-",
-      "/fixture/TritonAI Harness.app/Contents/Info.plist"
+      path.join("/fixture/TritonAI Harness.app", "Contents", "Info.plist")
     ]
   );
   assert.strictEqual(MACOS_CODESIGN_PATH, "/usr/bin/codesign");
