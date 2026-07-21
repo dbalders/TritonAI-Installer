@@ -1266,6 +1266,12 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       const paths = getPaths(tempRoot, process.platform);
       paths.externalModelsEnabled = externalModelsEnabled;
       writeT3CodeSettings(paths);
+      const settings = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
+      settings.providerInstances["codex-work"] = {
+        driver: "codex",
+        config: { customModels: settings.providerInstances.codex.config.customModels }
+      };
+      fs.writeFileSync(paths.t3Settings, JSON.stringify(settings));
       const stateDbPath = path.join(path.dirname(paths.t3Settings), "state.sqlite");
       fs.mkdirSync(path.dirname(stateDbPath), { recursive: true });
 
@@ -1273,7 +1279,6 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       db.exec("CREATE TABLE projection_threads (model_selection_json TEXT)");
       const legacySelection = {
         instanceId: "codex-work",
-        provider: "codex",
         model: "gpt-5.5",
         options: [{ id: "reasoningEffort", value: "high" }]
       };

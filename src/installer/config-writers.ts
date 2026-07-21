@@ -221,6 +221,7 @@ const managedSettingsPlatform = ${JSON.stringify(paths.platform)};
 const modelSelection = ${JSON.stringify(modelSelection)};
 const customModels = ${JSON.stringify(customModels)};
 const modelReplacements = ${JSON.stringify(modelReplacements)};
+const codexInstanceIds = new Set(["codex"]);
 const customModelMetadata = ${JSON.stringify(customModelMetadata)};
 const codexBinaryPath = ${JSON.stringify(getCodexBinaryPath(paths))};
 const codexHomePath = ${JSON.stringify(paths.codexHome)};
@@ -291,6 +292,11 @@ function disableProviderInstanceMap(instances = {}, enabledProviderId) {
 function buildManagedSettings(existing) {
   const providers = existing.providers || {};
   const instances = existing.providerInstances || {};
+  for (const [instanceId, instance] of Object.entries(instances)) {
+    if (instanceId === "codex" || objectValue(instance).driver === "codex") {
+      codexInstanceIds.add(instanceId);
+    }
+  }
   const codexProvider = providers.codex || {};
   const codexInstance = instances.codex || {};
 
@@ -355,6 +361,10 @@ function allowedModelPlaceholders() {
   return customModels.map(() => "?").join(", ");
 }
 
+function codexInstancePlaceholders() {
+  return Array.from(codexInstanceIds, () => "?").join(", ");
+}
+
 function patchSelectionColumn(db, table, column) {
   if (!hasTable(db, table) || !hasColumn(db, table, column)) return;
   const deletedFilter = hasColumn(db, table, "deleted_at") ? "AND deleted_at IS NULL" : "";
@@ -364,12 +374,12 @@ function patchSelectionColumn(db, table, column) {
       SET \${column} = json_set(\${column}, '$.model', ?)
       WHERE json_valid(\${column})
         AND (
-          COALESCE(json_extract(\${column}, '$.instanceId'), '') = 'codex'
+          COALESCE(json_extract(\${column}, '$.instanceId'), '') IN (\${codexInstancePlaceholders()})
           OR COALESCE(json_extract(\${column}, '$.provider'), '') = 'codex'
         )
         AND json_extract(\${column}, '$.model') = ?
       \${deletedFilter}
-    \`).run(replacementModel, legacyModel);
+    \`).run(replacementModel, ...codexInstanceIds, legacyModel);
   }
   db.prepare(\`
     UPDATE \${table}
@@ -377,13 +387,13 @@ function patchSelectionColumn(db, table, column) {
     WHERE (
       \${column} IS NULL
       OR NOT (
-        COALESCE(json_extract(\${column}, '$.instanceId'), '') = 'codex'
+        COALESCE(json_extract(\${column}, '$.instanceId'), '') IN (\${codexInstancePlaceholders()})
         OR COALESCE(json_extract(\${column}, '$.provider'), '') = 'codex'
       )
       OR json_extract(\${column}, '$.model') NOT IN (\${allowedModelPlaceholders()})
     )
     \${deletedFilter}
-  \`).run(JSON.stringify(modelSelection), ...customModels);
+  \`).run(JSON.stringify(modelSelection), ...codexInstanceIds, ...customModels);
 }
 
 function patchEvents(db, selectionKey) {
@@ -394,11 +404,11 @@ function patchEvents(db, selectionKey) {
       SET payload_json = json_set(payload_json, '$.\${selectionKey}.model', ?)
       WHERE json_type(payload_json, '$.\${selectionKey}') IS NOT NULL
         AND (
-          COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), '') = 'codex'
+          COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), '') IN (\${codexInstancePlaceholders()})
           OR COALESCE(json_extract(payload_json, '$.\${selectionKey}.provider'), '') = 'codex'
         )
         AND json_extract(payload_json, '$.\${selectionKey}.model') = ?
-    \`).run(replacementModel, legacyModel);
+    \`).run(replacementModel, ...codexInstanceIds, legacyModel);
   }
   db.prepare(\`
     UPDATE orchestration_events
@@ -406,12 +416,12 @@ function patchEvents(db, selectionKey) {
     WHERE json_type(payload_json, '$.\${selectionKey}') IS NOT NULL
       AND (
         NOT (
-          COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), '') = 'codex'
+          COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), '') IN (\${codexInstancePlaceholders()})
           OR COALESCE(json_extract(payload_json, '$.\${selectionKey}.provider'), '') = 'codex'
         )
         OR json_extract(payload_json, '$.\${selectionKey}.model') NOT IN (\${allowedModelPlaceholders()})
       )
-  \`).run(JSON.stringify(modelSelection), ...customModels);
+  \`).run(JSON.stringify(modelSelection), ...codexInstanceIds, ...customModels);
 }
 
 function patchSessionState(db) {
