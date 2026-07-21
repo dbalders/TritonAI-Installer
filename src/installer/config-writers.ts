@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
-const { UCSD } = require("./constants");
+const { LEGACY_CODEX_MODEL_REPLACEMENTS, UCSD } = require("./constants");
 const { getCodexProviderEnvironmentVariables } = require("./codex-environment");
 const { listSkillDirs } = require("./skills");
 
@@ -197,6 +197,14 @@ function writeT3CodeDefaultsPatcher(paths) {
     model: getEffectiveCodexModel(paths)
   };
   const customModels = getCodexModelSlugs(paths);
+  const modelReplacements = Object.fromEntries(
+    Object.entries(LEGACY_CODEX_MODEL_REPLACEMENTS as Record<string, string>)
+      .filter(([legacyModel]) => !customModels.includes(legacyModel))
+      .map(([legacyModel, replacementModel]) => [
+        legacyModel,
+        customModels.includes(replacementModel) ? replacementModel : modelSelection.model
+      ])
+  );
   const customModelMetadata = getCodexModelMetadata(paths);
   const settingsPaths = getT3SettingsPaths(paths);
   const stateDbPaths = settingsPaths.map((settingsPath) => path.join(path.dirname(settingsPath), "state.sqlite"));
@@ -212,6 +220,7 @@ const stateDbPaths = ${JSON.stringify(stateDbPaths)};
 const managedSettingsPlatform = ${JSON.stringify(paths.platform)};
 const modelSelection = ${JSON.stringify(modelSelection)};
 const customModels = ${JSON.stringify(customModels)};
+const modelReplacements = ${JSON.stringify(modelReplacements)};
 const customModelMetadata = ${JSON.stringify(customModelMetadata)};
 const codexBinaryPath = ${JSON.stringify(getCodexBinaryPath(paths))};
 const codexHomePath = ${JSON.stringify(paths.codexHome)};
@@ -349,12 +358,28 @@ function allowedModelPlaceholders() {
 function patchSelectionColumn(db, table, column) {
   if (!hasTable(db, table) || !hasColumn(db, table, column)) return;
   const deletedFilter = hasColumn(db, table, "deleted_at") ? "AND deleted_at IS NULL" : "";
+  for (const [legacyModel, replacementModel] of Object.entries(modelReplacements)) {
+    db.prepare(\`
+      UPDATE \${table}
+      SET \${column} = json_set(\${column}, '$.model', ?)
+      WHERE json_valid(\${column})
+        AND (
+          COALESCE(json_extract(\${column}, '$.instanceId'), '') = 'codex'
+          OR COALESCE(json_extract(\${column}, '$.provider'), '') = 'codex'
+        )
+        AND json_extract(\${column}, '$.model') = ?
+      \${deletedFilter}
+    \`).run(replacementModel, legacyModel);
+  }
   db.prepare(\`
     UPDATE \${table}
     SET \${column} = ?
     WHERE (
       \${column} IS NULL
-      OR COALESCE(json_extract(\${column}, '$.instanceId'), json_extract(\${column}, '$.provider'), '') != 'codex'
+      OR NOT (
+        COALESCE(json_extract(\${column}, '$.instanceId'), '') = 'codex'
+        OR COALESCE(json_extract(\${column}, '$.provider'), '') = 'codex'
+      )
       OR json_extract(\${column}, '$.model') NOT IN (\${allowedModelPlaceholders()})
     )
     \${deletedFilter}
@@ -363,12 +388,27 @@ function patchSelectionColumn(db, table, column) {
 
 function patchEvents(db, selectionKey) {
   if (!hasTable(db, "orchestration_events") || !hasColumn(db, "orchestration_events", "payload_json")) return;
+  for (const [legacyModel, replacementModel] of Object.entries(modelReplacements)) {
+    db.prepare(\`
+      UPDATE orchestration_events
+      SET payload_json = json_set(payload_json, '$.\${selectionKey}.model', ?)
+      WHERE json_type(payload_json, '$.\${selectionKey}') IS NOT NULL
+        AND (
+          COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), '') = 'codex'
+          OR COALESCE(json_extract(payload_json, '$.\${selectionKey}.provider'), '') = 'codex'
+        )
+        AND json_extract(payload_json, '$.\${selectionKey}.model') = ?
+    \`).run(replacementModel, legacyModel);
+  }
   db.prepare(\`
     UPDATE orchestration_events
     SET payload_json = json_set(payload_json, '$.\${selectionKey}', json(?))
     WHERE json_type(payload_json, '$.\${selectionKey}') IS NOT NULL
       AND (
-        COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), json_extract(payload_json, '$.\${selectionKey}.provider'), '') != 'codex'
+        NOT (
+          COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), '') = 'codex'
+          OR COALESCE(json_extract(payload_json, '$.\${selectionKey}.provider'), '') = 'codex'
+        )
         OR json_extract(payload_json, '$.\${selectionKey}.model') NOT IN (\${allowedModelPlaceholders()})
       )
   \`).run(JSON.stringify(modelSelection), ...customModels);
@@ -409,6 +449,22 @@ function patchSessionState(db) {
   }
 
   if (hasTable(db, "provider_session_runtime")) {
+    for (const [legacyModel, replacementModel] of Object.entries(modelReplacements)) {
+      db.prepare(\`
+        UPDATE provider_session_runtime
+        SET runtime_payload_json = json_set(runtime_payload_json, '$.model', ?)
+        WHERE provider_name = 'codex'
+          AND json_valid(runtime_payload_json)
+          AND json_extract(runtime_payload_json, '$.model') = ?
+      \`).run(replacementModel, legacyModel);
+      db.prepare(\`
+        UPDATE provider_session_runtime
+        SET runtime_payload_json = json_set(runtime_payload_json, '$.modelSelection.model', ?)
+        WHERE provider_name = 'codex'
+          AND json_valid(runtime_payload_json)
+          AND json_extract(runtime_payload_json, '$.modelSelection.model') = ?
+      \`).run(replacementModel, legacyModel);
+    }
     const hasProviderInstanceId = hasColumn(db, "provider_session_runtime", "provider_instance_id");
     const providerInstanceColumn = hasProviderInstanceId
       ? "provider_instance_id = 'codex',"

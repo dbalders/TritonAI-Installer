@@ -201,7 +201,24 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     const unknownProjectionAfter = patched.prepare(
       "SELECT * FROM projection_thread_sessions WHERE thread_id = 'thread-unknown-provider'"
     ).get();
-    assert.deepStrictEqual(currentRuntimeAfter, currentRuntimeBefore);
+    for (const [column, value] of Object.entries(currentRuntimeBefore)) {
+      if (column !== "runtime_payload_json") {
+        assert.deepStrictEqual(
+          currentRuntimeAfter[column],
+          value,
+          `migrating a retired model must preserve provider_session_runtime.${column}`
+        );
+      }
+    }
+    const currentRuntimePayload = JSON.parse(currentRuntimeAfter.runtime_payload_json);
+    assert.strictEqual(currentRuntimePayload.model, UCSD.restrictedCodexModel);
+    assert.deepStrictEqual(currentRuntimePayload.modelSelection, {
+      instanceId: "codex-work",
+      model: UCSD.restrictedCodexModel
+    });
+    assert.strictEqual(currentRuntimePayload.activeTurnId, "active-codex-turn");
+    assert.strictEqual(currentRuntimePayload.lastError, "recoverable codex error");
+    assert.deepStrictEqual(currentRuntimePayload.customRuntimeField, { keep: true });
     assert.deepStrictEqual(currentProjectionAfter, currentProjectionBefore);
     assert.deepStrictEqual(
       unknownProjectionAfter,
