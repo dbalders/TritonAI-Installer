@@ -6,6 +6,9 @@ const MANAGED_CONFIG_FILE = "managed-config.json";
 const DEFAULT_BASE_URL = "https://example.invalid/v1";
 const DEFAULT_RESTRICTED_CODEX_MODEL = "api-deepseek-v4-flash";
 const DEFAULT_CODEX_MODEL = DEFAULT_RESTRICTED_CODEX_MODEL;
+const LEGACY_CODEX_MODEL_REPLACEMENTS = {
+  "gpt-5.5": "gpt-5.6-sol"
+};
 const TRITONAI_CODEX_MODEL_CAPABILITIES = {
   optionDescriptors: [
     {
@@ -47,9 +50,17 @@ const DEFAULT_CODEX_MODELS = {
     capabilities: withInputModalities(["text", "image"]),
     availableToRestrictedKeys: true
   },
-  "gpt-5.5": {
-    id: "gpt-5.5",
-    name: "GPT-5.5"
+  "gpt-5.6-luna": {
+    id: "gpt-5.6-luna",
+    name: "GPT-5.6 Luna"
+  },
+  "gpt-5.6-sol": {
+    id: "gpt-5.6-sol",
+    name: "GPT-5.6 Sol"
+  },
+  "gpt-5.6-terra": {
+    id: "gpt-5.6-terra",
+    name: "GPT-5.6 Terra"
   },
   "claude-opus-4-8": {
     id: "claude-opus-4-8",
@@ -144,7 +155,7 @@ function normalizeManagedConfig(config) {
     apiDocsUrl: normalizeOptionalUrl(config.apiDocsUrl),
     codexModel,
     restrictedCodexModel,
-    externalModelProbe: config.externalModelProbe || "gpt-5.5",
+    externalModelProbe: config.externalModelProbe || "gpt-5.6-sol",
     codexModels: normalizeCodexModels(config.codexModels, codexModel, restrictedCodexModel)
   };
 }
@@ -192,6 +203,7 @@ function compactObject(value) {
 }
 
 module.exports = {
+  LEGACY_CODEX_MODEL_REPLACEMENTS,
   UCSD,
   getManagedConfig,
   resetManagedConfigForTests

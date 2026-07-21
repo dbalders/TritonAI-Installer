@@ -256,8 +256,11 @@ function assertManagedModelDefaultsUseApiDeepSeek() {
     "text",
     "image"
   ]);
-  assert.strictEqual(UCSD.codexModels["gpt-5.5"].name, "GPT-5.5");
+  assert.strictEqual(UCSD.codexModels["gpt-5.6-luna"].name, "GPT-5.6 Luna");
+  assert.strictEqual(UCSD.codexModels["gpt-5.6-sol"].name, "GPT-5.6 Sol");
+  assert.strictEqual(UCSD.codexModels["gpt-5.6-terra"].name, "GPT-5.6 Terra");
   assert.strictEqual(UCSD.codexModels["claude-opus-4-8"].name, "Claude Opus 4.8");
+  assert.strictEqual(UCSD.externalModelProbe, "gpt-5.6-sol");
   assert(!UCSD.codexModel.includes("max"), "managed default should not use the Max model");
 }
 
@@ -293,7 +296,7 @@ function assertManagedConfigPrefersPackagedEndpoint() {
     fs.writeFileSync(configPath, JSON.stringify({
       baseUrl: "https://packaged.example.invalid/v1",
       codexModels: {
-        "gpt-5.5": { id: "gpt-5.5", name: "GPT-5.5" }
+        "gpt-5.6-sol": { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" }
       }
     }));
     resetManagedConfigForTests();
@@ -304,10 +307,10 @@ function assertManagedConfigPrefersPackagedEndpoint() {
 
     fs.writeFileSync(configPath, JSON.stringify({
       baseUrl: "https://packaged.example.invalid/v1",
-      codexModel: "gpt-5.5",
+      codexModel: "gpt-5.6-sol",
       restrictedCodexModel: "api-deepseek-v4-flash",
       codexModels: {
-        "gpt-5.5": { id: "gpt-5.5", name: "GPT-5.5" }
+        "gpt-5.6-sol": { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" }
       }
     }));
     resetManagedConfigForTests();
@@ -318,13 +321,13 @@ function assertManagedConfigPrefersPackagedEndpoint() {
 
     fs.writeFileSync(configPath, JSON.stringify({
       baseUrl: "https://packaged.example.invalid/v1",
-      codexModel: "gpt-5.5"
+      codexModel: "gpt-5.6-sol"
     }));
     resetManagedConfigForTests();
-    assert.strictEqual(UCSD.codexModel, "gpt-5.5");
+    assert.strictEqual(UCSD.codexModel, "gpt-5.6-sol");
     assert.strictEqual(
-      UCSD.codexModels["gpt-5.5"].name,
-      "GPT-5.5",
+      UCSD.codexModels["gpt-5.6-sol"].name,
+      "GPT-5.6 Sol",
       "a packaged default that is already in the catalog must retain its display name"
     );
   } finally {
@@ -350,7 +353,7 @@ async function assertExternalDefaultRespectsCapabilityProbe() {
   const originalRestrictedCodexModel = process.env.UCSD_RESTRICTED_CODEX_MODEL;
 
   process.env.UCSD_ALLOW_MANAGED_CONFIG_ENV = "1";
-  process.env.UCSD_CODEX_MODEL = "gpt-5.5";
+  process.env.UCSD_CODEX_MODEL = "gpt-5.6-sol";
   process.env.UCSD_RESTRICTED_CODEX_MODEL = "api-deepseek-v4-flash";
   resetManagedConfigForTests();
 
@@ -1263,13 +1266,24 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       const paths = getPaths(tempRoot, process.platform);
       paths.externalModelsEnabled = externalModelsEnabled;
       writeT3CodeSettings(paths);
+      const settings = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
+      settings.providerInstances["codex-work"] = {
+        driver: "codex",
+        config: { customModels: settings.providerInstances.codex.config.customModels }
+      };
+      fs.writeFileSync(paths.t3Settings, JSON.stringify(settings));
       const stateDbPath = path.join(path.dirname(paths.t3Settings), "state.sqlite");
       fs.mkdirSync(path.dirname(stateDbPath), { recursive: true });
 
       const db = new DatabaseSync(stateDbPath);
       db.exec("CREATE TABLE projection_threads (model_selection_json TEXT)");
+      const legacySelection = {
+        instanceId: "codex-work",
+        model: "gpt-5.5",
+        options: [{ id: "reasoningEffort", value: "high" }]
+      };
       db.prepare("INSERT INTO projection_threads (model_selection_json) VALUES (?)").run(
-        JSON.stringify({ instanceId: "codex", model: "gpt-5.5" })
+        JSON.stringify(legacySelection)
       );
       db.close();
 
@@ -1281,8 +1295,8 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       );
       patched.close();
       assert.deepStrictEqual(selection, {
-        instanceId: "codex",
-        model: externalModelsEnabled ? "gpt-5.5" : UCSD.restrictedCodexModel
+        ...legacySelection,
+        model: externalModelsEnabled ? "gpt-5.6-sol" : UCSD.restrictedCodexModel
       });
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1328,7 +1342,9 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
       "api-deepseek-v4-flash",
       "api-glm-5.2",
       "api-gemma-4-31b",
-      "gpt-5.5",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
       "claude-opus-4-8"
     ]);
     assert(!customModels.includes("ucsd/retired-model-from-provider"));
