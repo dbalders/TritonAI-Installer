@@ -47,6 +47,7 @@ flowchart TD
 ## UCSD Managed Defaults
 
 - Base URL: configured at package time through `UCSD_AI_BASE_URL`.
+- Access-key help: defaults to the official TritonAI Developer API Get Started page and can be overridden at package time through `UCSD_AI_DOCS_URL`.
 - Shared API env: `TRITONAI_API_KEY`
 - Codex/TritonAI Harness default: `api-deepseek-v4-flash`
 - Codex/TritonAI Harness models: every valid key receives `DeepSeek v4 Flash`; keys that pass the single `GPT-5.6 Sol` external-model probe also receive `GPT-5.6 Luna`, `GPT-5.6 Sol`, `GPT-5.6 Terra`, and `Claude Opus 4.8`. Existing `GPT-5.5` selections migrate to `GPT-5.6 Sol`, or to the restricted default when the key does not have frontier access.
