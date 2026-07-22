@@ -57,6 +57,10 @@ const {
 } = require("../src/installer/installer-version-marker");
 const { version: packageInstallerVersion } = require(path.join(root, "package.json"));
 const { UCSD, resetManagedConfigForTests } = require("../src/installer/constants");
+const {
+  DEFAULT_API_DOCS_URL,
+  createManagedConfig
+} = require("./write-managed-config");
 
 function simulateWindowsAcl(file, action, content) {
   if (action === "create") fs.writeFileSync(file, content, { flag: "wx", mode: 0o600 });
@@ -115,6 +119,7 @@ function assertIncludesPath(content, expectedPath) {
 }
 
 async function main() {
+  assertManagedConfigIncludesAccessRequestUrl();
   assertManagedConfigPrefersPackagedEndpoint();
   assertManagedModelDefaultsUseApiDeepSeek();
   await assertExistingApiKeyLookup();
@@ -172,6 +177,30 @@ async function main() {
     });
   }
   console.log("Clean install dry run passed.");
+}
+
+function assertManagedConfigIncludesAccessRequestUrl() {
+  const defaultConfig = createManagedConfig({
+    UCSD_AI_BASE_URL: "https://packaged.example.invalid/v1"
+  });
+  assert.strictEqual(defaultConfig.apiDocsUrl, DEFAULT_API_DOCS_URL);
+
+  const overrideConfig = createManagedConfig({
+    UCSD_AI_BASE_URL: "https://packaged.example.invalid/v1",
+    UCSD_AI_DOCS_URL: "https://docs.example.invalid/request-access/"
+  });
+  assert.strictEqual(
+    overrideConfig.apiDocsUrl,
+    "https://docs.example.invalid/request-access"
+  );
+
+  assert.throws(
+    () => createManagedConfig({
+      UCSD_AI_BASE_URL: "https://packaged.example.invalid/v1",
+      UCSD_AI_DOCS_URL: "not a URL"
+    }),
+    /UCSD_AI_DOCS_URL must be a valid URL/
+  );
 }
 
 async function assertEnvironmentIsHarnessScoped() {
