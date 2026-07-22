@@ -7,6 +7,7 @@ const { getInstallPreview } = require("./installer/tool-manifest");
 const { UCSD } = require("./installer/constants");
 const { findExistingApiKey } = require("./installer/existing-api-key");
 const { readPluginCompositionRequirement } = require("./installer/plugins");
+const { openUrlInDefaultBrowser } = require("./external-browser");
 
 const INSTALLER_DMG_VOLUME_TITLE = "Double-click to Install";
 let installCompleted = false;
@@ -48,10 +49,10 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("installer:open-docs", async (_event, url: string) => {
-    if (!url) {
-      throw new Error("No TritonAI access documentation URL is configured for this build.");
-    }
-    await shell.openExternal(url);
+    await openUrlInDefaultBrowser(url, {
+      platform: process.platform,
+      openExternal: (target) => shell.openExternal(target)
+    });
   });
 
   ipcMain.handle("installer:start", async (event, payload: InstallPayload) => {
