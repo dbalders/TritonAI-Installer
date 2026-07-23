@@ -10,7 +10,7 @@ const { CODEX_CLI_VERSION } = require("../src/installer/npm-policy");
 const { runInstall } = require("../src/installer/runner");
 const { writeInstallerVersionMarker } = require("../src/installer/installer-version-marker");
 const { buildWindowsEnvironmentLines, powerShellLiteral } = require("../src/installer/profile");
-const { installWindowsDesktop } = require("../src/installer/t3code-desktop");
+const { installWindowsDesktop, runWindowsInstaller } = require("../src/installer/t3code-desktop");
 
 function simulateWindowsAcl(file, action, content) {
   if (action === "create") fs.writeFileSync(file, content, { flag: "wx", mode: 0o600 });
@@ -19,6 +19,8 @@ function simulateWindowsAcl(file, action, content) {
 async function main() {
   await assertExistingInstallIsUpgraded();
   await assertInstallerFailureIsNotMasked();
+  await assertNonzeroInstallerExitIsNotRetried();
+  await assertPermissionFailureUsesPowerShellFallback();
   await assertNoOpWithOldExecutableIsRejected();
   await assertMatchingVersionNoOpIsRejected();
   await assertPackagedInstallerRequiresBundledHarness();
@@ -141,6 +143,49 @@ async function assertInstallerFailureIsNotMasked() {
       /simulated NSIS failure/
     );
   });
+}
+
+async function assertNonzeroInstallerExitIsNotRetried() {
+  const calls = [];
+  const failure = new Error("Harness installer exited with code 2");
+
+  await assert.rejects(
+    runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+      platform: "win32",
+      run: async (command) => {
+        calls.push(command);
+        throw failure;
+      },
+      runPowerShell: async () => {
+        calls.push("powershell.exe");
+      }
+    }),
+    (error) => error === failure
+  );
+
+  assert.deepStrictEqual(calls, ["harness-installer.exe"], "a real NSIS failure must not launch a second installer");
+}
+
+async function assertPermissionFailureUsesPowerShellFallback() {
+  const calls = [];
+  const permissionFailure = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+
+  await runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+    platform: "win32",
+    run: async (command) => {
+      calls.push(command);
+      throw permissionFailure;
+    },
+    runPowerShell: async () => {
+      calls.push("powershell.exe");
+    }
+  });
+
+  assert.deepStrictEqual(
+    calls,
+    ["harness-installer.exe", "powershell.exe"],
+    "a spawn permission failure should still use the PowerShell launch fallback"
+  );
 }
 
 async function assertNoOpWithOldExecutableIsRejected() {
