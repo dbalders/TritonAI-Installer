@@ -1,6 +1,6 @@
 {
   "name": "tritonai-installer",
-  "version": "0.2.7",
+  "version": "0.3.0",
   "description": "Cross-platform installer for TritonAI-managed UCSD coding tools.",
   "main": "dist/src/main.js",
   "scripts": {
