@@ -58,6 +58,12 @@ interface WindowsInstallRuntime {
   finishWindowsInstall?: typeof finishWindowsInstall;
 }
 
+interface WindowsInstallerCommandRuntime {
+  platform?: NodeJS.Platform;
+  run?: typeof run;
+  runPowerShell?: typeof runPowerShell;
+}
+
 interface MacLauncherOptions {
   launcherPath?: string;
 }
@@ -626,26 +632,35 @@ Write-Output $shortcutPath
 `;
 }
 
-async function runWindowsInstaller(installerPath, args, emit, env) {
-  if (process.platform !== "win32") {
-    await run(installerPath, args, emit, { env, shell: false });
+async function runWindowsInstaller(
+  installerPath,
+  args,
+  emit,
+  env,
+  commandRuntime: WindowsInstallerCommandRuntime = {}
+) {
+  const platform = commandRuntime.platform || process.platform;
+  const commandRunner = commandRuntime.run || run;
+  const powerShellRunner = commandRuntime.runPowerShell || runPowerShell;
+
+  if (platform !== "win32") {
+    await commandRunner(installerPath, args, emit, { env, shell: false });
     return;
   }
 
   try {
-    await run(installerPath, args, emit, { env, shell: false });
+    await commandRunner(installerPath, args, emit, { env, shell: false });
     return;
   } catch (error) {
     if (!isPermissionError(error)) {
-      emit(`Direct ${TRITONAI_APP_DISPLAY_NAME} installer launch failed: ${error.message}`);
-    } else {
-      emit(`Direct ${TRITONAI_APP_DISPLAY_NAME} installer launch was blocked by Windows (${error.code || "permission denied"}).`);
+      throw error;
     }
+    emit(`Direct ${TRITONAI_APP_DISPLAY_NAME} installer launch was blocked by Windows (${error.code || "permission denied"}).`);
   }
 
   const argumentList = args.join(" ");
   try {
-    await runPowerShell([
+    await powerShellRunner([
       `$process = Start-Process -FilePath '${escapePowerShellSingleQuoted(installerPath)}'`,
       `-ArgumentList '${escapePowerShellSingleQuoted(argumentList)}'`,
       "-Wait -PassThru;",
@@ -657,7 +672,7 @@ async function runWindowsInstaller(installerPath, args, emit, env) {
     emit(`PowerShell ${TRITONAI_APP_DISPLAY_NAME} installer launch failed: ${powershellError.message}`);
   }
 
-  await run("cmd.exe", [
+  await commandRunner("cmd.exe", [
     "/d",
     "/s",
     "/c",
@@ -1093,5 +1108,6 @@ module.exports = {
   buildWindowsDesktopShortcutScript,
   findWindowsT3CodeApp,
   normalizeWindowsAppVersion,
-  getManagedMacAppPath
+  getManagedMacAppPath,
+  runWindowsInstaller
 };
