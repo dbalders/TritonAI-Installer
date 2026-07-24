@@ -29,6 +29,18 @@ const withInputModalities = (inputModalities) => ({
   ...TRITONAI_CODEX_MODEL_CAPABILITIES,
   inputModalities
 });
+const GLM_CODEX_MODEL_CAPABILITIES = {
+  inputModalities: ["text"],
+  optionDescriptors: [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [{ id: "high", label: "High", isDefault: true }],
+      currentValue: "high"
+    }
+  ]
+};
 const DEFAULT_CODEX_MODELS = {
   [DEFAULT_CODEX_MODEL]: {
     id: DEFAULT_CODEX_MODEL,
@@ -40,7 +52,7 @@ const DEFAULT_CODEX_MODELS = {
     id: "api-glm-5.2",
     name: "GLM 5.2",
     shortName: "GLM",
-    capabilities: withInputModalities(["text"]),
+    capabilities: GLM_CODEX_MODEL_CAPABILITIES,
     availableToRestrictedKeys: true
   },
   "api-gemma-4-31b": {
