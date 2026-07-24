@@ -10,7 +10,10 @@ const { CODEX_CLI_VERSION } = require("../src/installer/npm-policy");
 const { runInstall } = require("../src/installer/runner");
 const { writeInstallerVersionMarker } = require("../src/installer/installer-version-marker");
 const { buildWindowsEnvironmentLines, powerShellLiteral } = require("../src/installer/profile");
-const { installWindowsDesktop } = require("../src/installer/t3code-desktop");
+const {
+  cleanupStaleWindowsUpgradeBackup,
+  installWindowsDesktop
+} = require("../src/installer/t3code-desktop");
 
 function simulateWindowsAcl(file, action, content) {
   if (action === "create") fs.writeFileSync(file, content, { flag: "wx", mode: 0o600 });
@@ -18,6 +21,8 @@ function simulateWindowsAcl(file, action, content) {
 
 async function main() {
   await assertExistingInstallIsUpgraded();
+  await assertCompletedInstallRemovesStaleLongPathBackup();
+  await assertIncompleteInstallPreservesUpgradeBackup();
   await assertInstallerFailureIsNotMasked();
   await assertNoOpWithOldExecutableIsRejected();
   await assertMatchingVersionNoOpIsRejected();
@@ -28,6 +33,71 @@ async function main() {
   assertPowerShellEnvironmentUsesLiteralQuoting();
   assertNsisProcessDetectionContract();
   console.log("Windows upgrade contract tests passed.");
+}
+
+async function assertCompletedInstallRemovesStaleLongPathBackup() {
+  await withWindowsFixture(async (fixture) => {
+    const installDir = path.dirname(fixture.existingApp);
+    const backupDir = `${installDir}.old`;
+    fs.writeFileSync(path.join(installDir, ".tritonai-install-complete"), "0.2.0");
+
+    let residualDir = path.join(backupDir, "resources", "app.asar.unpacked", "node_modules");
+    while (path.join(residualDir, "residual-source-file.cpp").length <= 270) {
+      residualDir = path.join(residualDir, "react-native-long-path-segment");
+    }
+    fs.mkdirSync(residualDir, { recursive: true });
+    const residualFile = path.join(residualDir, "residual-source-file.cpp");
+    fs.writeFileSync(residualFile, "stale upgrade backup");
+    assert(residualFile.length > 260, "fixture must exercise an over-260-character path");
+
+    const events = [];
+    let currentVersion = "0.2.0";
+    let fingerprint = "old";
+    await installWindowsDesktop({
+      ...fixture.installOptions,
+      emit: (message) => events.push(message),
+      windowsInstallRuntime: {
+        unblockWindowsFile: async () => {},
+        runWindowsInstaller: async () => {
+          assert.strictEqual(
+            fs.existsSync(backupDir),
+            false,
+            "completed stale backup must be removed before launching NSIS"
+          );
+          currentVersion = "0.2.1";
+          fingerprint = "new";
+        },
+        waitForWindowsT3CodeApp: async () => fixture.existingApp,
+        readWindowsAppVersion: async () => currentVersion,
+        readWindowsAppFingerprint: async () => fingerprint,
+        finishWindowsInstall: async ({ appPath }) => ({ appPath, shortcutPath: `${appPath}.lnk` })
+      }
+    });
+
+    assert.strictEqual(fs.existsSync(backupDir), false);
+    assert(events.some((message) => message.includes("Removed completed TritonAI Harness upgrade backup.")));
+  });
+}
+
+async function assertIncompleteInstallPreservesUpgradeBackup() {
+  await withWindowsFixture(async (fixture) => {
+    const installDir = path.dirname(fixture.existingApp);
+    const backupDir = `${installDir}.old`;
+    fs.mkdirSync(backupDir, { recursive: true });
+    const recoveryFile = path.join(backupDir, "recovery.txt");
+    fs.writeFileSync(recoveryFile, "previous complete install");
+
+    assert.strictEqual(
+      cleanupStaleWindowsUpgradeBackup({
+        appPath: fixture.existingApp,
+        emit: () => {},
+        platform: "win32"
+      }),
+      false,
+      "backup must be preserved when the current installation has no completion marker"
+    );
+    assert.strictEqual(fs.readFileSync(recoveryFile, "utf8"), "previous complete install");
+  });
 }
 
 async function assertPackagedInstallerRequiresBundledHarness() {
