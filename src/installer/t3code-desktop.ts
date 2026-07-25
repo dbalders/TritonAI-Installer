@@ -36,6 +36,7 @@ const WIN_EXE_NAMES = [
 const WIN_INSTALL_DIR_NAMES = [
   "TritonAI Harness"
 ];
+const WIN_INSTALL_COMPLETE_MARKER = ".tritonai-install-complete";
 
 interface DesktopBundleOptions {
   arch?: NodeJS.Architecture;
@@ -56,12 +57,13 @@ interface WindowsInstallRuntime {
   readWindowsAppVersion?: typeof readWindowsAppVersion;
   readWindowsAppFingerprint?: typeof readWindowsAppFingerprint;
   finishWindowsInstall?: typeof finishWindowsInstall;
+  cleanupStaleWindowsUpgradeBackup?: typeof cleanupStaleWindowsUpgradeBackup;
 }
 
 interface WindowsInstallerCommandRuntime {
   platform?: NodeJS.Platform;
   run?: typeof run;
-  runPowerShell?: typeof runPowerShell;
+  runPowerShellCapture?: typeof runPowerShellCapture;
 }
 
 interface MacLauncherOptions {
@@ -327,7 +329,11 @@ async function installWindowsDesktop({
   const appWaiter = windowsRuntime.waitForWindowsT3CodeApp || waitForWindowsT3CodeApp;
   const versionReader = windowsRuntime.readWindowsAppVersion || readWindowsAppVersion;
   const installFinisher = windowsRuntime.finishWindowsInstall || finishWindowsInstall;
+  const upgradeBackupCleaner = windowsRuntime.cleanupStaleWindowsUpgradeBackup || cleanupStaleWindowsUpgradeBackup;
 
+  if (existingAppPath) {
+    upgradeBackupCleaner({ appPath: existingAppPath, emit });
+  }
   await unblock(installerPath, emit);
   emit(`Running ${TRITONAI_APP_DISPLAY_NAME} Windows installer...`);
   await installerRunner(installerPath, ["/S"], emit, env);
@@ -368,6 +374,47 @@ async function finishWindowsInstall({ paths, appPath, emit }) {
 
   emit(`${TRITONAI_LAUNCHER_NAME} launcher created.`);
   return { appPath, shortcutPath };
+}
+
+function cleanupStaleWindowsUpgradeBackup({
+  appPath,
+  emit = (_message: string) => {},
+  fsRuntime = fs,
+  platform = process.platform
+}) {
+  const installDir = path.dirname(appPath);
+  const completionMarker = path.join(installDir, WIN_INSTALL_COMPLETE_MARKER);
+  const backupDir = `${installDir}.old`;
+  if (!fsRuntime.existsSync(completionMarker) || !fsRuntime.existsSync(backupDir)) {
+    return false;
+  }
+
+  emit(`Removing completed ${TRITONAI_APP_DISPLAY_NAME} upgrade backup at ${backupDir}...`);
+  const removalTarget = platform === "win32" ? path.toNamespacedPath(backupDir) : backupDir;
+  try {
+    fsRuntime.rmSync(removalTarget, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 200
+    });
+  } catch (error) {
+    throw new Error(
+      `Could not remove the completed ${TRITONAI_APP_DISPLAY_NAME} upgrade backup at ${backupDir}. `
+      + `Restart Windows and run the installer again. ${error.message}`,
+      { cause: error }
+    );
+  }
+
+  if (fsRuntime.existsSync(backupDir)) {
+    throw new Error(
+      `Could not remove the completed ${TRITONAI_APP_DISPLAY_NAME} upgrade backup at ${backupDir}. `
+      + "Restart Windows and run the installer again."
+    );
+  }
+
+  emit(`Removed completed ${TRITONAI_APP_DISPLAY_NAME} upgrade backup.`);
+  return true;
 }
 
 function writeMacAppLauncher(paths, emit, arch, options: MacLauncherOptions = {}) {
@@ -641,7 +688,7 @@ async function runWindowsInstaller(
 ) {
   const platform = commandRuntime.platform || process.platform;
   const commandRunner = commandRuntime.run || run;
-  const powerShellRunner = commandRuntime.runPowerShell || runPowerShell;
+  const powerShellCaptureRunner = commandRuntime.runPowerShellCapture || runPowerShellCapture;
 
   if (platform !== "win32") {
     await commandRunner(installerPath, args, emit, { env, shell: false });
@@ -659,25 +706,41 @@ async function runWindowsInstaller(
   }
 
   const argumentList = args.join(" ");
+  let powerShellOutput;
   try {
-    await powerShellRunner([
+    powerShellOutput = await powerShellCaptureRunner([
+      "$ErrorActionPreference = 'Stop';",
       `$process = Start-Process -FilePath '${escapePowerShellSingleQuoted(installerPath)}'`,
-      `-ArgumentList '${escapePowerShellSingleQuoted(argumentList)}'`,
-      "-Wait -PassThru;",
-      `Write-Output "${TRITONAI_APP_DISPLAY_NAME} installer exit code: $($process.ExitCode)";`,
-      "exit $process.ExitCode"
+      `  -ArgumentList '${escapePowerShellSingleQuoted(argumentList)}'`,
+      "  -Wait -PassThru;",
+      'Write-Output "TRITONAI_INSTALLER_EXIT_CODE=$($process.ExitCode)"'
     ].join(" "), emit, { env });
-    return;
   } catch (powershellError) {
-    emit(`PowerShell ${TRITONAI_APP_DISPLAY_NAME} installer launch failed: ${powershellError.message}`);
+    if (!isPermissionError(powershellError)) {
+      throw powershellError;
+    }
+    emit(`PowerShell ${TRITONAI_APP_DISPLAY_NAME} installer launch was blocked by Windows (${powershellError.code || "permission denied"}).`);
+    await commandRunner("cmd.exe", [
+      "/d",
+      "/s",
+      "/c",
+      `start "" /wait "${installerPath}" ${args.join(" ")}`
+    ], emit, { env, shell: false });
+    return;
   }
 
-  await commandRunner("cmd.exe", [
-    "/d",
-    "/s",
-    "/c",
-    `start "" /wait "${installerPath}" ${args.join(" ")}`
-  ], emit, { env, shell: false });
+  const exitCodeMatch = /(?:^|\r?\n)TRITONAI_INSTALLER_EXIT_CODE=(-?\d+)(?:\r?\n|$)/.exec(powerShellOutput);
+  if (!exitCodeMatch) {
+    throw new Error(
+      `PowerShell launched the ${TRITONAI_APP_DISPLAY_NAME} installer but did not report an exit code; `
+      + "not retrying to avoid running the installer twice."
+    );
+  }
+
+  const exitCode = Number.parseInt(exitCodeMatch[1], 10);
+  if (exitCode !== 0) {
+    throw new Error(`${TRITONAI_APP_DISPLAY_NAME} installer exited with code ${exitCode}`);
+  }
 }
 
 async function readWindowsAppVersion(appPath, emit) {
@@ -1066,7 +1129,7 @@ function powerShellArgs(script) {
 
 function isPermissionError(error) {
   return ["EACCES", "EPERM"].includes(error && error.code)
-    || /EPERM|EACCES|permission denied/i.test(error && error.message);
+    || /EPERM|EACCES|permission denied|access is denied/i.test(error && error.message);
 }
 
 function escapeRegExp(value) {
@@ -1109,5 +1172,6 @@ module.exports = {
   findWindowsT3CodeApp,
   normalizeWindowsAppVersion,
   getManagedMacAppPath,
+  cleanupStaleWindowsUpgradeBackup,
   runWindowsInstaller
 };
