@@ -60,6 +60,12 @@ interface WindowsInstallRuntime {
   cleanupStaleWindowsUpgradeBackup?: typeof cleanupStaleWindowsUpgradeBackup;
 }
 
+interface WindowsInstallerCommandRuntime {
+  platform?: NodeJS.Platform;
+  run?: typeof run;
+  runPowerShellCapture?: typeof runPowerShellCapture;
+}
+
 interface MacLauncherOptions {
   launcherPath?: string;
 }
@@ -673,43 +679,68 @@ Write-Output $shortcutPath
 `;
 }
 
-async function runWindowsInstaller(installerPath, args, emit, env) {
-  if (process.platform !== "win32") {
-    await run(installerPath, args, emit, { env, shell: false });
+async function runWindowsInstaller(
+  installerPath,
+  args,
+  emit,
+  env,
+  commandRuntime: WindowsInstallerCommandRuntime = {}
+) {
+  const platform = commandRuntime.platform || process.platform;
+  const commandRunner = commandRuntime.run || run;
+  const powerShellCaptureRunner = commandRuntime.runPowerShellCapture || runPowerShellCapture;
+
+  if (platform !== "win32") {
+    await commandRunner(installerPath, args, emit, { env, shell: false });
     return;
   }
 
   try {
-    await run(installerPath, args, emit, { env, shell: false });
+    await commandRunner(installerPath, args, emit, { env, shell: false });
     return;
   } catch (error) {
     if (!isPermissionError(error)) {
-      emit(`Direct ${TRITONAI_APP_DISPLAY_NAME} installer launch failed: ${error.message}`);
-    } else {
-      emit(`Direct ${TRITONAI_APP_DISPLAY_NAME} installer launch was blocked by Windows (${error.code || "permission denied"}).`);
+      throw error;
     }
+    emit(`Direct ${TRITONAI_APP_DISPLAY_NAME} installer launch was blocked by Windows (${error.code || "permission denied"}).`);
   }
 
   const argumentList = args.join(" ");
+  let powerShellOutput;
   try {
-    await runPowerShell([
+    powerShellOutput = await powerShellCaptureRunner([
+      "$ErrorActionPreference = 'Stop';",
       `$process = Start-Process -FilePath '${escapePowerShellSingleQuoted(installerPath)}'`,
-      `-ArgumentList '${escapePowerShellSingleQuoted(argumentList)}'`,
-      "-Wait -PassThru;",
-      `Write-Output "${TRITONAI_APP_DISPLAY_NAME} installer exit code: $($process.ExitCode)";`,
-      "exit $process.ExitCode"
+      `  -ArgumentList '${escapePowerShellSingleQuoted(argumentList)}'`,
+      "  -Wait -PassThru;",
+      'Write-Output "TRITONAI_INSTALLER_EXIT_CODE=$($process.ExitCode)"'
     ].join(" "), emit, { env });
-    return;
   } catch (powershellError) {
-    emit(`PowerShell ${TRITONAI_APP_DISPLAY_NAME} installer launch failed: ${powershellError.message}`);
+    if (!isPermissionError(powershellError)) {
+      throw powershellError;
+    }
+    emit(`PowerShell ${TRITONAI_APP_DISPLAY_NAME} installer launch was blocked by Windows (${powershellError.code || "permission denied"}).`);
+    await commandRunner("cmd.exe", [
+      "/d",
+      "/s",
+      "/c",
+      `start "" /wait "${installerPath}" ${args.join(" ")}`
+    ], emit, { env, shell: false });
+    return;
   }
 
-  await run("cmd.exe", [
-    "/d",
-    "/s",
-    "/c",
-    `start "" /wait "${installerPath}" ${args.join(" ")}`
-  ], emit, { env, shell: false });
+  const exitCodeMatch = /(?:^|\r?\n)TRITONAI_INSTALLER_EXIT_CODE=(-?\d+)(?:\r?\n|$)/.exec(powerShellOutput);
+  if (!exitCodeMatch) {
+    throw new Error(
+      `PowerShell launched the ${TRITONAI_APP_DISPLAY_NAME} installer but did not report an exit code; `
+      + "not retrying to avoid running the installer twice."
+    );
+  }
+
+  const exitCode = Number.parseInt(exitCodeMatch[1], 10);
+  if (exitCode !== 0) {
+    throw new Error(`${TRITONAI_APP_DISPLAY_NAME} installer exited with code ${exitCode}`);
+  }
 }
 
 async function readWindowsAppVersion(appPath, emit) {
@@ -1098,7 +1129,7 @@ function powerShellArgs(script) {
 
 function isPermissionError(error) {
   return ["EACCES", "EPERM"].includes(error && error.code)
-    || /EPERM|EACCES|permission denied/i.test(error && error.message);
+    || /EPERM|EACCES|permission denied|access is denied/i.test(error && error.message);
 }
 
 function escapeRegExp(value) {
@@ -1141,5 +1172,6 @@ module.exports = {
   findWindowsT3CodeApp,
   normalizeWindowsAppVersion,
   getManagedMacAppPath,
-  cleanupStaleWindowsUpgradeBackup
+  cleanupStaleWindowsUpgradeBackup,
+  runWindowsInstaller
 };

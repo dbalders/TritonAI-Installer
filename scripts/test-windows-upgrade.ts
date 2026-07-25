@@ -12,7 +12,8 @@ const { writeInstallerVersionMarker } = require("../src/installer/installer-vers
 const { buildWindowsEnvironmentLines, powerShellLiteral } = require("../src/installer/profile");
 const {
   cleanupStaleWindowsUpgradeBackup,
-  installWindowsDesktop
+  installWindowsDesktop,
+  runWindowsInstaller
 } = require("../src/installer/t3code-desktop");
 
 function simulateWindowsAcl(file, action, content) {
@@ -24,6 +25,15 @@ async function main() {
   await assertCompletedInstallRemovesStaleLongPathBackup();
   await assertIncompleteInstallPreservesUpgradeBackup();
   await assertInstallerFailureIsNotMasked();
+  await assertNonzeroInstallerExitIsNotRetried();
+  await assertPermissionFailureUsesPowerShellFallback();
+  await assertPowerShellInstallerFailureIsNotRetried();
+  await assertPowerShellLaunchPermissionFailureUsesCmdFallback();
+  await assertPowerShellExecutionFailureIsNotRetried();
+  await assertMissingPowerShellExitCodeIsNotRetried();
+  if (process.platform === "win32") {
+    await assertRealPowerShellInstallerFailureIsNotRetried();
+  }
   await assertNoOpWithOldExecutableIsRejected();
   await assertMatchingVersionNoOpIsRejected();
   await assertPackagedInstallerRequiresBundledHarness();
@@ -211,6 +221,182 @@ async function assertInstallerFailureIsNotMasked() {
       /simulated NSIS failure/
     );
   });
+}
+
+async function assertNonzeroInstallerExitIsNotRetried() {
+  const calls = [];
+  const failure = new Error("Harness installer exited with code 2");
+
+  await assert.rejects(
+    runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+      platform: "win32",
+      run: async (command) => {
+        calls.push(command);
+        throw failure;
+      },
+      runPowerShellCapture: async () => {
+        calls.push("powershell.exe");
+        return "TRITONAI_INSTALLER_EXIT_CODE=0";
+      }
+    }),
+    (error) => error === failure
+  );
+
+  assert.deepStrictEqual(calls, ["harness-installer.exe"], "a real NSIS failure must not launch a second installer");
+}
+
+async function assertPermissionFailureUsesPowerShellFallback() {
+  const calls = [];
+  const permissionFailure = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+
+  await runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+    platform: "win32",
+    run: async (command) => {
+      calls.push(command);
+      throw permissionFailure;
+    },
+    runPowerShellCapture: async () => {
+      calls.push("powershell.exe");
+      return "TRITONAI_INSTALLER_EXIT_CODE=0";
+    }
+  });
+
+  assert.deepStrictEqual(
+    calls,
+    ["harness-installer.exe", "powershell.exe"],
+    "a spawn permission failure should still use the PowerShell launch fallback"
+  );
+}
+
+async function assertPowerShellInstallerFailureIsNotRetried() {
+  const calls = [];
+  const permissionFailure = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+
+  await assert.rejects(
+    runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+      platform: "win32",
+      run: async (command) => {
+        calls.push(command);
+        throw permissionFailure;
+      },
+      runPowerShellCapture: async () => {
+        calls.push("powershell.exe");
+        return "TRITONAI_INSTALLER_EXIT_CODE=2";
+      }
+    }),
+    /TritonAI Harness installer exited with code 2/
+  );
+
+  assert.deepStrictEqual(
+    calls,
+    ["harness-installer.exe", "powershell.exe"],
+    "a nonzero installer exit through PowerShell must not launch cmd.exe"
+  );
+}
+
+async function assertPowerShellLaunchPermissionFailureUsesCmdFallback() {
+  const calls = [];
+  const permissionFailure = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+
+  await runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+    platform: "win32",
+    run: async (command) => {
+      calls.push(command);
+      if (command !== "cmd.exe") throw permissionFailure;
+    },
+    runPowerShellCapture: async () => {
+      calls.push("powershell.exe");
+      throw new Error("Start-Process failed: Access is denied");
+    }
+  });
+
+  assert.deepStrictEqual(
+    calls,
+    ["harness-installer.exe", "powershell.exe", "cmd.exe"],
+    "cmd.exe should remain available when PowerShell cannot launch the installer"
+  );
+}
+
+async function assertPowerShellExecutionFailureIsNotRetried() {
+  const calls = [];
+  const permissionFailure = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+  const powerShellFailure = new Error("PowerShell script failed");
+
+  await assert.rejects(
+    runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+      platform: "win32",
+      run: async (command) => {
+        calls.push(command);
+        throw permissionFailure;
+      },
+      runPowerShellCapture: async () => {
+        calls.push("powershell.exe");
+        throw powerShellFailure;
+      }
+    }),
+    (error) => error === powerShellFailure
+  );
+
+  assert.deepStrictEqual(
+    calls,
+    ["harness-installer.exe", "powershell.exe"],
+    "an ambiguous PowerShell failure must propagate instead of launching cmd.exe"
+  );
+}
+
+async function assertMissingPowerShellExitCodeIsNotRetried() {
+  const calls = [];
+  const permissionFailure = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+
+  await assert.rejects(
+    runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+      platform: "win32",
+      run: async (command) => {
+        calls.push(command);
+        throw permissionFailure;
+      },
+      runPowerShellCapture: async () => {
+        calls.push("powershell.exe");
+        return "PowerShell completed without an installer status";
+      }
+    }),
+    /did not report an exit code/
+  );
+
+  assert.deepStrictEqual(
+    calls,
+    ["harness-installer.exe", "powershell.exe"],
+    "ambiguous PowerShell completion must fail closed instead of launching cmd.exe"
+  );
+}
+
+async function assertRealPowerShellInstallerFailureIsNotRetried() {
+  const calls = [];
+  const permissionFailure = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+
+  await assert.rejects(
+    runWindowsInstaller(
+      "powershell.exe",
+      ["-NoProfile", "-Command", "exit 2"],
+      () => {},
+      {},
+      {
+        platform: "win32",
+        run: async (command) => {
+          calls.push(command);
+          if (command === "powershell.exe") throw permissionFailure;
+          throw new Error(`unexpected fallback command: ${command}`);
+        }
+      }
+    ),
+    /TritonAI Harness installer exited with code 2/
+  );
+
+  assert.deepStrictEqual(
+    calls,
+    ["powershell.exe"],
+    "a real child exit through PowerShell must propagate without invoking cmd.exe"
+  );
 }
 
 async function assertNoOpWithOldExecutableIsRejected() {
