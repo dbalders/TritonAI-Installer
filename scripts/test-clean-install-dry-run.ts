@@ -278,6 +278,15 @@ function assertManagedModelDefaultsUseApiDeepSeek() {
   assert.strictEqual(UCSD.codexModels["api-glm-5.2"].availableToRestrictedKeys, true);
   assert.deepStrictEqual(UCSD.codexModels[UCSD.codexModel].capabilities.inputModalities, ["text"]);
   assert.deepStrictEqual(UCSD.codexModels["api-glm-5.2"].capabilities.inputModalities, ["text"]);
+  assert.deepStrictEqual(UCSD.codexModels["api-glm-5.2"].capabilities.optionDescriptors, [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [{ id: "high", label: "High", isDefault: true }],
+      currentValue: "high"
+    }
+  ]);
   assert.strictEqual(UCSD.codexModels["api-gemma-4-31b"].name, "Gemma 4 31B");
   assert.strictEqual(UCSD.codexModels["api-gemma-4-31b"].shortName, "Gemma");
   assert.strictEqual(UCSD.codexModels["api-gemma-4-31b"].availableToRestrictedKeys, true);
