@@ -36,6 +36,7 @@ const WIN_EXE_NAMES = [
 const WIN_INSTALL_DIR_NAMES = [
   "TritonAI Harness"
 ];
+const WIN_INSTALL_COMPLETE_MARKER = ".tritonai-install-complete";
 
 interface DesktopBundleOptions {
   arch?: NodeJS.Architecture;
@@ -56,6 +57,7 @@ interface WindowsInstallRuntime {
   readWindowsAppVersion?: typeof readWindowsAppVersion;
   readWindowsAppFingerprint?: typeof readWindowsAppFingerprint;
   finishWindowsInstall?: typeof finishWindowsInstall;
+  cleanupStaleWindowsUpgradeBackup?: typeof cleanupStaleWindowsUpgradeBackup;
 }
 
 interface MacLauncherOptions {
@@ -321,7 +323,11 @@ async function installWindowsDesktop({
   const appWaiter = windowsRuntime.waitForWindowsT3CodeApp || waitForWindowsT3CodeApp;
   const versionReader = windowsRuntime.readWindowsAppVersion || readWindowsAppVersion;
   const installFinisher = windowsRuntime.finishWindowsInstall || finishWindowsInstall;
+  const upgradeBackupCleaner = windowsRuntime.cleanupStaleWindowsUpgradeBackup || cleanupStaleWindowsUpgradeBackup;
 
+  if (existingAppPath) {
+    upgradeBackupCleaner({ appPath: existingAppPath, emit });
+  }
   await unblock(installerPath, emit);
   emit(`Running ${TRITONAI_APP_DISPLAY_NAME} Windows installer...`);
   await installerRunner(installerPath, ["/S"], emit, env);
@@ -362,6 +368,47 @@ async function finishWindowsInstall({ paths, appPath, emit }) {
 
   emit(`${TRITONAI_LAUNCHER_NAME} launcher created.`);
   return { appPath, shortcutPath };
+}
+
+function cleanupStaleWindowsUpgradeBackup({
+  appPath,
+  emit = (_message: string) => {},
+  fsRuntime = fs,
+  platform = process.platform
+}) {
+  const installDir = path.dirname(appPath);
+  const completionMarker = path.join(installDir, WIN_INSTALL_COMPLETE_MARKER);
+  const backupDir = `${installDir}.old`;
+  if (!fsRuntime.existsSync(completionMarker) || !fsRuntime.existsSync(backupDir)) {
+    return false;
+  }
+
+  emit(`Removing completed ${TRITONAI_APP_DISPLAY_NAME} upgrade backup at ${backupDir}...`);
+  const removalTarget = platform === "win32" ? path.toNamespacedPath(backupDir) : backupDir;
+  try {
+    fsRuntime.rmSync(removalTarget, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 200
+    });
+  } catch (error) {
+    throw new Error(
+      `Could not remove the completed ${TRITONAI_APP_DISPLAY_NAME} upgrade backup at ${backupDir}. `
+      + `Restart Windows and run the installer again. ${error.message}`,
+      { cause: error }
+    );
+  }
+
+  if (fsRuntime.existsSync(backupDir)) {
+    throw new Error(
+      `Could not remove the completed ${TRITONAI_APP_DISPLAY_NAME} upgrade backup at ${backupDir}. `
+      + "Restart Windows and run the installer again."
+    );
+  }
+
+  emit(`Removed completed ${TRITONAI_APP_DISPLAY_NAME} upgrade backup.`);
+  return true;
 }
 
 function writeMacAppLauncher(paths, emit, arch, options: MacLauncherOptions = {}) {
@@ -1093,5 +1140,6 @@ module.exports = {
   buildWindowsDesktopShortcutScript,
   findWindowsT3CodeApp,
   normalizeWindowsAppVersion,
-  getManagedMacAppPath
+  getManagedMacAppPath,
+  cleanupStaleWindowsUpgradeBackup
 };
