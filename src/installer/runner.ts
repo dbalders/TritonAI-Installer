@@ -104,32 +104,35 @@ async function runInstall(payload, runtime) {
     const tool = getTool("t3code");
     await ensureCodexCliForT3({ apiKey, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
 
+    const desktopInstaller = runtime.installT3CodeDesktop || installT3CodeDesktop;
+    const installDesktop = async () => {
+      diagnostics.setStep("shortcut");
+      emit("Installing TritonAI Harness desktop app...");
+      const result = await installOptionalDesktopApp({
+        desktopInstaller,
+        paths,
+        platform,
+        arch,
+        emit,
+        resourcesPath: runtime.resourcesPath,
+        appRoot: runtime.appRoot,
+        packaged: runtime.packaged,
+        env: buildEnv(apiKey, paths, nodeRuntime, platform)
+      });
+      recordDesktopAppResult(desktopApps, result);
+    };
+
+    if (platform === "win32") {
+      await installDesktop();
+      diagnostics.setStep("tools");
+    }
+
     emit(`Configuring ${tool.name} for UCSD routing...`);
     configWriters[tool.configWriter](paths);
     await runT3DefaultsPatcher({ apiKey, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
 
-    diagnostics.setStep("shortcut");
-    const desktopInstaller = runtime.installT3CodeDesktop || installT3CodeDesktop;
-    emit("Installing TritonAI Harness desktop app...");
-    const result = await installOptionalDesktopApp({
-      desktopInstaller,
-      paths,
-      platform,
-      arch,
-      emit,
-      resourcesPath: runtime.resourcesPath,
-      appRoot: runtime.appRoot,
-      packaged: runtime.packaged,
-      env: buildEnv(apiKey, paths, nodeRuntime, platform)
-    });
-    if (result && result.appPath) {
-      desktopApps.t3code = result.appPath;
-    }
-    if (result && result.shortcutPath) {
-      desktopApps.t3codeShortcut = result.shortcutPath;
-    }
-    if (result && result.launcherPath) {
-      desktopApps.t3codeLauncher = result.launcherPath;
+    if (platform !== "win32") {
+      await installDesktop();
     }
 
     diagnostics.setStep("verify");
@@ -184,6 +187,18 @@ async function runInstall(payload, runtime) {
     error.diagnostics = diagnosticsInfo;
     if (runtime.onDiagnostics) runtime.onDiagnostics(diagnosticsInfo);
     throw error;
+  }
+}
+
+function recordDesktopAppResult(desktopApps, result) {
+  if (result && result.appPath) {
+    desktopApps.t3code = result.appPath;
+  }
+  if (result && result.shortcutPath) {
+    desktopApps.t3codeShortcut = result.shortcutPath;
+  }
+  if (result && result.launcherPath) {
+    desktopApps.t3codeLauncher = result.launcherPath;
   }
 }
 

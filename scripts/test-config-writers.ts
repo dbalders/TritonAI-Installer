@@ -9,6 +9,7 @@ const { getPaths } = require("../src/installer/paths");
 const {
   __test: {
     commitManagedSettingsUpdates,
+    managedSettingsPowerShellCommand,
     prepareManagedSettingsUpdates,
     secureManagedSettingsFile,
     verifyPrivateManagedSettingsAccess
@@ -725,6 +726,14 @@ function assertWindowsOwnershipAndAclFailureBehavior() {
   }
 }
 
+function assertWindowsPowerShellErrorsArePlainText() {
+  const script = managedSettingsPowerShellCommand("verify");
+  assert(script.includes('$ProgressPreference = "SilentlyContinue"'));
+  assert(script.includes("[Console]::Error.WriteLine($message)"));
+  assert(script.includes("exit 1"));
+  assert(script.includes("Managed settings DACL still inherits access rules."));
+}
+
 function assertWindowsDaclCoversReplacementAndBackup() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-windows-acl-"));
   try {
@@ -785,6 +794,7 @@ function main() {
   assertUnsafePosixOwnershipFailsClosed();
   assertPosixVerificationRejectsSymlinks();
   assertWindowsOwnershipAndAclFailureBehavior();
+  assertWindowsPowerShellErrorsArePlainText();
   assertWindowsDaclCoversReplacementAndBackup();
   console.log("Config writer preservation tests passed.");
 }
