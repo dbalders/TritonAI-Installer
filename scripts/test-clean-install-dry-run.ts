@@ -81,7 +81,7 @@ const {
 
 const EXPECTED_CODEX_MODELS = Object.keys(UCSD.codexModels);
 const EXPECTED_RESTRICTED_CODEX_MODELS = [
-  UCSD.restrictedCodexModel,
+  "api-deepseek-v4-flash",
   "api-glm-5.2",
   "api-gemma-4-31b"
 ];
@@ -121,7 +121,7 @@ function assertIncludesPath(content, expectedPath) {
 async function main() {
   assertManagedConfigIncludesAccessRequestUrl();
   assertManagedConfigPrefersPackagedEndpoint();
-  assertManagedModelDefaultsUseApiDeepSeek();
+  assertManagedModelDefaultsUseApiGlm();
   await assertExistingApiKeyLookup();
   assertOnboardingWorkspaceUsesHomeRoot();
   assertSkillsVendorStaging();
@@ -184,6 +184,8 @@ function assertManagedConfigIncludesAccessRequestUrl() {
     UCSD_AI_BASE_URL: "https://packaged.example.invalid/v1"
   });
   assert.strictEqual(defaultConfig.apiDocsUrl, DEFAULT_API_DOCS_URL);
+  assert.strictEqual(defaultConfig.codexModel, "api-glm-5.2");
+  assert.strictEqual(defaultConfig.restrictedCodexModel, "api-glm-5.2");
 
   const overrideConfig = createManagedConfig({
     UCSD_AI_BASE_URL: "https://packaged.example.invalid/v1",
@@ -267,12 +269,16 @@ async function assertEnvironmentIsHarnessScoped() {
   }
 }
 
-function assertManagedModelDefaultsUseApiDeepSeek() {
+function assertManagedModelDefaultsUseApiGlm() {
   resetManagedConfigForTests();
-  assert.strictEqual(UCSD.codexModel, "api-deepseek-v4-flash");
-  assert.strictEqual(UCSD.restrictedCodexModel, "api-deepseek-v4-flash");
-  assert.strictEqual(UCSD.codexModels[UCSD.codexModel].name, "DeepSeek v4 Flash");
-  assert.strictEqual(UCSD.codexModels[UCSD.codexModel].shortName, "DeepSeek");
+  assert.strictEqual(UCSD.codexModel, "api-glm-5.2");
+  assert.strictEqual(UCSD.restrictedCodexModel, "api-glm-5.2");
+  assert.strictEqual(UCSD.codexModels["api-deepseek-v4-flash"].name, "DeepSeek v4 Flash");
+  assert.strictEqual(UCSD.codexModels["api-deepseek-v4-flash"].shortName, "DeepSeek");
+  assert.strictEqual(
+    UCSD.codexModels["api-deepseek-v4-flash"].availableToRestrictedKeys,
+    true
+  );
   assert.strictEqual(UCSD.codexModels["api-glm-5.2"].name, "GLM 5.2");
   assert.strictEqual(UCSD.codexModels["api-glm-5.2"].shortName, "GLM");
   assert.strictEqual(UCSD.codexModels["api-glm-5.2"].availableToRestrictedKeys, true);
@@ -340,13 +346,13 @@ function assertManagedConfigPrefersPackagedEndpoint() {
     resetManagedConfigForTests();
     assert.throws(
       () => UCSD.codexModels,
-      /codexModels must include the configured default model: api-deepseek-v4-flash/
+      /codexModels must include the configured default model: api-glm-5.2/
     );
 
     fs.writeFileSync(configPath, JSON.stringify({
       baseUrl: "https://packaged.example.invalid/v1",
       codexModel: "gpt-5.6-sol",
-      restrictedCodexModel: "api-deepseek-v4-flash",
+      restrictedCodexModel: "api-glm-5.2",
       codexModels: {
         "gpt-5.6-sol": { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" }
       }
@@ -354,7 +360,7 @@ function assertManagedConfigPrefersPackagedEndpoint() {
     resetManagedConfigForTests();
     assert.throws(
       () => UCSD.codexModels,
-      /codexModels must include the configured restricted fallback model: api-deepseek-v4-flash/
+      /codexModels must include the configured restricted fallback model: api-glm-5.2/
     );
 
     fs.writeFileSync(configPath, JSON.stringify({

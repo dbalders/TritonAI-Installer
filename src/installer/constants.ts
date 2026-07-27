@@ -4,7 +4,7 @@ const { defaultAppRoot } = require("./app-root");
 
 const MANAGED_CONFIG_FILE = "managed-config.json";
 const DEFAULT_BASE_URL = "https://example.invalid/v1";
-const DEFAULT_RESTRICTED_CODEX_MODEL = "api-deepseek-v4-flash";
+const DEFAULT_RESTRICTED_CODEX_MODEL = "api-glm-5.2";
 const DEFAULT_CODEX_MODEL = DEFAULT_RESTRICTED_CODEX_MODEL;
 const LEGACY_CODEX_MODEL_REPLACEMENTS = {
   "gpt-5.5": "gpt-5.6-sol"
@@ -42,11 +42,12 @@ const GLM_CODEX_MODEL_CAPABILITIES = {
   ]
 };
 const DEFAULT_CODEX_MODELS = {
-  [DEFAULT_CODEX_MODEL]: {
-    id: DEFAULT_CODEX_MODEL,
+  "api-deepseek-v4-flash": {
+    id: "api-deepseek-v4-flash",
     name: "DeepSeek v4 Flash",
     shortName: "DeepSeek",
-    capabilities: withInputModalities(["text"])
+    capabilities: withInputModalities(["text"]),
+    availableToRestrictedKeys: true
   },
   "api-glm-5.2": {
     id: "api-glm-5.2",
