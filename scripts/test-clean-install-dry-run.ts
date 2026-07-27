@@ -1320,14 +1320,24 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       fs.mkdirSync(path.dirname(stateDbPath), { recursive: true });
 
       const db = new DatabaseSync(stateDbPath);
-      db.exec("CREATE TABLE projection_threads (model_selection_json TEXT)");
+      db.exec("CREATE TABLE projection_threads (thread_id TEXT PRIMARY KEY, model_selection_json TEXT)");
       const legacySelection = {
         instanceId: "codex-work",
         model: "gpt-5.5",
         options: [{ id: "reasoningEffort", value: "high" }]
       };
-      db.prepare("INSERT INTO projection_threads (model_selection_json) VALUES (?)").run(
+      const deepSeekSelection = {
+        instanceId: "codex-work",
+        model: "api-deepseek-v4-flash",
+        options: [{ id: "reasoningEffort", value: "high" }]
+      };
+      db.prepare("INSERT INTO projection_threads (thread_id, model_selection_json) VALUES (?, ?)").run(
+        "thread-legacy",
         JSON.stringify(legacySelection)
+      );
+      db.prepare("INSERT INTO projection_threads (thread_id, model_selection_json) VALUES (?, ?)").run(
+        "thread-deepseek",
+        JSON.stringify(deepSeekSelection)
       );
       db.close();
 
@@ -1335,13 +1345,25 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
 
       const patched = new DatabaseSync(stateDbPath);
       const selection = JSON.parse(
-        patched.prepare("SELECT model_selection_json FROM projection_threads").get().model_selection_json
+        patched.prepare(
+          "SELECT model_selection_json FROM projection_threads WHERE thread_id = ?"
+        ).get("thread-legacy").model_selection_json
+      );
+      const preservedDeepSeekSelection = JSON.parse(
+        patched.prepare(
+          "SELECT model_selection_json FROM projection_threads WHERE thread_id = ?"
+        ).get("thread-deepseek").model_selection_json
       );
       patched.close();
       assert.deepStrictEqual(selection, {
         ...legacySelection,
         model: externalModelsEnabled ? "gpt-5.6-sol" : UCSD.restrictedCodexModel
       });
+      assert.deepStrictEqual(
+        preservedDeepSeekSelection,
+        deepSeekSelection,
+        "upgrades must preserve an explicit DeepSeek selection"
+      );
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
