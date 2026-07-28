@@ -900,6 +900,11 @@ async function runDryRun(platform, options) {
         },
         installT3CodeDesktop: async (installOptions) => {
           assert.strictEqual(connectionChecks.length, 1, "TritonAI connection should be checked before desktop app install");
+          assert.strictEqual(
+            fs.existsSync(paths.t3Settings),
+            false,
+            `${installOptions.platform} must install or upgrade Harness before writing managed settings`
+          );
           t3CodeDesktopInstalls.push(installOptions);
           return {
             ...(installOptions.platform === "win32"
@@ -920,6 +925,13 @@ async function runDryRun(platform, options) {
           return CODEX_CLI_VERSION;
         },
         commandRunner: async (command, args, commandOptions) => {
+          if (args.includes(paths.t3DefaultsPatcher)) {
+            assert.strictEqual(
+              t3CodeDesktopInstalls.length,
+              1,
+              `${platform} must complete the Harness install before applying defaults`
+            );
+          }
           commands.push({ command, args, env: commandOptions.env, allowFailure: commandOptions.allowFailure });
           if (isNpmCommand({ command, args }, fakeRuntime)) {
             const npmModulesRoot = platform === "win32" ? "node_modules" : path.join("lib", "node_modules");

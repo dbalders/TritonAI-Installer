@@ -9,6 +9,7 @@ const { getPaths } = require("../src/installer/paths");
 const {
   __test: {
     commitManagedSettingsUpdates,
+    managedSettingsPowerShellCommand,
     prepareManagedSettingsUpdates,
     secureManagedSettingsFile,
     verifyPrivateManagedSettingsAccess
@@ -725,6 +726,37 @@ function assertWindowsOwnershipAndAclFailureBehavior() {
   }
 }
 
+function assertWindowsPowerShellErrorsArePlainText() {
+  const script = managedSettingsPowerShellCommand("verify");
+  assert(script.includes('$ProgressPreference = "SilentlyContinue"'));
+  assert(script.includes("[Console]::Error.WriteLine($message)"));
+  assert(script.includes("exit 1"));
+  assert(script.includes("Managed settings DACL still inherits access rules."));
+
+  if (process.platform !== "win32") return;
+
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-powershell-error-"));
+  try {
+    const settingsPath = path.join(tempRoot, "settings.json");
+    writeText(settingsPath, "{}\n");
+    makeWindowsSettingsPermissive(settingsPath);
+
+    let error;
+    try {
+      verifyPrivateManagedSettingsAccess(settingsPath, { platform: "win32" });
+      assert.fail("a permissive Windows settings DACL must fail verification");
+    } catch (caught) {
+      error = caught;
+    }
+
+    const message = String(error.message || error);
+    assert.match(message, /Managed settings DACL/);
+    assert.doesNotMatch(message, /CLIXML|<Objs|Preparing modules for first use/i);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 function assertWindowsDaclCoversReplacementAndBackup() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-settings-windows-acl-"));
   try {
@@ -785,6 +817,7 @@ function main() {
   assertUnsafePosixOwnershipFailsClosed();
   assertPosixVerificationRejectsSymlinks();
   assertWindowsOwnershipAndAclFailureBehavior();
+  assertWindowsPowerShellErrorsArePlainText();
   assertWindowsDaclCoversReplacementAndBackup();
   console.log("Config writer preservation tests passed.");
 }

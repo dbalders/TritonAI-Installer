@@ -104,10 +104,6 @@ async function runInstall(payload, runtime) {
     const tool = getTool("t3code");
     await ensureCodexCliForT3({ apiKey, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
 
-    emit(`Configuring ${tool.name} for UCSD routing...`);
-    configWriters[tool.configWriter](paths);
-    await runT3DefaultsPatcher({ apiKey, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
-
     diagnostics.setStep("shortcut");
     const desktopInstaller = runtime.installT3CodeDesktop || installT3CodeDesktop;
     emit("Installing TritonAI Harness desktop app...");
@@ -131,6 +127,11 @@ async function runInstall(payload, runtime) {
     if (result && result.launcherPath) {
       desktopApps.t3codeLauncher = result.launcherPath;
     }
+    diagnostics.setStep("tools");
+
+    emit(`Configuring ${tool.name} for UCSD routing...`);
+    configWriters[tool.configWriter](paths);
+    await runT3DefaultsPatcher({ apiKey, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
 
     diagnostics.setStep("verify");
     const diagnosticsInfo = diagnostics.writeSupportReport({

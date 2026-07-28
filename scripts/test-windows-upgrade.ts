@@ -38,6 +38,7 @@ async function main() {
   await assertMatchingVersionNoOpIsRejected();
   await assertPackagedInstallerRequiresBundledHarness();
   await assertNoOpWithholdsNewInstallerMarker();
+  await assertRunnerRetriesBeforeChangingManagedSettings();
   await assertEnvironmentMigrationWaitsForSuccessfulInstall();
   await assertPackagedMissingCodexFailsClosed();
   assertPowerShellEnvironmentUsesLiteralQuoting();
@@ -457,6 +458,126 @@ async function assertNoOpWithholdsNewInstallerMarker() {
 
     assert.strictEqual(markerCalled, false, "failed Harness updates must withhold the new Installer marker");
     assert.strictEqual(JSON.parse(fs.readFileSync(paths.installerVersionMarker, "utf8")).version, "0.2.0");
+  });
+}
+
+async function assertRunnerRetriesBeforeChangingManagedSettings() {
+  await withWindowsFixture(async (fixture) => {
+    const nodeRuntime = getNodeRuntimePaths(fixture.paths, "win32", "x64");
+    fs.mkdirSync(nodeRuntime.nodeBinDir, { recursive: true });
+    fs.writeFileSync(nodeRuntime.nodeBinary, "");
+    fs.writeFileSync(nodeRuntime.npmBinary, "");
+    fs.mkdirSync(path.dirname(nodeRuntime.npmCliJs), { recursive: true });
+    fs.writeFileSync(nodeRuntime.npmCliJs, "");
+    fs.mkdirSync(path.dirname(fixture.paths.t3Settings), { recursive: true });
+    fs.writeFileSync(fixture.paths.t3Settings, JSON.stringify({ preservedBeforeUpgrade: true }, null, 2));
+
+    const originalSettings = fs.readFileSync(fixture.paths.t3Settings, "utf8");
+    const order = [];
+    let installAttempts = 0;
+    let desktopInstallCompleted = false;
+    let settingsAccessCalls = 0;
+    let settingsFailurePending = true;
+    let defaultsRuns = 0;
+
+    const runtime = {
+      homeDir: fixture.homeDir,
+      platform: "win32",
+      arch: "x64",
+      installerVersion: "0.2.1",
+      appRoot: fixture.appRoot,
+      resourcesPath: null,
+      emit: () => {},
+      ensurePrerequisites: async () => nodeRuntime,
+      installBundledSkills: () => {},
+      saveEnvironment: async () => {},
+      checkTritonAiConnection: async () => ({ externalModelsEnabled: true }),
+      installBundledCodexCli: async () => true,
+      getCodexVersion: () => CODEX_CLI_VERSION,
+      writeManagedCodexLauncher: () => {},
+      writeInstallerVersionMarker: () => {},
+      windowsAclRunner: (file, action, content) => {
+        assert.strictEqual(
+          desktopInstallCompleted,
+          true,
+          "managed settings access must wait for the bundled Harness installer to complete"
+        );
+        order.push("settings");
+        settingsAccessCalls += 1;
+        if (settingsFailurePending) {
+          settingsFailurePending = false;
+          throw new Error("simulated managed settings failure");
+        }
+        simulateWindowsAcl(file, action, content);
+      },
+      commandRunner: async (_command, args) => {
+        if (!args.includes(fixture.paths.t3DefaultsPatcher)) return;
+        assert.strictEqual(
+          desktopInstallCompleted,
+          true,
+          "Harness defaults must wait for the bundled Harness installer to complete"
+        );
+        order.push("defaults");
+        defaultsRuns += 1;
+      },
+      installT3CodeDesktop: async () => {
+        installAttempts += 1;
+        order.push("desktop:start");
+        desktopInstallCompleted = false;
+        assert.strictEqual(
+          fs.readFileSync(fixture.paths.t3Settings, "utf8"),
+          originalSettings,
+          "the bundled Harness installer must run before managed settings change"
+        );
+        if (installAttempts === 1) {
+          throw new Error("simulated Harness upgrade failure");
+        }
+        desktopInstallCompleted = true;
+        order.push("desktop:complete");
+        return {
+          appPath: fixture.existingApp,
+          shortcutPath: `${fixture.existingApp}.lnk`
+        };
+      }
+    };
+
+    await assert.rejects(
+      runInstall({ apiKey: "test-key" }, runtime),
+      /simulated Harness upgrade failure/
+    );
+    assert.strictEqual(settingsAccessCalls, 0, "a failed Harness upgrade must not start the managed settings writer");
+    assert.strictEqual(defaultsRuns, 0, "a failed Harness upgrade must not run the defaults patcher");
+    assert.strictEqual(fs.readFileSync(fixture.paths.t3Settings, "utf8"), originalSettings);
+
+    await assert.rejects(
+      runInstall({ apiKey: "test-key" }, runtime),
+      /simulated managed settings failure/
+    );
+    assert.strictEqual(
+      settingsAccessCalls,
+      1,
+      "a settings failure must occur only after the successful Harness upgrade"
+    );
+    assert.strictEqual(defaultsRuns, 0, "a settings failure must not run the defaults patcher");
+    assert.strictEqual(
+      fs.readFileSync(fixture.paths.t3Settings, "utf8"),
+      originalSettings,
+      "a failed settings transaction must preserve the pre-upgrade settings"
+    );
+
+    const result = await runInstall({ apiKey: "test-key" }, runtime);
+    assert.strictEqual(result.desktopApps.t3code, fixture.existingApp);
+    assert.strictEqual(installAttempts, 3, "every retry must invoke the bundled Harness installer before settings");
+    assert(settingsAccessCalls > 1, "successful retry must update managed settings");
+    assert.strictEqual(defaultsRuns, 1, "successful retry must apply Harness defaults once");
+    assert(
+      order.lastIndexOf("desktop:complete") < order.lastIndexOf("settings"),
+      "the successful Harness upgrade must complete before managed settings access"
+    );
+    assert(
+      order.lastIndexOf("desktop:complete") < order.indexOf("defaults"),
+      "the successful Harness upgrade must complete before defaults are applied"
+    );
   });
 }
 

@@ -648,6 +648,23 @@ Set-Acl -LiteralPath $file -AclObject $privateAcl
 ${verifyOwner}${verifyPrivateDacl}`;
 }
 
+function managedSettingsPowerShellCommand(action) {
+  return `
+$ProgressPreference = "SilentlyContinue"
+try {
+${managedSettingsPowerShellScript(action)}
+} catch {
+  $message = if ($_.Exception -and $_.Exception.Message) {
+    $_.Exception.Message
+  } else {
+    "Managed settings access operation failed."
+  }
+  [Console]::Error.WriteLine($message)
+  exit 1
+}
+`;
+}
+
 function getWindowsPowerShellExecutable() {
   const systemRoot = process.env.SystemRoot || process.env.WINDIR;
   if (!systemRoot) throw new Error("Cannot resolve the Windows system directory.");
@@ -665,7 +682,7 @@ function getWindowsPowerShellExecutable() {
 }
 
 function runWindowsManagedSettingsAcl(file, action, content = undefined) {
-  const encodedCommand = Buffer.from(managedSettingsPowerShellScript(action), "utf16le").toString("base64");
+  const encodedCommand = Buffer.from(managedSettingsPowerShellCommand(action), "utf16le").toString("base64");
   const executable = getWindowsPowerShellExecutable();
   const systemModulePath = path.join(path.dirname(executable), "Modules");
   if (!fs.existsSync(systemModulePath)) {
@@ -1050,6 +1067,7 @@ function managedSettingsHelpersSource() {
     isPlainObject.toString(),
     settingsError.toString(),
     managedSettingsPowerShellScript.toString(),
+    managedSettingsPowerShellCommand.toString(),
     getWindowsPowerShellExecutable.toString(),
     runWindowsManagedSettingsAcl.toString(),
     runManagedSettingsAccessAction.toString(),
@@ -1210,6 +1228,7 @@ module.exports = {
   writeT3CodeSettings,
   __test: {
     commitManagedSettingsUpdates,
+    managedSettingsPowerShellCommand,
     prepareManagedSettingsUpdates,
     secureManagedSettingsFile,
     verifyPrivateManagedSettingsAccess

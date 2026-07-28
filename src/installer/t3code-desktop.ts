@@ -184,8 +184,8 @@ async function replaceMacAppTransactionally({
     }
     emit(`Verified staged ${TRITONAI_APP_DISPLAY_NAME} app.`);
 
+    await stopRunningApp({ emit });
     if (fs.existsSync(managedAppPath)) {
-      await stopRunningApp({ emit });
       fs.renameSync(managedAppPath, previousAppPath);
       previousMoved = true;
     }
