@@ -314,14 +314,23 @@ async function assertMacReplacementStagesBeforeSwapAndRollsBack() {
     );
 
     fs.rmSync(managedApp, { recursive: true, force: true });
+    let cleanInstallStopCalls = 0;
     await replaceMacAppTransactionally({
       sourceAppPath: sourceApp,
       managedAppPath: managedApp,
       emit: () => {},
       copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
       validateStagedApp: async () => {},
-      stopRunningApp: async () => assert.fail("a clean install must not stop an app")
+      stopRunningApp: async () => {
+        cleanInstallStopCalls += 1;
+        assert.strictEqual(
+          fs.existsSync(managedApp),
+          false,
+          "the same-bundle stop must also cover migrations without an existing managed app"
+        );
+      }
     });
+    assert.strictEqual(cleanInstallStopCalls, 1, "activation must always stop a running same-bundle Harness app");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

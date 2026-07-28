@@ -477,6 +477,7 @@ async function assertRunnerRetriesBeforeChangingManagedSettings() {
     let installAttempts = 0;
     let desktopInstallCompleted = false;
     let settingsAccessCalls = 0;
+    let settingsFailurePending = true;
     let defaultsRuns = 0;
 
     const runtime = {
@@ -503,6 +504,10 @@ async function assertRunnerRetriesBeforeChangingManagedSettings() {
         );
         order.push("settings");
         settingsAccessCalls += 1;
+        if (settingsFailurePending) {
+          settingsFailurePending = false;
+          throw new Error("simulated managed settings failure");
+        }
         simulateWindowsAcl(file, action, content);
       },
       commandRunner: async (_command, args) => {
@@ -518,6 +523,7 @@ async function assertRunnerRetriesBeforeChangingManagedSettings() {
       installT3CodeDesktop: async () => {
         installAttempts += 1;
         order.push("desktop:start");
+        desktopInstallCompleted = false;
         assert.strictEqual(
           fs.readFileSync(fixture.paths.t3Settings, "utf8"),
           originalSettings,
@@ -543,13 +549,29 @@ async function assertRunnerRetriesBeforeChangingManagedSettings() {
     assert.strictEqual(defaultsRuns, 0, "a failed Harness upgrade must not run the defaults patcher");
     assert.strictEqual(fs.readFileSync(fixture.paths.t3Settings, "utf8"), originalSettings);
 
+    await assert.rejects(
+      runInstall({ apiKey: "test-key" }, runtime),
+      /simulated managed settings failure/
+    );
+    assert.strictEqual(
+      settingsAccessCalls,
+      1,
+      "a settings failure must occur only after the successful Harness upgrade"
+    );
+    assert.strictEqual(defaultsRuns, 0, "a settings failure must not run the defaults patcher");
+    assert.strictEqual(
+      fs.readFileSync(fixture.paths.t3Settings, "utf8"),
+      originalSettings,
+      "a failed settings transaction must preserve the pre-upgrade settings"
+    );
+
     const result = await runInstall({ apiKey: "test-key" }, runtime);
     assert.strictEqual(result.desktopApps.t3code, fixture.existingApp);
-    assert.strictEqual(installAttempts, 2, "retry must invoke the bundled Harness installer again");
-    assert(settingsAccessCalls > 0, "successful retry must update managed settings");
+    assert.strictEqual(installAttempts, 3, "every retry must invoke the bundled Harness installer before settings");
+    assert(settingsAccessCalls > 1, "successful retry must update managed settings");
     assert.strictEqual(defaultsRuns, 1, "successful retry must apply Harness defaults once");
     assert(
-      order.lastIndexOf("desktop:complete") < order.indexOf("settings"),
+      order.lastIndexOf("desktop:complete") < order.lastIndexOf("settings"),
       "the successful Harness upgrade must complete before managed settings access"
     );
     assert(

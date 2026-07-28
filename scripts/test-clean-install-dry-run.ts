@@ -896,10 +896,8 @@ async function runDryRun(platform, options) {
           assert.strictEqual(connectionChecks.length, 1, "TritonAI connection should be checked before desktop app install");
           assert.strictEqual(
             fs.existsSync(paths.t3Settings),
-            installOptions.platform !== "win32",
-            installOptions.platform === "win32"
-              ? "Windows must install or upgrade Harness before writing managed settings"
-              : "non-Windows platforms must retain their existing settings-before-desktop order"
+            false,
+            `${installOptions.platform} must install or upgrade Harness before writing managed settings`
           );
           t3CodeDesktopInstalls.push(installOptions);
           return {
@@ -924,10 +922,8 @@ async function runDryRun(platform, options) {
           if (args.includes(paths.t3DefaultsPatcher)) {
             assert.strictEqual(
               t3CodeDesktopInstalls.length,
-              platform === "win32" ? 1 : 0,
-              platform === "win32"
-                ? "Windows must complete the Harness install before applying defaults"
-                : "non-Windows platforms must retain their existing defaults-before-desktop order"
+              1,
+              `${platform} must complete the Harness install before applying defaults`
             );
           }
           commands.push({ command, args, env: commandOptions.env, allowFailure: commandOptions.allowFailure });
