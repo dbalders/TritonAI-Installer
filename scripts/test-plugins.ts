@@ -42,6 +42,7 @@ function main() {
   assertLatestStableReleaseSelection();
   assertExplicitSourceContract();
   assertDeterministicSelectionAndStaging();
+  assertProviderPackageStaging();
   assertRejectsUnsafePackages();
   assertAtomicVendorRollback();
   assertCompositionContract();
@@ -228,6 +229,53 @@ function assertDeterministicSelectionAndStaging() {
     });
     assert.deepStrictEqual(second, first);
     assert.strictEqual(fs.readFileSync(path.join(vendorDir, "manifest.json"), "utf8"), firstBytes);
+  });
+}
+
+function assertProviderPackageStaging() {
+  withTempRoot("tritonai-provider-plugin-stage-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    writeProviderPlugin(sourceRoot, "provider-reader", "1.0.0");
+
+    const composition = stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["provider-reader"],
+      source: sourceIdentity()
+    });
+    assert.deepStrictEqual(
+      composition.packages[0].files.map(({ path: relative }) => relative),
+      [
+        ".tritonai-plugin/plugin.json",
+        "README.md",
+        "SECURITY.md",
+        "dist/index.d.ts",
+        "dist/index.js",
+        "package.json",
+        "skills/provider-reader/SKILL.md"
+      ]
+    );
+    const stagedPackage = JSON.parse(
+      fs.readFileSync(path.join(vendorDir, "packages", "provider-reader", "package.json"), "utf8")
+    );
+    assert.deepStrictEqual(stagedPackage.exports["."], {
+      types: "./dist/index.d.ts",
+      default: "./dist/index.js"
+    });
+
+    fs.rmSync(
+      path.join(sourceRoot, "plugins", "provider-reader", "dist", "index.d.ts")
+    );
+    assert.throws(
+      () => stagePluginsFromSource({
+        sourceRoot,
+        vendorDir,
+        selectedIds: ["provider-reader"],
+        source: sourceIdentity()
+      }),
+      /composed package is missing dist\/index\.d\.ts/
+    );
   });
 }
 
@@ -576,6 +624,46 @@ function writeSkillPlugin(sourceRoot, id, version) {
   fs.writeFileSync(
     path.join(packageRoot, "skills", id, "SKILL.md"),
     `---\nname: ${id}\ndescription: Read ${id} data.\n---\n# ${id}\n`
+  );
+}
+
+function writeProviderPlugin(sourceRoot, id, version) {
+  writeSkillPlugin(sourceRoot, id, version);
+  const packageRoot = path.join(sourceRoot, "plugins", id);
+  const packageFile = path.join(packageRoot, "package.json");
+  const packageJson = JSON.parse(fs.readFileSync(packageFile, "utf8"));
+  packageJson.files.push("dist");
+  packageJson.exports = {
+    ".": {
+      types: "./dist/index.d.ts",
+      default: "./dist/index.js"
+    }
+  };
+  fs.writeFileSync(packageFile, `${JSON.stringify(packageJson, null, 2)}\n`);
+
+  const manifestFile = path.join(packageRoot, ".tritonai-plugin", "plugin.json");
+  const manifest: Record<string, any> = pluginManifest(id, version);
+  manifest.provider = `${id}.provider`;
+  manifest.tools = [
+    {
+      name: `${id}.records.list`,
+      displayName: "List records",
+      description: "List bounded records.",
+      capabilities: [`${id}.read`],
+      effect: "read"
+    }
+  ];
+  fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const distributionRoot = path.join(packageRoot, "dist");
+  fs.mkdirSync(distributionRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(distributionRoot, "index.js"),
+    "export const manifest = {}; export function createIntegrationProvider() { return {}; }\n"
+  );
+  fs.writeFileSync(
+    path.join(distributionRoot, "index.d.ts"),
+    "export declare const manifest: unknown; export declare function createIntegrationProvider(input: unknown): unknown;\n"
   );
 }
 
