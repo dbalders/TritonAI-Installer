@@ -303,7 +303,7 @@ function assertManagedModelDefaultsUseApiGlm() {
   assert.strictEqual(UCSD.codexModels["gpt-5.6-luna"].name, "GPT-5.6 Luna");
   assert.strictEqual(UCSD.codexModels["gpt-5.6-sol"].name, "GPT-5.6 Sol");
   assert.strictEqual(UCSD.codexModels["gpt-5.6-terra"].name, "GPT-5.6 Terra");
-  assert.strictEqual(UCSD.codexModels["claude-opus-4-8"].name, "Claude Opus 4.8");
+  assert.strictEqual(UCSD.codexModels["claude-opus-5"].name, "Claude Opus 5");
   assert.strictEqual(UCSD.externalModelProbe, "gpt-5.6-sol");
   assert(!UCSD.codexModel.includes("max"), "managed default should not use the Max model");
 }
@@ -1338,6 +1338,11 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
         model: "gpt-5.5",
         options: [{ id: "reasoningEffort", value: "high" }]
       };
+      const opusSelection = {
+        instanceId: "codex-work",
+        model: "claude-opus-4-8",
+        options: [{ id: "reasoningEffort", value: "high" }]
+      };
       const deepSeekSelection = {
         instanceId: "codex-work",
         model: "api-deepseek-v4-flash",
@@ -1346,6 +1351,10 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       db.prepare("INSERT INTO projection_threads (thread_id, model_selection_json) VALUES (?, ?)").run(
         "thread-legacy",
         JSON.stringify(legacySelection)
+      );
+      db.prepare("INSERT INTO projection_threads (thread_id, model_selection_json) VALUES (?, ?)").run(
+        "thread-opus",
+        JSON.stringify(opusSelection)
       );
       db.prepare("INSERT INTO projection_threads (thread_id, model_selection_json) VALUES (?, ?)").run(
         "thread-deepseek",
@@ -1361,6 +1370,11 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
           "SELECT model_selection_json FROM projection_threads WHERE thread_id = ?"
         ).get("thread-legacy").model_selection_json
       );
+      const migratedOpusSelection = JSON.parse(
+        patched.prepare(
+          "SELECT model_selection_json FROM projection_threads WHERE thread_id = ?"
+        ).get("thread-opus").model_selection_json
+      );
       const preservedDeepSeekSelection = JSON.parse(
         patched.prepare(
           "SELECT model_selection_json FROM projection_threads WHERE thread_id = ?"
@@ -1370,6 +1384,10 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       assert.deepStrictEqual(selection, {
         ...legacySelection,
         model: externalModelsEnabled ? "gpt-5.6-sol" : UCSD.restrictedCodexModel
+      });
+      assert.deepStrictEqual(migratedOpusSelection, {
+        ...opusSelection,
+        model: externalModelsEnabled ? "claude-opus-5" : UCSD.restrictedCodexModel
       });
       assert.deepStrictEqual(
         preservedDeepSeekSelection,
@@ -1423,7 +1441,7 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
       "gpt-5.6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
-      "claude-opus-4-8"
+      "claude-opus-5"
     ]);
     assert(!customModels.includes("ucsd/retired-model-from-provider"));
     assert(!customModels.includes("ucsd/retired-model-from-instance"));
