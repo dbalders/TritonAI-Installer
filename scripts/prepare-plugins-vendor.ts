@@ -21,7 +21,7 @@ const TOOL_NAME = /^[a-z][a-z0-9_.-]*$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 // Production inclusion is an explicit reviewed allowlist, independent of packages present in a release tag.
-const DEFAULT_RELEASE_PLUGIN_IDS = ["microsoft-365"];
+const DEFAULT_RELEASE_PLUGIN_IDS = ["google-workspace", "microsoft-365"];
 
 function main(env = process.env, args = process.argv.slice(2)) {
   const options = parseArguments(args);
@@ -62,18 +62,34 @@ function main(env = process.env, args = process.argv.slice(2)) {
 }
 
 function parseArguments(args) {
-  const values = Array.from(args || []);
-  const unsupported = values.filter((value) => value !== "--latest");
+  const values = Array.from(args || [], (value) => String(value));
+  const supported = new Set(["--latest", "--production"]);
+  const unsupported = values.filter((value) => !supported.has(value));
   if (unsupported.length > 0) {
     throw new Error(`Unsupported managed plugin preparation argument: ${unsupported[0]}.`);
   }
-  if (values.filter((value) => value === "--latest").length > 1) {
-    throw new Error("Managed plugin preparation accepts --latest only once.");
+  for (const option of supported) {
+    if (values.filter((value) => value === option).length > 1) {
+      throw new Error(`Managed plugin preparation accepts ${option} only once.`);
+    }
   }
-  return { latest: values.includes("--latest") };
+  const latest = values.includes("--latest");
+  const production = values.includes("--production");
+  if (latest && production) {
+    throw new Error("Managed plugin preparation accepts only one release selection mode.");
+  }
+  return { latest, production };
 }
 
 function selectPluginSourceInput(input, options, resolveLatest = resolveLatestStablePluginRelease) {
+  if (options.production) {
+    if (input.selectedIds.length > 0) {
+      throw new Error(
+        "--production selects the reviewed Installer allowlist; TRITONAI_PLUGIN_IDS must be unset."
+      );
+    }
+    return { ...input, selectedIds: DEFAULT_RELEASE_PLUGIN_IDS };
+  }
   const configured = Boolean(input.ref || input.commit || input.selectedIds.length || input.localSource);
   if (!options.latest) return input;
   if (configured) {

@@ -52,9 +52,12 @@ function main() {
 }
 
 function assertLatestStableReleaseSelection() {
-  assert.deepStrictEqual(parseArguments([]), { latest: false });
-  assert.deepStrictEqual(parseArguments(["--latest"]), { latest: true });
+  assert.deepStrictEqual(parseArguments([]), { latest: false, production: false });
+  assert.deepStrictEqual(parseArguments(["--latest"]), { latest: true, production: false });
+  assert.deepStrictEqual(parseArguments(["--production"]), { latest: false, production: true });
   assert.throws(() => parseArguments(["--latest", "--latest"]), /only once/);
+  assert.throws(() => parseArguments(["--production", "--production"]), /only once/);
+  assert.throws(() => parseArguments(["--latest", "--production"]), /one release selection mode/);
   assert.throws(() => parseArguments(["--main"]), /Unsupported/);
   assert(compareStableVersions("0.10.0", "0.9.99") > 0);
   assert(compareStableVersions("10.0.0", "2.99.99") > 0);
@@ -99,7 +102,7 @@ function assertLatestStableReleaseSelection() {
   assert.strictEqual(resolverCalls, 1);
   assert.strictEqual(automatic.ref, "refs/tags/v1.2.3");
   assert.strictEqual(automatic.commit, "c".repeat(40));
-  assert.deepStrictEqual(automatic.selectedIds, ["microsoft-365"]);
+  assert.deepStrictEqual(automatic.selectedIds, ["google-workspace", "microsoft-365"]);
 
   const explicit = readPluginSourceEnvironment({
     TRITONAI_PLUGINS_REF: "refs/tags/v1.2.3",
@@ -113,6 +116,16 @@ function assertLatestStableReleaseSelection() {
   assert.throws(
     () => selectPluginSourceInput({ ...explicit, commit: "" }, { latest: true }),
     /--latest does not complete partial managed plugin pins/
+  );
+
+  const production = selectPluginSourceInput(
+    { ...explicit, selectedIds: [] },
+    { latest: false, production: true }
+  );
+  assert.deepStrictEqual(production.selectedIds, ["google-workspace", "microsoft-365"]);
+  assert.throws(
+    () => selectPluginSourceInput(explicit, { latest: false, production: true }),
+    /TRITONAI_PLUGIN_IDS must be unset/
   );
 }
 
