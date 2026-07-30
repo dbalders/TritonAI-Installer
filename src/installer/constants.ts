@@ -7,7 +7,8 @@ const DEFAULT_BASE_URL = "https://example.invalid/v1";
 const DEFAULT_RESTRICTED_CODEX_MODEL = "api-glm-5.2";
 const DEFAULT_CODEX_MODEL = DEFAULT_RESTRICTED_CODEX_MODEL;
 const LEGACY_CODEX_MODEL_REPLACEMENTS = {
-  "gpt-5.5": "gpt-5.6-sol"
+  "gpt-5.5": "gpt-5.6-sol",
+  "claude-opus-4-8": "claude-opus-5"
 };
 const TRITONAI_CODEX_MODEL_CAPABILITIES = {
   optionDescriptors: [
@@ -75,9 +76,9 @@ const DEFAULT_CODEX_MODELS = {
     id: "gpt-5.6-terra",
     name: "GPT-5.6 Terra"
   },
-  "claude-opus-4-8": {
-    id: "claude-opus-4-8",
-    name: "Claude Opus 4.8"
+  "claude-opus-5": {
+    id: "claude-opus-5",
+    name: "Claude Opus 5"
   }
 };
 

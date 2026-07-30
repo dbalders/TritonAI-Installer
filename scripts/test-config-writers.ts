@@ -134,6 +134,25 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
         customRuntimeField: { keep: true }
       })
     );
+    insertRuntime.run(
+      "thread-codex-opus",
+      "codex",
+      "codex-work",
+      "codex-runtime-adapter",
+      "read-only",
+      "running",
+      "2026-07-11T02:30:00.000Z",
+      JSON.stringify({ cursor: "resume-opus", sequence: 43 }),
+      JSON.stringify({
+        model: "claude-opus-4-8",
+        modelSelection: {
+          instanceId: "codex-work",
+          model: "claude-opus-4-8",
+          options: [{ id: "reasoningEffort", value: "high" }]
+        },
+        customRuntimeField: { keepOpus: true }
+      })
+    );
 
     const insertProjection = db.prepare(`
       INSERT INTO projection_thread_sessions (
@@ -181,6 +200,9 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     const currentRuntimeBefore = db.prepare(
       "SELECT * FROM provider_session_runtime WHERE thread_id = 'thread-codex'"
     ).get();
+    const opusRuntimeBefore = db.prepare(
+      "SELECT * FROM provider_session_runtime WHERE thread_id = 'thread-codex-opus'"
+    ).get();
     const currentProjectionBefore = db.prepare(
       "SELECT * FROM projection_thread_sessions WHERE thread_id = 'thread-codex'"
     ).get();
@@ -195,6 +217,9 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     const patched = new DatabaseSync(stateDbPath);
     const currentRuntimeAfter = patched.prepare(
       "SELECT * FROM provider_session_runtime WHERE thread_id = 'thread-codex'"
+    ).get();
+    const opusRuntimeAfter = patched.prepare(
+      "SELECT * FROM provider_session_runtime WHERE thread_id = 'thread-codex-opus'"
     ).get();
     const currentProjectionAfter = patched.prepare(
       "SELECT * FROM projection_thread_sessions WHERE thread_id = 'thread-codex'"
@@ -220,6 +245,23 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     assert.strictEqual(currentRuntimePayload.activeTurnId, "active-codex-turn");
     assert.strictEqual(currentRuntimePayload.lastError, "recoverable codex error");
     assert.deepStrictEqual(currentRuntimePayload.customRuntimeField, { keep: true });
+    for (const [column, value] of Object.entries(opusRuntimeBefore)) {
+      if (column !== "runtime_payload_json") {
+        assert.deepStrictEqual(
+          opusRuntimeAfter[column],
+          value,
+          `migrating Claude Opus 4.8 must preserve provider_session_runtime.${column}`
+        );
+      }
+    }
+    const opusRuntimePayload = JSON.parse(opusRuntimeAfter.runtime_payload_json);
+    assert.strictEqual(opusRuntimePayload.model, UCSD.restrictedCodexModel);
+    assert.deepStrictEqual(opusRuntimePayload.modelSelection, {
+      instanceId: "codex-work",
+      model: UCSD.restrictedCodexModel,
+      options: [{ id: "reasoningEffort", value: "high" }]
+    });
+    assert.deepStrictEqual(opusRuntimePayload.customRuntimeField, { keepOpus: true });
     assert.deepStrictEqual(currentProjectionAfter, currentProjectionBefore);
     assert.deepStrictEqual(
       unknownProjectionAfter,
