@@ -50,9 +50,10 @@ Packaged builds use the canonical `edu.ucsd.tritonai.installer` application iden
 
 Managed plugins have a separate, fail-closed source contract. Stable macOS and Windows release
 packaging resolves the highest canonical `vMAJOR.MINOR.PATCH` Plugins tag at the start of the run,
-freezes its exact commit, and selects the production `microsoft-365` package. Every Harness release
-must publish an artifact-bound composition proof for that exact selection. A moving branch such as
-`main` and nearby `TritonAI-Plugins` checkouts are never used automatically.
+freezes its exact commit, and selects the production `google-workspace` and `microsoft-365`
+packages. Every Harness release must publish an artifact-bound composition proof for that exact
+selection. A moving branch such as `main` and nearby `TritonAI-Plugins` checkouts are never used
+automatically.
 Production package inclusion remains an explicit reviewed Installer allowlist, so publishing an
 experimental package does not silently add it to desktop releases.
 
@@ -62,7 +63,7 @@ pins override automatic latest-release selection:
 ```sh
 export TRITONAI_PLUGINS_REF="refs/tags/v0.1.0"
 export TRITONAI_PLUGINS_COMMIT="<full 40-character commit SHA>"
-export TRITONAI_PLUGIN_IDS="microsoft-365"
+export TRITONAI_PLUGIN_IDS="google-workspace,microsoft-365"
 ```
 
 `TRITONAI_PLUGINS_REPO` may select another transport URL only when Git resolves it to canonical
@@ -72,20 +73,26 @@ and a ref resolving to the same commit. Dirty local validation work is rejected.
 
 `npm run prepare:plugins-vendor` retains the explicit/manual behavior above; without pins it disables
 managed plugins for a development build. Stable packaging invokes the same tool with `--latest`.
+Release orchestration that has already frozen the plugin ref and commit uses `--production` to
+select this Installer commit's reviewed production allowlist without duplicating package IDs in
+Harness.
 It validates and atomically stages only selected release package
 contents under ignored `vendor/plugins/`. It rejects symlinks, special files, unsafe paths,
 source/tests in package allowlists or provider output, malformed manifests, package/manifest drift,
 and skill/manifest drift. The staged packages are a Harness build input, not an Installer runtime
-payload.
+payload. Provider packages expose their exact manifest and synchronous
+`createIntegrationProvider({ secrets, configuration })` factory from `dist/index.js`; the Installer
+does not import factories or interpret their package-owned configuration.
 
-The Harness build must statically compose those packages into its immutable catalog. After all
+The Harness build must compose those exact packages into its immutable catalog. After all
 signing, notarization, and stapling, it publishes `tritonai-plugin-composition-mac-arm64.json` and
 `tritonai-plugin-composition-win-x64.json`. Each proof contains the exact generated
 `vendor/plugins/manifest.json` composition plus the filename, size, and SHA-512 of that platform's
 final release artifact. Installer packaging downloads the matching platform proof, stores it beside
 the Harness artifact as `tritonai-plugin-composition.json`, and rechecks it when the packaged
 Installer runs. This preserves the Harness trust model: the Installer never adds a dynamic loader
-and never installs raw plugin code that Harness cannot use.
+or runtime discovery path and never installs raw plugin code separately from the reviewed Harness
+artifact.
 
 macOS:
 

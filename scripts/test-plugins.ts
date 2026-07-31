@@ -42,6 +42,7 @@ function main() {
   assertLatestStableReleaseSelection();
   assertExplicitSourceContract();
   assertDeterministicSelectionAndStaging();
+  assertProviderPackageStaging();
   assertRejectsUnsafePackages();
   assertAtomicVendorRollback();
   assertCompositionContract();
@@ -52,9 +53,12 @@ function main() {
 }
 
 function assertLatestStableReleaseSelection() {
-  assert.deepStrictEqual(parseArguments([]), { latest: false });
-  assert.deepStrictEqual(parseArguments(["--latest"]), { latest: true });
+  assert.deepStrictEqual(parseArguments([]), { latest: false, production: false });
+  assert.deepStrictEqual(parseArguments(["--latest"]), { latest: true, production: false });
+  assert.deepStrictEqual(parseArguments(["--production"]), { latest: false, production: true });
   assert.throws(() => parseArguments(["--latest", "--latest"]), /only once/);
+  assert.throws(() => parseArguments(["--production", "--production"]), /only once/);
+  assert.throws(() => parseArguments(["--latest", "--production"]), /one release selection mode/);
   assert.throws(() => parseArguments(["--main"]), /Unsupported/);
   assert(compareStableVersions("0.10.0", "0.9.99") > 0);
   assert(compareStableVersions("10.0.0", "2.99.99") > 0);
@@ -99,7 +103,7 @@ function assertLatestStableReleaseSelection() {
   assert.strictEqual(resolverCalls, 1);
   assert.strictEqual(automatic.ref, "refs/tags/v1.2.3");
   assert.strictEqual(automatic.commit, "c".repeat(40));
-  assert.deepStrictEqual(automatic.selectedIds, ["microsoft-365"]);
+  assert.deepStrictEqual(automatic.selectedIds, ["google-workspace", "microsoft-365"]);
 
   const explicit = readPluginSourceEnvironment({
     TRITONAI_PLUGINS_REF: "refs/tags/v1.2.3",
@@ -113,6 +117,16 @@ function assertLatestStableReleaseSelection() {
   assert.throws(
     () => selectPluginSourceInput({ ...explicit, commit: "" }, { latest: true }),
     /--latest does not complete partial managed plugin pins/
+  );
+
+  const production = selectPluginSourceInput(
+    { ...explicit, selectedIds: [] },
+    { latest: false, production: true }
+  );
+  assert.deepStrictEqual(production.selectedIds, ["google-workspace", "microsoft-365"]);
+  assert.throws(
+    () => selectPluginSourceInput(explicit, { latest: false, production: true }),
+    /TRITONAI_PLUGIN_IDS must be unset/
   );
 }
 
@@ -215,6 +229,53 @@ function assertDeterministicSelectionAndStaging() {
     });
     assert.deepStrictEqual(second, first);
     assert.strictEqual(fs.readFileSync(path.join(vendorDir, "manifest.json"), "utf8"), firstBytes);
+  });
+}
+
+function assertProviderPackageStaging() {
+  withTempRoot("tritonai-provider-plugin-stage-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    writeProviderPlugin(sourceRoot, "provider-reader", "1.0.0");
+
+    const composition = stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["provider-reader"],
+      source: sourceIdentity()
+    });
+    assert.deepStrictEqual(
+      composition.packages[0].files.map(({ path: relative }) => relative),
+      [
+        ".tritonai-plugin/plugin.json",
+        "README.md",
+        "SECURITY.md",
+        "dist/index.d.ts",
+        "dist/index.js",
+        "package.json",
+        "skills/provider-reader/SKILL.md"
+      ]
+    );
+    const stagedPackage = JSON.parse(
+      fs.readFileSync(path.join(vendorDir, "packages", "provider-reader", "package.json"), "utf8")
+    );
+    assert.deepStrictEqual(stagedPackage.exports["."], {
+      types: "./dist/index.d.ts",
+      default: "./dist/index.js"
+    });
+
+    fs.rmSync(
+      path.join(sourceRoot, "plugins", "provider-reader", "dist", "index.d.ts")
+    );
+    assert.throws(
+      () => stagePluginsFromSource({
+        sourceRoot,
+        vendorDir,
+        selectedIds: ["provider-reader"],
+        source: sourceIdentity()
+      }),
+      /composed package is missing dist\/index\.d\.ts/
+    );
   });
 }
 
@@ -563,6 +624,46 @@ function writeSkillPlugin(sourceRoot, id, version) {
   fs.writeFileSync(
     path.join(packageRoot, "skills", id, "SKILL.md"),
     `---\nname: ${id}\ndescription: Read ${id} data.\n---\n# ${id}\n`
+  );
+}
+
+function writeProviderPlugin(sourceRoot, id, version) {
+  writeSkillPlugin(sourceRoot, id, version);
+  const packageRoot = path.join(sourceRoot, "plugins", id);
+  const packageFile = path.join(packageRoot, "package.json");
+  const packageJson = JSON.parse(fs.readFileSync(packageFile, "utf8"));
+  packageJson.files.push("dist");
+  packageJson.exports = {
+    ".": {
+      types: "./dist/index.d.ts",
+      default: "./dist/index.js"
+    }
+  };
+  fs.writeFileSync(packageFile, `${JSON.stringify(packageJson, null, 2)}\n`);
+
+  const manifestFile = path.join(packageRoot, ".tritonai-plugin", "plugin.json");
+  const manifest: Record<string, any> = pluginManifest(id, version);
+  manifest.provider = `${id}.provider`;
+  manifest.tools = [
+    {
+      name: `${id}.records.list`,
+      displayName: "List records",
+      description: "List bounded records.",
+      capabilities: [`${id}.read`],
+      effect: "read"
+    }
+  ];
+  fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const distributionRoot = path.join(packageRoot, "dist");
+  fs.mkdirSync(distributionRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(distributionRoot, "index.js"),
+    "export const manifest = {}; export function createIntegrationProvider() { return {}; }\n"
+  );
+  fs.writeFileSync(
+    path.join(distributionRoot, "index.d.ts"),
+    "export declare const manifest: unknown; export declare function createIntegrationProvider(input: unknown): unknown;\n"
   );
 }
 
