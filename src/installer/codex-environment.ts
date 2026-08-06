@@ -9,8 +9,7 @@ function getTritonAiEnvironment(paths) {
 
 function getCodexProviderEnvironment(paths) {
   return {
-    [UCSD.baseUrlEnv]: UCSD.baseUrl,
-    ...(paths.tritonAiApiKey ? { [UCSD.apiKeyEnv]: paths.tritonAiApiKey } : {})
+    [UCSD.baseUrlEnv]: UCSD.baseUrl
   };
 }
 
@@ -18,12 +17,21 @@ function getCodexProviderEnvironmentVariables(paths) {
   return Object.entries(getCodexProviderEnvironment(paths)).map(([name, value]) => ({
     name,
     value,
-    sensitive: name === UCSD.apiKeyEnv
+    sensitive: false
   }));
+}
+
+function removeManagedTritonAiApiKey(environment = []) {
+  return (Array.isArray(environment) ? environment : [])
+    .filter(
+      (variable) =>
+        typeof variable?.name !== "string" || variable.name.toUpperCase() !== UCSD.apiKeyEnv
+    );
 }
 
 module.exports = {
   getTritonAiEnvironment,
   getCodexProviderEnvironment,
-  getCodexProviderEnvironmentVariables
+  getCodexProviderEnvironmentVariables,
+  removeManagedTritonAiApiKey
 };

@@ -331,7 +331,11 @@ function assertValidUnknownSettingsSurvive() {
           codex: {
             userDefinedInstanceSetting: `instance-${index}`,
             config: { userDefinedConfigSetting: `config-${index}` },
-            environment: [{ name: `USER_DEFINED_${index}`, value: "keep" }]
+            environment: [
+              { name: `USER_DEFINED_${index}`, value: "keep" },
+              { name: "TRITONAI_API_KEY", value: "stale-provider-key", sensitive: true },
+              { name: 42, value: "discard-malformed-entry" }
+            ]
           }
         }
       }, null, 2)}\n`);
@@ -356,8 +360,48 @@ function assertValidUnknownSettingsSurvive() {
           (entry) => entry.name === `USER_DEFINED_${index}` && entry.value === "keep"
         )
       );
+      assert(
+        !settings.providerInstances.codex.environment.some(
+          (entry) => entry.name.toUpperCase() === "TRITONAI_API_KEY"
+        ),
+        "the defaults patcher must remove the duplicate Codex provider key"
+      );
     }
   });
+}
+
+function assertLiveWriterDiscardsMalformedProviderEnvironment() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-malformed-environment-"));
+  try {
+    const paths = getPaths(tempRoot, process.platform);
+    writeText(paths.t3Settings, `${JSON.stringify({
+      providerInstances: {
+        codex: {
+          environment: [
+            { name: 42, value: "discard-malformed-entry" },
+            { name: "USER_DEFINED", value: "keep" },
+            { name: "TRITONAI_API_KEY", value: "stale-provider-key", sensitive: true }
+          ]
+        }
+      }
+    }, null, 2)}\n`);
+
+    writeT3CodeSettings(paths);
+
+    const settings = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
+    assert(
+      settings.providerInstances.codex.environment.some(
+        (entry) => entry.name === "USER_DEFINED" && entry.value === "keep"
+      )
+    );
+    assert(
+      settings.providerInstances.codex.environment.every(
+        (entry) => typeof entry.name === "string" && entry.name !== "TRITONAI_API_KEY"
+      )
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertDevelopmentSettingsAreNotManaged() {
@@ -844,6 +888,7 @@ function assertWindowsDaclCoversReplacementAndBackup() {
 function main() {
   assertSessionMigrationPreservesCurrentCodexRows();
   assertValidUnknownSettingsSurvive();
+  assertLiveWriterDiscardsMalformedProviderEnvironment();
   assertDevelopmentSettingsAreNotManaged();
   assertInvalidMultiPathSettingsFailClosed("malformed", "{not-json");
   assertInvalidMultiPathSettingsFailClosed("empty", "");

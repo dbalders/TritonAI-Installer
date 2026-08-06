@@ -2,7 +2,10 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { LEGACY_CODEX_MODEL_REPLACEMENTS, UCSD } = require("./constants");
-const { getCodexProviderEnvironmentVariables } = require("./codex-environment");
+const {
+  getCodexProviderEnvironmentVariables,
+  removeManagedTritonAiApiKey
+} = require("./codex-environment");
 const { listSkillDirs } = require("./skills");
 
 function ensureBaseFolders(paths) {
@@ -170,7 +173,7 @@ function buildT3CodeSettings(existing, paths) {
           customModelMetadata
         },
         environment: mergeEnvironmentVariables(
-          existingCodexInstance.environment,
+          removeManagedTritonAiApiKey(existingCodexInstance.environment),
           getCodexProviderEnvironmentVariables(paths)
         )
       },
@@ -226,6 +229,7 @@ const customModelMetadata = ${JSON.stringify(customModelMetadata)};
 const codexBinaryPath = ${JSON.stringify(getCodexBinaryPath(paths))};
 const codexHomePath = ${JSON.stringify(paths.codexHome)};
 const providerEnvironment = ${JSON.stringify(providerEnvironment)};
+const managedTritonAiApiKeyEnv = ${JSON.stringify(UCSD.apiKeyEnv)};
 const providerStatusCacheDirs = ${JSON.stringify(getT3ProviderStatusCacheDirs(paths))};
 
 ${managedSettingsHelpersSource()}
@@ -328,7 +332,15 @@ function buildManagedSettings(existing) {
           customModels,
           customModelMetadata
         },
-        environment: mergeEnvironmentVariables(codexInstance.environment, providerEnvironment)
+        environment: mergeEnvironmentVariables(
+          (Array.isArray(codexInstance.environment) ? codexInstance.environment : [])
+            .filter(
+              (variable) =>
+                typeof variable?.name !== "string" ||
+                variable.name.toUpperCase() !== managedTritonAiApiKeyEnv
+            ),
+          providerEnvironment
+        )
       },
       claudeAgent: {
         ...(instances.claudeAgent || {}),
