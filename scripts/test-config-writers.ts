@@ -331,7 +331,10 @@ function assertValidUnknownSettingsSurvive() {
           codex: {
             userDefinedInstanceSetting: `instance-${index}`,
             config: { userDefinedConfigSetting: `config-${index}` },
-            environment: [{ name: `USER_DEFINED_${index}`, value: "keep" }]
+            environment: [
+              { name: `USER_DEFINED_${index}`, value: "keep" },
+              { name: "TRITONAI_API_KEY", value: "stale-provider-key", sensitive: true }
+            ]
           }
         }
       }, null, 2)}\n`);
@@ -355,6 +358,12 @@ function assertValidUnknownSettingsSurvive() {
         settings.providerInstances.codex.environment.some(
           (entry) => entry.name === `USER_DEFINED_${index}` && entry.value === "keep"
         )
+      );
+      assert(
+        !settings.providerInstances.codex.environment.some(
+          (entry) => entry.name.toUpperCase() === "TRITONAI_API_KEY"
+        ),
+        "the defaults patcher must remove the duplicate Codex provider key"
       );
     }
   });
