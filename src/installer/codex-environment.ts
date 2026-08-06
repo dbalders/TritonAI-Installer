@@ -23,7 +23,10 @@ function getCodexProviderEnvironmentVariables(paths) {
 
 function removeManagedTritonAiApiKey(environment = []) {
   return (Array.isArray(environment) ? environment : [])
-    .filter((variable) => variable?.name?.toUpperCase() !== UCSD.apiKeyEnv);
+    .filter(
+      (variable) =>
+        typeof variable?.name !== "string" || variable.name.toUpperCase() !== UCSD.apiKeyEnv
+    );
 }
 
 module.exports = {

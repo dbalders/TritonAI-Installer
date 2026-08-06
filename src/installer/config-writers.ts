@@ -334,7 +334,11 @@ function buildManagedSettings(existing) {
         },
         environment: mergeEnvironmentVariables(
           (Array.isArray(codexInstance.environment) ? codexInstance.environment : [])
-            .filter((variable) => variable?.name?.toUpperCase() !== managedTritonAiApiKeyEnv),
+            .filter(
+              (variable) =>
+                typeof variable?.name !== "string" ||
+                variable.name.toUpperCase() !== managedTritonAiApiKeyEnv
+            ),
           providerEnvironment
         )
       },
