@@ -69,22 +69,26 @@ async function main() {
   assert.strictEqual(normalizeInstallError(originalError), originalError);
 
   const timeoutCommand = ["-e", "setInterval(() => {}, 1000)"];
+  // Windows process creation can exceed 50ms on loaded CI runners. Give the
+  // fixture time to become a stable taskkill target while keeping the test
+  // timeout far below production command limits.
+  const timeoutMs = process.platform === "win32" ? 500 : 50;
   await assert.rejects(
-    runCommand(process.execPath, timeoutCommand, { emit: () => {}, env: process.env, timeoutMs: 50 }),
+    runCommand(process.execPath, timeoutCommand, { emit: () => {}, env: process.env, timeoutMs }),
     (error) => error.code === "ETIMEDOUT" && /process tree was terminated/.test(error.message)
   );
   const timeoutEvents = [];
   await runCommand(process.execPath, timeoutCommand, {
     emit: (message) => timeoutEvents.push(message),
     env: process.env,
-    timeoutMs: 50,
+    timeoutMs,
     allowFailure: true
   });
-  assert(timeoutEvents.some((message) => message.includes("timed out after 50ms")));
+  assert(timeoutEvents.some((message) => message.includes(`timed out after ${timeoutMs}ms`)));
   await assert.rejects(
     runCommandForOutput(process.execPath, timeoutCommand, {
       env: process.env,
-      timeoutMs: 50
+      timeoutMs
     }),
     (error) => error.code === "ETIMEDOUT" && /process tree was terminated/.test(error.message)
   );
@@ -92,7 +96,7 @@ async function main() {
     runCommand(process.execPath, timeoutCommand, {
       emit: () => {},
       env: process.env,
-      timeoutMs: 50,
+      timeoutMs,
       allowFailure: true,
       terminate: async (child, options) => {
         await terminateProcessTree(child, options);
@@ -104,11 +108,11 @@ async function main() {
   await assertCommandTimeoutTerminatesDescendants();
   await assertExitedLeaderStillTerminatesProcessGroup();
   await assert.rejects(
-    runDesktopCommand(process.execPath, timeoutCommand, () => {}, { timeoutMs: 50 }),
+    runDesktopCommand(process.execPath, timeoutCommand, () => {}, { timeoutMs }),
     (error) => error.code === "ETIMEDOUT" && /process tree was terminated/.test(error.message)
   );
   await assert.rejects(
-    runDesktopCommandCapture(process.execPath, timeoutCommand, () => {}, { timeoutMs: 50 }),
+    runDesktopCommandCapture(process.execPath, timeoutCommand, () => {}, { timeoutMs }),
     (error) => error.code === "ETIMEDOUT" && /process tree was terminated/.test(error.message)
   );
   const spawnTimedOutFixture = () => spawn(process.execPath, timeoutCommand, {
@@ -119,14 +123,14 @@ async function main() {
     graceMs: 500
   });
   assert.strictEqual(await readWindowsEnvironmentVariable("TRITONAI_API_KEY", "User", {
-    timeoutMs: 50,
+    timeoutMs,
     spawnProcess: spawnTimedOutFixture,
     terminate: terminateFixture
   }), "");
   await assert.rejects(
     runEnvironmentMigrationPowerShell("Write-Output fixture", "testing the cleanup watchdog", {
       platform: "win32",
-      timeoutMs: 50,
+      timeoutMs,
       spawnProcess: spawnTimedOutFixture,
       terminate: terminateFixture
     }),
