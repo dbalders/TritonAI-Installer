@@ -17,7 +17,10 @@ async function main() {
       paths,
       platform: process.platform,
       arch: process.arch,
-      emit: () => {}
+      emit: () => {},
+      resourcesPath: "",
+      appRoot: path.join(tempRoot, "unpackaged-app"),
+      packaged: false
     });
 
     const nodeVersion = execFileSync(runtime.nodeBinary, ["--version"], { encoding: "utf8" }).trim();

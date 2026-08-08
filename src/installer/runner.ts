@@ -6,6 +6,7 @@ const { saveEnvironment } = require("./profile");
 const { CODEX_CLI_VERSION } = require("./npm-policy");
 const { getTool, getCommands, CODEX_CLI } = require("./tool-manifest");
 const { ensurePrerequisites } = require("./prerequisites");
+const { checkInstallCapacity } = require("./install-preflight");
 const { installT3CodeDesktop } = require("./t3code-desktop");
 const { installBundledSkills } = require("./skills");
 const { installBundledCodexCli, writeManagedCodexLauncher } = require("./codex-vendor");
@@ -17,7 +18,14 @@ const { createDiagnosticsSession } = require("./diagnostics");
 const { defaultAppRoot } = require("./app-root");
 const { writeInstallerVersionMarker } = require("./installer-version-marker");
 const { inspectBundledPluginComposition } = require("./plugins");
+const { terminateProcessTree } = require("./process-termination");
 const { version: packageInstallerVersion } = require(path.join(defaultAppRoot(__dirname), "package.json"));
+const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+const VERSION_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
+
+interface InstallError extends Error {
+  diagnostics?: DiagnosticsInfo;
+}
 
 async function runInstall(payload, runtime) {
   const apiKey = payload && typeof payload.apiKey === "string" ? payload.apiKey.trim() : "";
@@ -60,6 +68,19 @@ async function runInstall(payload, runtime) {
         + `from pinned commit ${managedPlugins.source.commit}.`
       );
     }
+    emit("Checking available disk space...");
+    const capacityChecker = runtime.checkInstallCapacity || checkInstallCapacity;
+    capacityChecker({
+      paths,
+      resourcesPath: runtime.resourcesPath,
+      appRoot: runtime.appRoot || defaultAppRoot(__dirname),
+      emit
+    });
+    diagnostics.setStep("connect");
+    const connection = await verifyTritonAiConnection({ apiKey, runtime, emit });
+    paths.externalModelsEnabled = connection.externalModelsEnabled;
+
+    diagnostics.setStep("prepare");
     const shouldSeedOnboardingWorkspace = isFreshInstall(paths);
 
     emit("Creating UCSD agent folders...");
@@ -82,12 +103,11 @@ async function runInstall(payload, runtime) {
       paths,
       platform,
       arch,
-      emit
+      emit,
+      resourcesPath: runtime.resourcesPath,
+      appRoot: runtime.appRoot,
+      packaged: runtime.packaged
     });
-
-    diagnostics.setStep("connect");
-    const connection = await verifyTritonAiConnection({ apiKey, runtime, emit });
-    paths.externalModelsEnabled = connection.externalModelsEnabled;
 
     emit("Saving TritonAI access key environment...");
     const environmentSaver = runtime.saveEnvironment || saveEnvironment;
@@ -134,7 +154,18 @@ async function runInstall(payload, runtime) {
     await runT3DefaultsPatcher({ apiKey, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
 
     diagnostics.setStep("verify");
-    const diagnosticsInfo = diagnostics.writeSupportReport({
+    const markerWriter = runtime.writeInstallerVersionMarker || writeInstallerVersionMarker;
+    markerWriter({
+      paths,
+      installerVersion: runtime.installerVersion || packageInstallerVersion
+    });
+    emit("Recorded the installed TritonAI Installer version.");
+    if (environmentMigration && typeof environmentMigration.finalize === "function") {
+      emit("Removing recorded legacy TritonAI user environment variables...");
+      await environmentMigration.finalize();
+    }
+    emit("Install flow finished.");
+    const diagnosticsInfo = writeSupportReportSafely(diagnostics, {
       ok: true,
       nodeRuntime,
       desktopApps
@@ -162,37 +193,57 @@ async function runInstall(payload, runtime) {
         : null,
       diagnostics: diagnosticsInfo
     };
-    const markerWriter = runtime.writeInstallerVersionMarker || writeInstallerVersionMarker;
-    markerWriter({
-      paths,
-      installerVersion: runtime.installerVersion || packageInstallerVersion
-    });
-    emit("Recorded the installed TritonAI Installer version.");
-    if (environmentMigration && typeof environmentMigration.finalize === "function") {
-      emit("Removing recorded legacy TritonAI user environment variables...");
-      await environmentMigration.finalize();
-    }
-    emit("Install flow finished.");
-    if (runtime.onDiagnostics) runtime.onDiagnostics(diagnosticsInfo);
+    notifyDiagnosticsSafely(runtime.onDiagnostics, diagnosticsInfo);
     return response;
   } catch (error) {
-    const diagnosticsInfo = diagnostics.writeSupportReport({
+    const failure = normalizeInstallError(error);
+    const diagnosticsInfo = writeSupportReportSafely(diagnostics, {
       ok: false,
-      error,
+      error: failure,
       nodeRuntime,
       desktopApps
     });
-    error.diagnostics = diagnosticsInfo;
-    if (runtime.onDiagnostics) runtime.onDiagnostics(diagnosticsInfo);
-    throw error;
+    failure.diagnostics = diagnosticsInfo;
+    notifyDiagnosticsSafely(runtime.onDiagnostics, diagnosticsInfo);
+    throw failure;
   }
 }
 
 function createDiagnosticEmitter(forward, diagnostics) {
   return (message) => {
-    diagnostics.append(message);
-    forward(message);
+    try {
+      diagnostics.append(message);
+    } catch (error) {
+      console.error(`Could not append Installer diagnostics: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      forward(message);
+    } catch (error) {
+      console.error(`Could not deliver Installer progress: ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
+}
+
+function writeSupportReportSafely(diagnostics, options) {
+  try {
+    return diagnostics.writeSupportReport(options);
+  } catch (error) {
+    console.error(`Could not write Installer support report: ${error instanceof Error ? error.message : String(error)}`);
+    return diagnostics.fallbackInfo(Boolean(options.ok));
+  }
+}
+
+function normalizeInstallError(error): InstallError {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function notifyDiagnosticsSafely(callback, diagnosticsInfo) {
+  if (typeof callback !== "function") return;
+  try {
+    callback(diagnosticsInfo);
+  } catch (error) {
+    console.error(`Could not deliver Installer diagnostics metadata: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function isFreshInstall(paths) {
@@ -431,43 +482,111 @@ function resolveCommandToken(command, { paths }) {
   return command;
 }
 
-function runCommand(command, args, { emit, env, allowFailure = false }) {
+function runCommand(command, args, {
+  emit,
+  env,
+  allowFailure = false,
+  timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+  platform = process.platform,
+  terminate = terminateProcessTree
+}) {
   return new Promise<void>((resolve, reject) => {
     emit(`$ ${command} ${args.join(" ")}`);
+    const shell = platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
     const child = spawn(command, args, {
       env,
-      shell: process.platform === "win32"
+      shell,
+      detached: platform !== "win32"
     });
+    let settled = false;
+    let timingOut = false;
+    const timer = setTimeout(() => {
+      if (settled || timingOut) return;
+      timingOut = true;
+      void terminate(child, { platform }).then(() => {
+        const error = Object.assign(new Error(`${command} timed out after ${timeoutMs}ms and its process tree was terminated`), { code: "ETIMEDOUT" });
+        if (allowFailure) {
+          emit(`Verification skipped or failed: ${error.message}`);
+          settle(resolve);
+        } else {
+          settle(() => reject(error));
+        }
+      }, (terminationError) => {
+        settle(() => reject(Object.assign(new Error(
+          `${command} timed out after ${timeoutMs}ms and termination could not be confirmed: ${terminationError.message}`,
+          { cause: terminationError }
+        ), { code: "ETERMINATE" })));
+      });
+    }, timeoutMs);
+    const settle = (callback) => {
+      if (settled) return false;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+      return true;
+    };
 
     child.stdout.on("data", (chunk) => emit(clean(chunk)));
     child.stderr.on("data", (chunk) => emit(clean(chunk)));
     child.on("error", (error) => {
+      if (settled || timingOut) return;
       if (allowFailure) {
         emit(`Verification skipped or failed: ${error.message}`);
-        resolve();
+        settle(resolve);
       } else {
-        reject(error);
+        settle(() => reject(error));
       }
     });
     child.on("close", (code) => {
+      if (settled || timingOut) return;
       if (code === 0 || allowFailure) {
         if (code !== 0) emit(`Command exited with ${code}; continuing because this was a verification step.`);
-        resolve();
+        settle(resolve);
       } else {
-        reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
+        settle(() => reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`)));
       }
     });
   });
 }
 
-function runCommandForOutput(command, args, { env, platform = process.platform }) {
+function runCommandForOutput(command, args, {
+  env,
+  platform = process.platform,
+  timeoutMs = VERSION_COMMAND_TIMEOUT_MS,
+  terminate = terminateProcessTree
+}) {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, {
       env,
-      shell: platform === "win32"
+      shell: platform === "win32" && /\.(?:cmd|bat)$/i.test(command),
+      detached: platform !== "win32"
     });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let timingOut = false;
+    const timer = setTimeout(() => {
+      if (settled || timingOut) return;
+      timingOut = true;
+      void terminate(child, { platform }).then(() => {
+        settle(() => reject(Object.assign(
+          new Error(`${command} timed out after ${timeoutMs}ms and its process tree was terminated`),
+          { code: "ETIMEDOUT" }
+        )));
+      }, (terminationError) => {
+        settle(() => reject(Object.assign(new Error(
+          `${command} timed out after ${timeoutMs}ms and termination could not be confirmed: ${terminationError.message}`,
+          { cause: terminationError }
+        ), { code: "ETERMINATE" })));
+      });
+    }, timeoutMs);
+    const settle = (callback) => {
+      if (settled) return false;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+      return true;
+    };
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
@@ -475,12 +594,16 @@ function runCommandForOutput(command, args, { env, platform = process.platform }
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (settled || timingOut) return;
+      settle(() => reject(error));
+    });
     child.on("close", (code) => {
+      if (settled || timingOut) return;
       if (code === 0) {
-        resolve(`${stdout}\n${stderr}`);
+        settle(() => resolve(`${stdout}\n${stderr}`));
       } else {
-        reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
+        settle(() => reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`)));
       }
     });
   });
@@ -505,4 +628,14 @@ function isExecutable(file, platform = process.platform) {
   }
 }
 
-module.exports = { runInstall, buildEnv, parseCodexVersion };
+module.exports = {
+  runInstall,
+  buildEnv,
+  createDiagnosticEmitter,
+  notifyDiagnosticsSafely,
+  normalizeInstallError,
+  parseCodexVersion,
+  runCommand,
+  runCommandForOutput,
+  writeSupportReportSafely
+};

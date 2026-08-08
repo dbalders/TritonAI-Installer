@@ -5,6 +5,14 @@ const { CODEX_CLI_VERSION } = require("./npm-policy");
 
 const REPORT_VERSION = 1;
 const MAX_REPORT_EVENTS = 200;
+const FAILURE_COMPONENTS = {
+  start: "installer-startup",
+  prepare: "installer-prerequisites",
+  connect: "tritonai-service",
+  tools: "managed-codex",
+  shortcut: "harness-desktop",
+  verify: "installer-finalization"
+};
 
 interface DiagnosticsEvent {
   time: string;
@@ -69,6 +77,7 @@ function createDiagnosticsSession({
       generatedAt: new Date().toISOString(),
       ok: Boolean(ok),
       failedStep: ok ? null : currentStep,
+      failureComponent: ok ? null : failureComponentForStep(currentStep),
       installer: {
         version: installerVersion,
         platform,
@@ -103,7 +112,21 @@ function createDiagnosticsSession({
       logFile,
       supportReportFile,
       failedStep: report.failedStep,
-      ok: report.ok
+      ok: report.ok,
+      failureComponent: report.failureComponent,
+      reportAvailable: true
+    };
+  }
+
+  function fallbackInfo(ok = false): DiagnosticsInfo {
+    return {
+      logsDir: paths.logsDir,
+      logFile,
+      supportReportFile,
+      failedStep: ok ? null : currentStep,
+      ok,
+      failureComponent: ok ? null : failureComponentForStep(currentStep),
+      reportAvailable: fs.existsSync(supportReportFile)
     };
   }
 
@@ -113,8 +136,13 @@ function createDiagnosticsSession({
     logsDir: paths.logsDir,
     append,
     setStep,
-    writeSupportReport
+    writeSupportReport,
+    fallbackInfo
   };
+}
+
+function failureComponentForStep(step: string): string {
+  return FAILURE_COMPONENTS[step] || "installer-unknown";
 }
 
 function serializeError(error: ErrorWithCode, redact: (value: unknown) => string) {
@@ -151,5 +179,6 @@ function escapeRegExp(value: string): string {
 
 module.exports = {
   createDiagnosticsSession,
+  failureComponentForStep,
   redactSensitive
 };

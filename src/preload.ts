@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 const installerApi: InstallerApi = {
   getPlatform: () => ipcRenderer.invoke("installer:get-platform"),
+  reportReady: () => ipcRenderer.invoke("installer:renderer-ready"),
   openDocs: (url) => ipcRenderer.invoke("installer:open-docs", url),
   startInstall: (payload) => ipcRenderer.invoke("installer:start", payload),
   finishInstall: (payload) => ipcRenderer.invoke("installer:finish", payload),

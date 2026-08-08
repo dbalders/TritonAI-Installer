@@ -1,4 +1,5 @@
 const fs = require("fs");
+const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
 const assert = require("assert");
@@ -214,11 +215,21 @@ async function assertEnvironmentIsHarnessScoped() {
   try {
     const zshrc = path.join(tempRoot, ".zshrc");
     const bashrc = path.join(tempRoot, ".bashrc");
+    const linkedBashrc = path.join(tempRoot, "dotfiles", "bashrc");
     fs.writeFileSync(zshrc, `# user zsh config
 # TritonAI environment
 [ -f "${getPaths(tempRoot, "darwin").envFile}" ] && source "${getPaths(tempRoot, "darwin").envFile}"
 `);
-    fs.writeFileSync(bashrc, "# user bash config\n");
+    if (process.platform === "win32") {
+      fs.writeFileSync(bashrc, "# user bash config\n");
+    } else {
+      fs.mkdirSync(path.dirname(linkedBashrc), { recursive: true });
+      fs.writeFileSync(linkedBashrc, `# user bash config
+# TritonAI environment
+[ -f "${getPaths(tempRoot, "darwin").envFile}" ] && source "${getPaths(tempRoot, "darwin").envFile}"
+`);
+      fs.symlinkSync(linkedBashrc, bashrc);
+    }
 
     const macPaths = getPaths(tempRoot, "darwin");
     const macRuntime = getNodeRuntimePaths(macPaths, "darwin", process.arch);
@@ -230,9 +241,15 @@ async function assertEnvironmentIsHarnessScoped() {
     assert(!macEnvironment.includes("CODEX_HOME"), "macOS private environment must not export CODEX_HOME");
     assert.strictEqual(fs.readFileSync(zshrc, "utf8"), "# user zsh config\n");
     assert.strictEqual(fs.readFileSync(bashrc, "utf8"), "# user bash config\n");
+    if (process.platform !== "win32") {
+      assert(fs.lstatSync(bashrc).isSymbolicLink(), "atomic profile cleanup must preserve dotfile symlinks");
+      assert.strictEqual(fs.readFileSync(linkedBashrc, "utf8"), "# user bash config\n");
+    }
 
     const macLauncher = buildMacLauncherScript(macPaths, macRuntime.nodeBinary, getManagedMacAppPath(macPaths));
-    assert(macLauncher.includes(macPaths.envFile));
+    assert(macLauncher.includes('$HOME/.agents/ucsd/env'));
+    assert(!macLauncher.includes(macPaths.homeDir), "macOS launcher must resolve the launching user's home dynamically");
+    assert(macLauncher.includes('APP_PATH="$HOME/.agents/ucsd/apps/TritonAI Harness.app"'));
     assert(!macLauncher.includes("CODEX_HOME"), "macOS launcher must leave Codex home selection to Harness child processes");
 
     const winPaths = getPaths(tempRoot, "win32");
@@ -511,7 +528,8 @@ async function assertRunInstallRequiresApiKey() {
         homeDir: tempRoot,
         platform: "darwin",
         arch: process.arch,
-        emit: () => {}
+        emit: () => {},
+        checkInstallCapacity: enoughInstallCapacity
       }),
       (error) => {
         assert.match(error.message, /TritonAI access key is required/);
@@ -537,6 +555,8 @@ async function assertRunInstallStopsBeforeDesktopWhenConnectionFails() {
   let environmentSaveAttempted = false;
   let desktopInstallAttempted = false;
   let markerWriteAttempted = false;
+  let prerequisiteAttempted = false;
+  let skillsInstallAttempted = false;
 
   try {
     fs.mkdirSync(fakeRuntime.nodeBinDir, { recursive: true });
@@ -552,7 +572,11 @@ async function assertRunInstallStopsBeforeDesktopWhenConnectionFails() {
         platform: "darwin",
         arch: runtimeArch,
         emit: () => {},
-        ensurePrerequisites: async () => fakeRuntime,
+        checkInstallCapacity: enoughInstallCapacity,
+        ensurePrerequisites: async () => {
+          prerequisiteAttempted = true;
+          return fakeRuntime;
+        },
         appRoot: tempRoot,
         resourcesPath: null,
         saveEnvironment: async (environmentOptions) => {
@@ -560,7 +584,9 @@ async function assertRunInstallStopsBeforeDesktopWhenConnectionFails() {
           fs.mkdirSync(path.dirname(environmentOptions.paths.envFile), { recursive: true });
           fs.writeFileSync(environmentOptions.paths.envFile, "darwin env\n");
         },
-        installBundledSkills: () => {},
+        installBundledSkills: () => {
+          skillsInstallAttempted = true;
+        },
         getCodexVersion: () => CODEX_CLI_VERSION,
         writeManagedCodexLauncher: () => {},
         commandRunner: async () => {},
@@ -585,8 +611,11 @@ async function assertRunInstallStopsBeforeDesktopWhenConnectionFails() {
     const report = JSON.parse(fs.readFileSync(failedError.diagnostics.supportReportFile, "utf8"));
     assert.strictEqual(report.ok, false);
     assert.strictEqual(report.failedStep, "connect");
+    assert.strictEqual(report.failureComponent, "tritonai-service");
     assert(!JSON.stringify(report).includes("test-key"), "support report should redact the access key");
     assert.strictEqual(environmentSaveAttempted, false, "access key should not be saved after a failed TritonAI connection check");
+    assert.strictEqual(prerequisiteAttempted, false, "managed runtimes should not change after a failed TritonAI connection check");
+    assert.strictEqual(skillsInstallAttempted, false, "managed skills should not change after a failed TritonAI connection check");
     assert.strictEqual(desktopInstallAttempted, false, "desktop app should not install after a failed TritonAI connection check");
     assert.strictEqual(markerWriteAttempted, false, "failed installs must not write an installer version marker");
   } finally {
@@ -867,6 +896,7 @@ async function runDryRun(platform, options) {
         arch: runtimeArch,
         windowsAclRunner: platform === "win32" ? simulateWindowsAcl : undefined,
         emit: () => {},
+        checkInstallCapacity: enoughInstallCapacity,
         ensurePrerequisites: async () => fakeRuntime,
         appRoot: tempRoot,
         resourcesPath: null,
@@ -960,6 +990,8 @@ async function runDryRun(platform, options) {
     const supportReport = JSON.parse(fs.readFileSync(installResult.diagnostics.supportReportFile, "utf8"));
     assert.strictEqual(supportReport.ok, true);
     assert.strictEqual(supportReport.failedStep, null);
+    assert.strictEqual(supportReport.failureComponent, null);
+    assert.strictEqual(installResult.diagnostics.reportAvailable, true);
     assert.strictEqual(supportReport.paths.logsDir, paths.logsDir);
     assert.strictEqual(supportReport.paths.codexHome, paths.codexHome);
     assert(supportReport.events.length > 0, "support report should include recent installer events");
@@ -1135,6 +1167,9 @@ function assertWindowsShortcutTargetsApp() {
   assert(script.includes("-WindowStyle Hidden"));
   assert(script.includes(launcherPath));
   assert(script.includes(`$shortcut.IconLocation = '${appPath},0'`));
+  assert(script.includes("$temporaryShortcutPath"), "shortcut replacement must stage a temporary .lnk first");
+  assert(script.includes("Move-Item -LiteralPath $temporaryShortcutPath -Destination $shortcutPath -Force"));
+  assert(script.includes("finally"), "shortcut staging debris must be cleaned after success or failure");
 }
 
 async function assertOnboardingWorkspaceOnlySeedsOnFirstInstall() {
@@ -1157,6 +1192,7 @@ async function assertOnboardingWorkspaceOnlySeedsOnFirstInstall() {
       arch: runtimeArch,
       windowsAclRunner: platform === "win32" ? simulateWindowsAcl : undefined,
       emit: () => {},
+      checkInstallCapacity: enoughInstallCapacity,
       ensurePrerequisites: async () => fakeRuntime,
       appRoot: tempRoot,
       resourcesPath: null,
@@ -1191,6 +1227,15 @@ async function assertOnboardingWorkspaceOnlySeedsOnFirstInstall() {
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+function enoughInstallCapacity() {
+  return {
+    availableBytes: 8 * 1024 ** 3,
+    requiredBytes: 3 * 1024 ** 3,
+    bundledBytes: 0,
+    targetPath: "/fixture"
+  };
 }
 
 function assertT3DefaultsPatcherClearsRuntimeState() {
@@ -1572,14 +1617,25 @@ files:
 
     const winVendorDir = path.join(t3TempRoot, "vendor", "t3code-desktop", "win-x64");
     fs.mkdirSync(winVendorDir, { recursive: true });
+    const installerBytes = Buffer.from("fake exe");
     fs.writeFileSync(path.join(winVendorDir, "latest.yml"), `version: 0.1.3
 files:
   - url: TritonAI-Harness-0.1.3-x64.exe
-    sha512: abc
-    size: 8
+    sha512: ${crypto.createHash("sha512").update(installerBytes).digest("base64")}
+    size: ${installerBytes.length}
 `);
     const installerPath = path.join(winVendorDir, "TritonAI-Harness-0.1.3-x64.exe");
-    fs.writeFileSync(installerPath, "fake exe");
+    fs.writeFileSync(installerPath, installerBytes);
+    fs.writeFileSync(path.join(winVendorDir, "windows-artifact-trust.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      mode: "unsigned",
+      version: "0.1.3",
+      artifact: {
+        fileName: path.basename(installerPath),
+        size: fs.statSync(installerPath).size,
+        sha512: crypto.createHash("sha512").update(fs.readFileSync(installerPath)).digest("base64")
+      }
+    }, null, 2)}\n`);
     assert.strictEqual(
       getBundledWindowsInstaller({ appRoot: t3TempRoot, resourcesPath: null, arch: "x64" }).installerPath,
       installerPath

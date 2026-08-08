@@ -179,6 +179,7 @@ async function init() {
   state.docsUrl = platform.managedConfig && platform.managedConfig.apiDocsUrl
     ? platform.managedConfig.apiDocsUrl
     : "";
+  await installerApi.reportReady();
   updateDocsControls();
   if (platform.version && installerVersionLabel) {
     installerVersionLabel.textContent = `Installer v${platform.version}`;
@@ -960,6 +961,7 @@ function createPreviewInstallerApi(): InstallerApi {
       },
       existingApiKey: null
     }),
+    reportReady: async () => {},
     openDocs: async (url) => {
       if (url) window.open(url, "_blank", "noopener,noreferrer");
     },

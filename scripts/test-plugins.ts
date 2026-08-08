@@ -103,7 +103,7 @@ function assertLatestStableReleaseSelection() {
   assert.strictEqual(resolverCalls, 1);
   assert.strictEqual(automatic.ref, "refs/tags/v1.2.3");
   assert.strictEqual(automatic.commit, "c".repeat(40));
-  assert.deepStrictEqual(automatic.selectedIds, ["google-workspace", "microsoft-365"]);
+  assert.deepStrictEqual(automatic.selectedIds, ["github", "google-workspace", "microsoft-365"]);
 
   const explicit = readPluginSourceEnvironment({
     TRITONAI_PLUGINS_REF: "refs/tags/v1.2.3",
@@ -123,7 +123,7 @@ function assertLatestStableReleaseSelection() {
     { ...explicit, selectedIds: [] },
     { latest: false, production: true }
   );
-  assert.deepStrictEqual(production.selectedIds, ["google-workspace", "microsoft-365"]);
+  assert.deepStrictEqual(production.selectedIds, ["github", "google-workspace", "microsoft-365"]);
   assert.throws(
     () => selectPluginSourceInput(explicit, { latest: false, production: true }),
     /TRITONAI_PLUGIN_IDS must be unset/

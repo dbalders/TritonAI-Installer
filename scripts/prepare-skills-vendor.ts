@@ -26,17 +26,20 @@ const localSourceCandidates = localSourceOverride
     ];
 
 function main() {
+  const requireCleanSource = readRequireCleanSource(process.argv.slice(2));
   const localSource = findLocalSkillsSource(localSourceCandidates, sourceSubdir);
   if (localSourceOverride && !localSource) {
     throw new Error("UCSD_SKILLS_SOURCE does not contain packageable root-level secure skills.");
   }
   if (localSource) {
     assertCanonicalLocalSecureSkillsSource(localSource);
+    const sourceInfo = getLocalSourceInfo(localSource);
+    if (requireCleanSource) assertReleaseSkillsSourceInfo(sourceInfo);
     const result = stageSkillsFromSource({
       sourceRoot: localSource,
       sourceSubdir,
       vendorDir,
-      sourceInfo: getLocalSourceInfo(localSource)
+      sourceInfo
     });
     console.log(`Prepared ${result.skills.length} managed secure skill${result.skills.length === 1 ? "" : "s"} from a local checkout.`);
     return;
@@ -48,22 +51,42 @@ function main() {
     assertCanonicalSecureSkillsRepository(effectiveRepository, "UCSD_SKILLS_REPO");
     const cloneDir = path.join(tempRoot, "repo");
     cloneSecureRepository(repo, ref, cloneDir);
+    const sourceInfo = {
+      type: "git",
+      repo: sanitizeRepositoryUrl(effectiveRepository),
+      ref,
+      commit: getGitValue(cloneDir, ["rev-parse", "HEAD"])
+    };
+    if (requireCleanSource) assertReleaseSkillsSourceInfo(sourceInfo);
     const result = stageSkillsFromSource({
       sourceRoot: cloneDir,
       sourceSubdir,
       vendorDir,
-      sourceInfo: {
-        type: "git",
-        repo: sanitizeRepositoryUrl(effectiveRepository),
-        ref,
-        commit: getGitValue(cloneDir, ["rev-parse", "HEAD"])
-      }
+      sourceInfo
     });
 
     console.log(`Prepared ${result.skills.length} managed secure skill${result.skills.length === 1 ? "" : "s"} from ${sanitizeRepositoryUrl(effectiveRepository)}#${ref}.`);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+function readRequireCleanSource(args) {
+  if (args.length === 0) return false;
+  if (args.length === 1 && args[0] === "--require-clean") return true;
+  throw new Error(`Unsupported secure skills vendor arguments: ${args.join(" ")}`);
+}
+
+function assertReleaseSkillsSourceInfo(sourceInfo) {
+  if (!sourceInfo || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(String(sourceInfo.commit || ""))) {
+    throw new Error("Release packaging requires secure skills resolved to an exact Git commit.");
+  }
+  if (sourceInfo.dirty === true) {
+    throw new Error(
+      "Release packaging refuses a dirty UCSD-Skills-Library-Secure checkout. Commit the intended skills change or use a clean checkout."
+    );
+  }
+  return sourceInfo;
 }
 
 function findLocalSkillsSource(candidates, subdir = "") {
@@ -303,11 +326,13 @@ module.exports = {
   CANONICAL_SECURE_REPOSITORY,
   assertCanonicalLocalSecureSkillsSource,
   assertCanonicalSecureSkillsRepository,
+  assertReleaseSkillsSourceInfo,
   findPackagedSkillNames,
   findSkillsSourceDir,
   findLocalSkillsSource,
   getEffectiveCloneRepositoryUrl,
   getEffectiveRepositoryUrl,
+  readRequireCleanSource,
   sanitizeRepositoryUrl,
   stageSkillsFromSource
 };

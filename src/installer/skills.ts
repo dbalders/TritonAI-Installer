@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { writeFileAtomic } = require("./atomic-file");
 const {
   createManagedSkillsManifest,
   isValidSkillName,
@@ -22,6 +23,10 @@ interface InstallBundledSkillsOptions extends SkillsBundleOptions {
 const MANAGED_SKILLS_MANIFEST_FILE = ".tritonai-managed-skills.json";
 const VENDOR_SKILLS_MANIFEST_FILE = "manifest.json";
 const LEGACY_SKILLS_MANIFEST_FILE = "manifest.json";
+const SKILLS_TRANSACTION_JOURNAL_FILE = ".tritonai-secure-skills-transaction.json";
+const SKILLS_TRANSACTION_SCHEMA_VERSION = 1;
+const SKILLS_STAGE_PREFIX = ".tritonai-secure-skills-stage-";
+const SKILLS_BACKUP_PREFIX = ".tritonai-secure-skills-backup-";
 
 function installBundledSkills(options: InstallBundledSkillsOptions) {
   const {
@@ -31,8 +36,9 @@ function installBundledSkills(options: InstallBundledSkillsOptions) {
     appRoot,
     copySkill = copySkillDirectory
   } = options;
-  const source = findBundledSkillsDir({ resourcesPath, appRoot });
   fs.mkdirSync(paths.skillsDir, { recursive: true });
+  recoverInterruptedSkillsTransaction(paths.skillsDir, emit);
+  const source = findBundledSkillsDir({ resourcesPath, appRoot });
 
   if (!source) {
     emit("No bundled managed secure skills found; existing installed skills were left unchanged.");
@@ -46,12 +52,23 @@ function installBundledSkills(options: InstallBundledSkillsOptions) {
   preflightInstalledTargets(paths.skillsDir, bundledManifest.skills, previousManifest.skills);
 
   const transactionParent = path.dirname(paths.skillsDir);
-  const stageRoot = fs.mkdtempSync(path.join(transactionParent, ".tritonai-secure-skills-stage-"));
+  const stageRoot = fs.mkdtempSync(path.join(transactionParent, SKILLS_STAGE_PREFIX));
   let backupRoot = null;
   let transactionSucceeded = false;
+  const journalPath = path.join(transactionParent, SKILLS_TRANSACTION_JOURNAL_FILE);
   try {
     stageSecureSkills({ source, stageRoot, manifest: bundledManifest, copySkill });
-    backupRoot = fs.mkdtempSync(path.join(transactionParent, ".tritonai-secure-skills-backup-"));
+    backupRoot = fs.mkdtempSync(path.join(transactionParent, SKILLS_BACKUP_PREFIX));
+    writeFileAtomic(journalPath, `${JSON.stringify({
+      schemaVersion: SKILLS_TRANSACTION_SCHEMA_VERSION,
+      skillsDir: path.basename(paths.skillsDir),
+      stageRoot: path.basename(stageRoot),
+      backupRoot: path.basename(backupRoot),
+      previousSkills: previousManifest.skills,
+      incomingSkills: bundledManifest.skills,
+      hadManagedManifest: fs.existsSync(managedManifestPath),
+      hadLegacyManifest: isLegacyManifestFile(path.join(paths.skillsDir, LEGACY_SKILLS_MANIFEST_FILE))
+    }, null, 2)}\n`, { mode: 0o600 });
     applySecureSkillsTransaction({
       skillsDir: paths.skillsDir,
       stageRoot,
@@ -65,6 +82,7 @@ function installBundledSkills(options: InstallBundledSkillsOptions) {
     if (backupRoot && (transactionSucceeded || isEmptyDirectory(backupRoot))) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
+    if (transactionSucceeded) fs.rmSync(journalPath, { force: true });
   }
 
   const removed = previousManifest.skills.filter((name) => !bundledManifest.skills.includes(name)).length;
@@ -309,6 +327,159 @@ function rollbackSecureSkillsTransaction({
   return errors;
 }
 
+function recoverInterruptedSkillsTransaction(skillsDir, emit: InstallerEmit = () => {}) {
+  const transactionParent = path.dirname(skillsDir);
+  const journalPath = path.join(transactionParent, SKILLS_TRANSACTION_JOURNAL_FILE);
+  if (!fs.existsSync(journalPath)) return { recovered: false };
+
+  const journal = readSkillsTransactionJournal(journalPath, skillsDir);
+  const stageRoot = resolveTransactionDirectory(transactionParent, journal.stageRoot, SKILLS_STAGE_PREFIX);
+  const backupRoot = resolveTransactionDirectory(transactionParent, journal.backupRoot, SKILLS_BACKUP_PREFIX);
+
+  if (skillsStateMatches(skillsDir, journal.incomingSkills, journal.previousSkills)) {
+    removeSkillsTransactionArtifacts({ journalPath, stageRoot, backupRoot });
+    emit("Recovered a completed managed secure skills transaction after an interrupted cleanup.");
+    return { recovered: true, action: "committed" };
+  }
+
+  if (skillsStateMatches(skillsDir, journal.previousSkills, journal.incomingSkills)) {
+    removeSkillsTransactionArtifacts({ journalPath, stageRoot, backupRoot });
+    emit("Cleaned an interrupted managed secure skills transaction after its rollback completed.");
+    return { recovered: true, action: "already-rolled-back" };
+  }
+
+  rollbackInterruptedSkillsTransaction({ skillsDir, stageRoot, backupRoot, journal });
+  if (!skillsStateMatches(skillsDir, journal.previousSkills, journal.incomingSkills)) {
+    throw new Error(
+      `Could not recover the interrupted managed secure skills transaction at ${journalPath}; `
+      + "the previous managed bundle could not be proven intact. Transaction evidence was preserved."
+    );
+  }
+  removeSkillsTransactionArtifacts({ journalPath, stageRoot, backupRoot });
+  emit("Restored the previous managed secure skills bundle after an interrupted transaction.");
+  return { recovered: true, action: "rolled-back" };
+}
+
+function readSkillsTransactionJournal(journalPath, skillsDir) {
+  const stat = fs.lstatSync(journalPath);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`Managed secure skills transaction journal must be a regular file: ${journalPath}`);
+  }
+
+  let journal;
+  try {
+    journal = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+  } catch (error) {
+    throw new Error(`Managed secure skills transaction journal is invalid JSON: ${error.message}`);
+  }
+
+  const validSkillList = (value) => Array.isArray(value)
+    && value.every((name) => typeof name === "string" && isValidSkillName(name))
+    && new Set(value).size === value.length;
+  if (!isPlainObject(journal)
+    || journal.schemaVersion !== SKILLS_TRANSACTION_SCHEMA_VERSION
+    || journal.skillsDir !== path.basename(skillsDir)
+    || typeof journal.stageRoot !== "string"
+    || typeof journal.backupRoot !== "string"
+    || !validSkillList(journal.previousSkills)
+    || !validSkillList(journal.incomingSkills)
+    || typeof journal.hadManagedManifest !== "boolean"
+    || typeof journal.hadLegacyManifest !== "boolean") {
+    throw new Error(`Managed secure skills transaction journal has an invalid schema: ${journalPath}`);
+  }
+  return journal;
+}
+
+function resolveTransactionDirectory(parent, name, prefix) {
+  if (path.basename(name) !== name || !name.startsWith(prefix)) {
+    throw new Error(`Managed secure skills transaction contains an unsafe directory name: ${name}`);
+  }
+  const directory = path.join(parent, name);
+  if (fs.existsSync(directory)) {
+    const stat = fs.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error(`Managed secure skills transaction path must be a real directory: ${directory}`);
+    }
+  }
+  return directory;
+}
+
+function skillsStateMatches(skillsDir, expectedSkills, absentManagedSkills) {
+  const manifestPath = path.join(skillsDir, MANAGED_SKILLS_MANIFEST_FILE);
+  let installedSkills;
+  if (!fs.existsSync(manifestPath)) {
+    installedSkills = [];
+  } else {
+    try {
+      installedSkills = readInstalledManagedManifest(manifestPath).skills;
+    } catch (_error) {
+      return false;
+    }
+  }
+  if (!sameStringArray(installedSkills, expectedSkills)) return false;
+
+  try {
+    for (const skillName of expectedSkills) {
+      validatePackagedSkillDirectory(path.join(skillsDir, skillName), skillName);
+    }
+  } catch (_error) {
+    return false;
+  }
+  return absentManagedSkills
+    .filter((name) => !expectedSkills.includes(name))
+    .every((name) => !fs.existsSync(path.join(skillsDir, name)));
+}
+
+function rollbackInterruptedSkillsTransaction({ skillsDir, stageRoot, backupRoot, journal }) {
+  const previous = new Set(journal.previousSkills);
+  const incoming = new Set(journal.incomingSkills);
+  const allSkills = Array.from(new Set([...journal.previousSkills, ...journal.incomingSkills]));
+
+  for (const skillName of allSkills) {
+    const target = path.join(skillsDir, skillName);
+    const staged = path.join(stageRoot, skillName);
+    const backup = path.join(backupRoot, skillName);
+    if (fs.existsSync(backup)) {
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.renameSync(backup, target);
+      continue;
+    }
+    if (!previous.has(skillName) && incoming.has(skillName) && !fs.existsSync(staged)) {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  }
+
+  restoreInterruptedManifest({
+    target: path.join(skillsDir, MANAGED_SKILLS_MANIFEST_FILE),
+    staged: path.join(stageRoot, MANAGED_SKILLS_MANIFEST_FILE),
+    backup: path.join(backupRoot, MANAGED_SKILLS_MANIFEST_FILE),
+    existedBefore: journal.hadManagedManifest
+  });
+  restoreInterruptedManifest({
+    target: path.join(skillsDir, LEGACY_SKILLS_MANIFEST_FILE),
+    staged: null,
+    backup: path.join(backupRoot, LEGACY_SKILLS_MANIFEST_FILE),
+    existedBefore: journal.hadLegacyManifest
+  });
+}
+
+function restoreInterruptedManifest({ target, staged, backup, existedBefore }) {
+  if (fs.existsSync(backup)) {
+    fs.rmSync(target, { force: true });
+    fs.renameSync(backup, target);
+    return;
+  }
+  if (!existedBefore && staged && !fs.existsSync(staged)) {
+    fs.rmSync(target, { force: true });
+  }
+}
+
+function removeSkillsTransactionArtifacts({ journalPath, stageRoot, backupRoot }) {
+  fs.rmSync(stageRoot, { recursive: true, force: true });
+  fs.rmSync(backupRoot, { recursive: true, force: true });
+  fs.rmSync(journalPath, { force: true });
+}
+
 function isLegacyManifestFile(manifestPath) {
   if (!fs.existsSync(manifestPath)) return false;
   const stat = fs.lstatSync(manifestPath);
@@ -393,10 +564,12 @@ function listSkillDirs(skillsDir: string): string[] {
 module.exports = {
   LEGACY_SKILLS_MANIFEST_FILE,
   MANAGED_SKILLS_MANIFEST_FILE,
+  SKILLS_TRANSACTION_JOURNAL_FILE,
   VENDOR_SKILLS_MANIFEST_FILE,
   findBundledSkillsDir,
   installBundledSkills,
   listSkillDirs,
   readBundledManifest,
-  readInstalledManagedManifest
+  readInstalledManagedManifest,
+  recoverInterruptedSkillsTransaction
 };

@@ -1,21 +1,17 @@
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
 const root = path.resolve(__dirname, "..", "..");
+const pkg = require(path.join(root, "package.json"));
 const outputDir = path.join(root, "artifacts", "macos-release");
 const configPath = path.join(root, "electron-builder.mac.json");
 const builderCli = path.join(root, "node_modules", "electron-builder", "cli.js");
 const appPath = path.join(outputDir, "mac-arm64", "TritonAI Installer.app");
-const dmgVolumeName = "Double-click to Install";
-const dmgBackgroundSource = path.join(root, "build", "dmg-background.png");
-const dmgBackgroundMountPath = path.join(".background", "dmg-background.png");
-const dmgVolumeIconSource = path.join(root, "build", "icon.icns");
-const dmgVolumeIconMountPath = ".VolumeIcon.icns";
-const dmgWindowBounds = [680, 220, 1240, 560];
-const dmgAppIconPosition = [280, 150];
-const dmgIconSize = 152;
+const dmgVolumeName = "Double-click TritonAI Installer";
+const dmgPath = path.join(outputDir, `TritonAI-Installer-${pkg.version}-arm64.dmg`);
 
 function main() {
   if (process.platform !== "darwin") {
@@ -55,7 +51,8 @@ function main() {
 
   run(process.execPath, [path.join(root, "dist", "scripts", "verify-macos-bundled-resources.js"), appPath]);
   verifyApp(appPath);
-  recreateDmgsFromApp();
+  createDmgFromApp();
+  for (const zip of releaseFiles(".zip")) fs.rmSync(zip, { force: true });
   signDmgs(identity);
   notarizeAndStapleDmgs(notary);
 
@@ -67,7 +64,8 @@ function prepareVendorArtifacts() {
   run(process.execPath, [path.join(root, "dist", "scripts", "prepare-plugins-vendor.js"), "--latest"]);
   run(process.execPath, [path.join(root, "dist", "scripts", "prepare-t3code-desktop-vendor.js")]);
   run(process.execPath, [path.join(root, "dist", "scripts", "prepare-codex-cli-vendor.js"), "mac-arm64"]);
-  run(process.execPath, [path.join(root, "dist", "scripts", "prepare-skills-vendor.js")]);
+  run(process.execPath, [path.join(root, "dist", "scripts", "prepare-node-runtime-vendor.js"), "mac-arm64"]);
+  run(process.execPath, [path.join(root, "dist", "scripts", "prepare-skills-vendor.js"), "--require-clean"]);
 }
 
 function prepareManagedConfig() {
@@ -133,30 +131,29 @@ function signDmgs(identity) {
   }
 }
 
-function recreateDmgsFromApp() {
-  const dmgs = releaseFiles(".dmg");
-  if (dmgs.length === 0) {
-    throw new Error(`No DMG artifacts found under ${outputDir}`);
+function createDmgFromApp({ sourceApp = appPath, targetDmg = dmgPath, runCommand = run } = {}) {
+  if (!fs.existsSync(sourceApp) || !fs.lstatSync(sourceApp).isDirectory()) {
+    throw new Error(`Missing assembled macOS Installer app: ${sourceApp}`);
   }
-
-  for (const dmg of dmgs) {
-    recreateDmgFromApp(dmg);
-  }
-}
-
-function recreateDmgFromApp(dmg) {
   const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-installer-dmg-src-"));
+  const sourceRoot = path.join(stagingDir, "source");
+  const writableDmg = path.join(stagingDir, "installer-writable.dmg");
   const mountPoint = path.join(stagingDir, "mount");
-  const writableDmg = path.join(stagingDir, "installer-rw.dmg");
-  const sizeMb = Math.max(1024, Math.ceil(directorySizeBytes(appPath) / 1024 / 1024) + 256);
+  const compressedDmg = path.join(stagingDir, "installer-compressed.dmg");
   let mounted = false;
   try {
+    fs.mkdirSync(sourceRoot, { recursive: true });
+    runCommand("/usr/bin/ditto", [
+      "--noextattr",
+      "--noqtn",
+      sourceApp,
+      path.join(sourceRoot, path.basename(sourceApp))
+    ]);
     fs.mkdirSync(mountPoint, { recursive: true });
-    fs.rmSync(dmg, { force: true });
-    run("hdiutil", [
+    runCommand("/usr/bin/hdiutil", [
       "create",
       "-size",
-      `${sizeMb}m`,
+      `${diskImageCapacityMib(sourceRoot)}m`,
       "-fs",
       "HFS+",
       "-volname",
@@ -164,92 +161,68 @@ function recreateDmgFromApp(dmg) {
       "-ov",
       writableDmg
     ]);
-    run("hdiutil", ["attach", writableDmg, "-nobrowse", "-mountpoint", mountPoint]);
+    runCommand("/usr/bin/hdiutil", [
+      "attach",
+      writableDmg,
+      "-nobrowse",
+      "-noverify",
+      "-noautoopen",
+      "-mountpoint",
+      mountPoint
+    ]);
     mounted = true;
-    run("ditto", [appPath, path.join(mountPoint, path.basename(appPath))]);
-    installDmgBackground(mountPoint);
-    installDmgVolumeIcon(mountPoint);
-    applyDmgFinderLayout(mountPoint);
-    run("hdiutil", ["detach", mountPoint]);
+    runCommand("/usr/bin/ditto", [
+      "--noextattr",
+      "--noqtn",
+      sourceRoot,
+      mountPoint
+    ]);
+    runCommand("/usr/bin/hdiutil", ["detach", mountPoint]);
     mounted = false;
-    run("hdiutil", [
+    runCommand("/usr/bin/hdiutil", [
       "convert",
       writableDmg,
       "-format",
       "UDZO",
       "-o",
-      dmg
+      compressedDmg
     ]);
+    fs.rmSync(targetDmg, { force: true });
+    fs.renameSync(compressedDmg, targetDmg);
+    return targetDmg;
   } finally {
     if (mounted) {
-      spawnSync("hdiutil", ["detach", mountPoint], { stdio: "inherit" });
+      try {
+        runCommand("/usr/bin/hdiutil", ["detach", mountPoint, "-force"]);
+      } catch {
+        // Preserve the original packaging failure while still attempting cleanup.
+      }
     }
     fs.rmSync(stagingDir, { recursive: true, force: true });
   }
 }
 
-function installDmgBackground(mountPoint) {
-  if (!fs.existsSync(dmgBackgroundSource)) {
-    throw new Error(`Missing DMG background asset: ${dmgBackgroundSource}`);
+function diskImageCapacityMib(sourceRoot) {
+  const allocationBlockBytes = 4 * 1024;
+  const stack = [sourceRoot];
+  let allocatedBytes = 0;
+  while (stack.length > 0) {
+    const entryPath = stack.pop();
+    const stat = fs.lstatSync(entryPath);
+    if (stat.isDirectory()) {
+      allocatedBytes += allocationBlockBytes;
+      for (const entry of fs.readdirSync(entryPath)) stack.push(path.join(entryPath, entry));
+      continue;
+    }
+    const diskBytes = Number.isFinite(stat.blocks) ? stat.blocks * 512 : 0;
+    allocatedBytes += Math.max(allocationBlockBytes, stat.size, diskBytes);
   }
-
-  const backgroundTarget = path.join(mountPoint, dmgBackgroundMountPath);
-  fs.mkdirSync(path.dirname(backgroundTarget), { recursive: true });
-  fs.copyFileSync(dmgBackgroundSource, backgroundTarget);
-}
-
-function installDmgVolumeIcon(mountPoint) {
-  if (!fs.existsSync(dmgVolumeIconSource)) {
-    throw new Error(`Missing DMG volume icon asset: ${dmgVolumeIconSource}`);
-  }
-
-  fs.copyFileSync(dmgVolumeIconSource, path.join(mountPoint, dmgVolumeIconMountPath));
-  run("SetFile", ["-a", "C", mountPoint]);
-}
-
-function applyDmgFinderLayout(mountPoint) {
-  const appName = path.basename(appPath);
-  const backgroundPath = path.join(mountPoint, dmgBackgroundMountPath);
-  const finderScript = [
-    'tell application "Finder"',
-    `  set dmgRoot to POSIX file "${escapeAppleScriptString(mountPoint)}" as alias`,
-    `  set backgroundImage to POSIX file "${escapeAppleScriptString(backgroundPath)}" as alias`,
-    "  tell folder dmgRoot",
-    "    open",
-    "    set current view of container window to icon view",
-    "    set toolbar visible of container window to false",
-    "    set statusbar visible of container window to false",
-    `    set bounds of container window to {${dmgWindowBounds.join(", ")}}`,
-    "    set viewOptions to icon view options of container window",
-    "    set arrangement of viewOptions to not arranged",
-    `    set icon size of viewOptions to ${dmgIconSize}`,
-    "    set background picture of viewOptions to backgroundImage",
-    `    set position of item "${escapeAppleScriptString(appName)}" of container window to {${dmgAppIconPosition.join(", ")}}`,
-    "    update without registering applications",
-    "    close",
-    "  end tell",
-    "end tell"
-  ];
-
-  run("osascript", finderScript.flatMap((line) => ["-e", line]));
-  run("sync", []);
-}
-
-function escapeAppleScriptString(value) {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-function directorySizeBytes(target) {
-  const stat = fs.lstatSync(target);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
-    return stat.size;
-  }
-
-  return fs.readdirSync(target)
-    .reduce((total, entry) => total + directorySizeBytes(path.join(target, entry)), stat.size);
+  const capacityBytes = Math.ceil(allocatedBytes * 1.2) + 64 * 1024 * 1024;
+  return Math.ceil(capacityBytes / (1024 * 1024));
 }
 
 function notarizeAndStapleDmgs(notary) {
+  const candidates = [];
   for (const dmg of releaseFiles(".dmg")) {
     run("xcrun", [
       "notarytool",
@@ -267,8 +240,10 @@ function notarizeAndStapleDmgs(notary) {
     run("xcrun", ["stapler", "validate", dmg]);
     run("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=4", dmg]);
     run("hdiutil", ["verify", dmg]);
-    verifyMountedDmgApp(dmg);
+    candidates.push(verifyMountedDmgApp(dmg));
   }
+  if (candidates.length !== 1) throw new Error(`Expected exactly one macOS Installer DMG; found ${candidates.length}.`);
+  writePackagedBootProof(candidates);
 }
 
 function verifyMountedDmgApp(dmg) {
@@ -277,10 +252,72 @@ function verifyMountedDmgApp(dmg) {
     run("hdiutil", ["attach", dmg, "-nobrowse", "-readonly", "-mountpoint", mountPoint]);
     const mountedApp = path.join(mountPoint, "TritonAI Installer.app");
     verifyApp(mountedApp);
+    const marker = runPackagedBootSmoke(mountedApp);
+    return {
+      id: "macos-dmg",
+      path: path.relative(root, dmg).split(path.sep).join("/"),
+      sha256: sha256(dmg),
+      marker
+    };
   } finally {
     spawnSync("hdiutil", ["detach", mountPoint], { stdio: "inherit" });
     fs.rmSync(mountPoint, { recursive: true, force: true });
   }
+}
+
+function runPackagedBootSmoke(mountedApp) {
+  const markerPath = path.join(os.tmpdir(), `tritonai-installer-smoke-macos-${process.pid}-${Date.now()}.json`);
+  const userDataPath = `${markerPath}.userdata`;
+  const executable = path.join(mountedApp, "Contents", "MacOS", "TritonAI Installer");
+  try {
+    const result = spawnSync(executable, [`--tritonai-installer-smoke-marker=${markerPath}`], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 30_000,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        `Packaged macOS Installer failed its native boot gate: ${result.error?.message || result.stderr || `exit ${result.status}`}`
+      );
+    }
+    if (!fs.existsSync(markerPath)) throw new Error("Packaged macOS Installer did not write its readiness marker.");
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+    if (
+      marker.schemaVersion !== 1 ||
+      marker.productName !== "TritonAI Installer" ||
+      marker.version !== pkg.version ||
+      marker.platform !== "darwin" ||
+      marker.arch !== "arm64" ||
+      marker.packaged !== true ||
+      !Number.isInteger(marker.healthyForMs) ||
+      marker.healthyForMs < 5_000 ||
+      !marker.readyAt
+    ) {
+      throw new Error("Packaged macOS Installer returned an invalid readiness marker.");
+    }
+    return marker;
+  } finally {
+    fs.rmSync(markerPath, { force: true });
+    fs.rmSync(userDataPath, { recursive: true, force: true });
+  }
+}
+
+function writePackagedBootProof(candidates) {
+  const proofPath = path.join(outputDir, "packaged-boot.json");
+  const temporaryPath = `${proofPath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify({
+    schemaVersion: 1,
+    version: pkg.version,
+    platform: "macos-arm64",
+    verifiedAt: new Date().toISOString(),
+    candidates
+  }, null, 2)}\n`);
+  fs.renameSync(temporaryPath, proofPath);
+}
+
+function sha256(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
 function releaseFiles(...extensions) {
@@ -303,4 +340,6 @@ function run(command, args, env = process.env) {
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { createDmgFromApp };

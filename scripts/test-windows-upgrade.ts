@@ -13,7 +13,8 @@ const { buildWindowsEnvironmentLines, powerShellLiteral } = require("../src/inst
 const {
   cleanupStaleWindowsUpgradeBackup,
   installWindowsDesktop,
-  runWindowsInstaller
+  runWindowsInstaller,
+  verifyExpectedWindowsHarnessPublisher
 } = require("../src/installer/t3code-desktop");
 
 function simulateWindowsAcl(file, action, content) {
@@ -28,9 +29,13 @@ async function main() {
   await assertNonzeroInstallerExitIsNotRetried();
   await assertPermissionFailureUsesPowerShellFallback();
   await assertPowerShellInstallerFailureIsNotRetried();
-  await assertPowerShellLaunchPermissionFailureUsesCmdFallback();
+  await assertPowerShellLaunchPermissionFailureFailsClosed();
   await assertPowerShellExecutionFailureIsNotRetried();
   await assertMissingPowerShellExitCodeIsNotRetried();
+  await assertWindowsInstallerTimeoutContract();
+  await assertWindowsPublisherVerification();
+  await assertUnsignedBundleSkipsOnlyPublisherVerification();
+  await assertBundledTrustPolicyIsRequiredAndBound();
   if (process.platform === "win32") {
     await assertRealPowerShellInstallerFailureIsNotRetried();
   }
@@ -44,6 +49,69 @@ async function main() {
   assertPowerShellEnvironmentUsesLiteralQuoting();
   assertNsisProcessDetectionContract();
   console.log("Windows upgrade contract tests passed.");
+}
+
+async function assertUnsignedBundleSkipsOnlyPublisherVerification() {
+  await withWindowsFixture(async (fixture) => {
+    const policyPath = path.join(fixture.vendorDir, "windows-artifact-trust.json");
+    const policy = JSON.parse(fs.readFileSync(policyPath, "utf8"));
+    policy.mode = "unsigned";
+    fs.writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
+    const events = [];
+    let version = "0.2.0";
+    let fingerprint = "old";
+    const result = await installWindowsDesktop({
+      ...fixture.installOptions,
+      packaged: true,
+      emit: (message) => events.push(message),
+      windowsInstallRuntime: {
+        verifyExpectedWindowsHarnessPublisher: async () => {
+          throw new Error("unsigned policy must not invoke publisher verification");
+        },
+        unblockWindowsFile: async () => {},
+        runWindowsInstaller: async () => {
+          version = "0.2.1";
+          fingerprint = "new";
+        },
+        waitForWindowsT3CodeApp: async () => fixture.existingApp,
+        readWindowsAppVersion: async () => version,
+        readWindowsAppFingerprint: async () => fingerprint,
+        finishWindowsInstall: async ({ appPath }) => ({ appPath, shortcutPath: `${appPath}.lnk` })
+      }
+    });
+    assert.strictEqual(result.appPath, fixture.existingApp);
+    assert(events.some((message) => message.includes("intentionally contains an unsigned TritonAI Harness")));
+    assert(events.some((message) => message.includes("Verified TritonAI Harness 0.2.1")));
+  });
+}
+
+async function assertBundledTrustPolicyIsRequiredAndBound() {
+  await withWindowsFixture(async (fixture) => {
+    const policyPath = path.join(fixture.vendorDir, "windows-artifact-trust.json");
+    fs.rmSync(policyPath);
+    await assert.rejects(
+      installWindowsDesktop({
+        ...fixture.installOptions,
+        packaged: true,
+        windowsInstallRuntime: noOpWindowsRuntime(fixture)
+      }),
+      /missing windows-artifact-trust\.json/
+    );
+  });
+  await withWindowsFixture(async (fixture) => {
+    const policyPath = path.join(fixture.vendorDir, "windows-artifact-trust.json");
+    const policy = JSON.parse(fs.readFileSync(policyPath, "utf8"));
+    policy.artifact.sha512 = "tampered-policy-binding";
+    fs.writeFileSync(policyPath, JSON.stringify(policy));
+    await assert.rejects(
+      installWindowsDesktop({
+        ...fixture.installOptions,
+        packaged: true,
+        windowsInstallRuntime: noOpWindowsRuntime(fixture)
+      }),
+      /artifact sha512 does not match/
+    );
+  });
 }
 
 async function assertCompletedInstallRemovesStaleLongPathBackup() {
@@ -68,6 +136,7 @@ async function assertCompletedInstallRemovesStaleLongPathBackup() {
       ...fixture.installOptions,
       emit: (message) => events.push(message),
       windowsInstallRuntime: {
+        verifyExpectedWindowsHarnessPublisher: async () => {},
         unblockWindowsFile: async () => {},
         runWindowsInstaller: async () => {
           assert.strictEqual(
@@ -147,6 +216,7 @@ async function assertPackagedMissingCodexFailsClosed() {
         appRoot: fixture.appRoot,
         resourcesPath: null,
         emit: () => {},
+        checkInstallCapacity: enoughInstallCapacity,
         ensurePrerequisites: async () => nodeRuntime,
         installBundledSkills: () => {},
         saveEnvironment: async () => {},
@@ -169,16 +239,25 @@ async function assertExistingInstallIsUpgraded() {
   await withWindowsFixture(async (fixture) => {
     let currentVersion = "0.2.0";
     const installerRuns = [];
+    const publisherVerifications = [];
+    const identityOrder = [];
     const result = await installWindowsDesktop({
       ...fixture.installOptions,
       windowsInstallRuntime: {
+        verifyExpectedWindowsHarnessPublisher: async (executablePath) => {
+          publisherVerifications.push(executablePath);
+          identityOrder.push(`verify:${executablePath}`);
+        },
         unblockWindowsFile: async () => {},
         runWindowsInstaller: async (installerPath, args) => {
           installerRuns.push({ installerPath, args });
           currentVersion = "0.2.1";
         },
         waitForWindowsT3CodeApp: async () => fixture.existingApp,
-        readWindowsAppVersion: async () => currentVersion,
+        readWindowsAppVersion: async () => {
+          identityOrder.push("read-version");
+          return currentVersion;
+        },
         readWindowsAppFingerprint: async () => currentVersion,
         finishWindowsInstall: async ({ appPath }) => ({ appPath, shortcutPath: `${appPath}.lnk` })
       }
@@ -188,6 +267,15 @@ async function assertExistingInstallIsUpgraded() {
     assert.deepStrictEqual(installerRuns[0].args, ["/S"]);
     assert.strictEqual(path.basename(installerRuns[0].installerPath), fixture.installerName);
     assert.notStrictEqual(path.dirname(installerRuns[0].installerPath), fixture.vendorDir, "bundled NSIS should run from the writable cache");
+    assert.deepStrictEqual(
+      publisherVerifications,
+      [installerRuns[0].installerPath, fixture.existingApp],
+      "the staged installer and installed Harness executable must both pass publisher verification"
+    );
+    assert(
+      identityOrder.indexOf(`verify:${fixture.existingApp}`) < identityOrder.indexOf("read-version"),
+      "the installed Harness publisher must be verified before executable version inspection"
+    );
     assert.strictEqual(result.appPath, fixture.existingApp);
   });
 }
@@ -213,6 +301,7 @@ async function assertInstallerFailureIsNotMasked() {
       installWindowsDesktop({
         ...fixture.installOptions,
         windowsInstallRuntime: {
+          verifyExpectedWindowsHarnessPublisher: async () => {},
           unblockWindowsFile: async () => {},
           runWindowsInstaller: async () => { throw new Error("simulated NSIS failure"); },
           waitForWindowsT3CodeApp: async () => fixture.existingApp,
@@ -295,26 +384,29 @@ async function assertPowerShellInstallerFailureIsNotRetried() {
   );
 }
 
-async function assertPowerShellLaunchPermissionFailureUsesCmdFallback() {
+async function assertPowerShellLaunchPermissionFailureFailsClosed() {
   const calls = [];
   const permissionFailure = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
 
-  await runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
-    platform: "win32",
-    run: async (command) => {
-      calls.push(command);
-      if (command !== "cmd.exe") throw permissionFailure;
-    },
-    runPowerShellCapture: async () => {
-      calls.push("powershell.exe");
-      throw new Error("Start-Process failed: Access is denied");
-    }
-  });
+  await assert.rejects(
+    runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+      platform: "win32",
+      run: async (command) => {
+        calls.push(command);
+        throw permissionFailure;
+      },
+      runPowerShellCapture: async () => {
+        calls.push("powershell.exe");
+        throw new Error("Start-Process failed: Access is denied");
+      }
+    }),
+    /will not fall through to cmd\.exe/
+  );
 
   assert.deepStrictEqual(
     calls,
-    ["harness-installer.exe", "powershell.exe", "cmd.exe"],
-    "cmd.exe should remain available when PowerShell cannot launch the installer"
+    ["harness-installer.exe", "powershell.exe"],
+    "a blocked PowerShell launch must fail closed without an unowned cmd.exe child"
   );
 }
 
@@ -369,6 +461,77 @@ async function assertMissingPowerShellExitCodeIsNotRetried() {
     ["harness-installer.exe", "powershell.exe"],
     "ambiguous PowerShell completion must fail closed instead of launching cmd.exe"
   );
+}
+
+async function assertWindowsPublisherVerification() {
+  const expectedPublisher = "University of California San Diego";
+  const calls = [];
+  const valid = {
+    status: "Valid",
+    publisher: expectedPublisher,
+    thumbprint: "ABC123",
+    timestamp: "CN=Trusted Timestamp",
+    expected: expectedPublisher
+  };
+  const runPowerShellCapture = async (script, _emit, options) => {
+    calls.push({ script, env: options.env });
+    return JSON.stringify(valid);
+  };
+  await verifyExpectedWindowsHarnessPublisher("C:\\release\\TritonAI Harness.exe", () => {}, {
+    platform: "win32",
+    runPowerShellCapture
+  });
+  assert.strictEqual(calls.length, 1);
+  assert(calls[0].script.includes("Get-AuthenticodeSignature -LiteralPath $target"));
+  assert.strictEqual(calls[0].env.TRITONAI_HARNESS_SIGNATURE_PATH, "C:\\release\\TritonAI Harness.exe");
+  assert.strictEqual(calls[0].env.TRITONAI_HARNESS_EXPECTED_PUBLISHER, expectedPublisher);
+  for (const invalid of [
+    { ...valid, status: "NotSigned" },
+    { ...valid, publisher: "Wrong Publisher" },
+    { ...valid, thumbprint: "" },
+    { ...valid, timestamp: "" }
+  ]) {
+    await assert.rejects(
+      verifyExpectedWindowsHarnessPublisher("C:\\release\\TritonAI Harness.exe", () => {}, {
+        platform: "win32",
+        runPowerShellCapture: async () => JSON.stringify(invalid)
+      }),
+      /publisher verification failed/
+    );
+  }
+  await assert.rejects(
+    verifyExpectedWindowsHarnessPublisher("C:\\release\\TritonAI Harness.exe", () => {}, {
+      platform: "darwin",
+      runPowerShellCapture
+    }),
+    /must run on Windows/
+  );
+}
+
+async function assertWindowsInstallerTimeoutContract() {
+  const directOptions = [];
+  await runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+    platform: "win32",
+    run: async (_command, _args, _emit, options) => directOptions.push(options)
+  });
+  assert.strictEqual(directOptions.length, 1);
+  assert(directOptions[0].timeoutMs >= 20 * 60 * 1000);
+
+  const permissionFailure = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+  let fallbackScript = "";
+  let fallbackOptions = null;
+  await runWindowsInstaller("harness-installer.exe", ["/S"], () => {}, {}, {
+    platform: "win32",
+    run: async () => { throw permissionFailure; },
+    runPowerShellCapture: async (script, _emit, options) => {
+      fallbackScript = script;
+      fallbackOptions = options;
+      return "TRITONAI_INSTALLER_EXIT_CODE=0";
+    }
+  });
+  assert(fallbackScript.includes("WaitForExit(1200000)"));
+  assert(fallbackScript.includes("Stop-Process -Id $process.Id -Force"));
+  assert(fallbackOptions.timeoutMs > 20 * 60 * 1000);
 }
 
 async function assertRealPowerShellInstallerFailureIsNotRetried() {
@@ -434,6 +597,7 @@ async function assertNoOpWithholdsNewInstallerMarker() {
         appRoot: fixture.appRoot,
         resourcesPath: null,
         emit: () => {},
+        checkInstallCapacity: enoughInstallCapacity,
         ensurePrerequisites: async () => nodeRuntime,
         installBundledSkills: () => {},
         saveEnvironment: async () => {},
@@ -488,6 +652,7 @@ async function assertRunnerRetriesBeforeChangingManagedSettings() {
       appRoot: fixture.appRoot,
       resourcesPath: null,
       emit: () => {},
+      checkInstallCapacity: enoughInstallCapacity,
       ensurePrerequisites: async () => nodeRuntime,
       installBundledSkills: () => {},
       saveEnvironment: async () => {},
@@ -603,6 +768,7 @@ async function assertEnvironmentMigrationWaitsForSuccessfulInstall() {
       appRoot: fixture.appRoot,
       resourcesPath: null,
       emit: (message) => events.push(message),
+      checkInstallCapacity: enoughInstallCapacity,
       ensurePrerequisites: async () => nodeRuntime,
       installBundledSkills: () => {},
       saveEnvironment: async () => ({
@@ -687,12 +853,22 @@ function assertNsisProcessDetectionContract() {
 
 function noOpWindowsRuntime(fixture) {
   return {
+    verifyExpectedWindowsHarnessPublisher: async () => {},
     unblockWindowsFile: async () => {},
     runWindowsInstaller: async () => {},
     waitForWindowsT3CodeApp: async () => fixture.existingApp,
     readWindowsAppVersion: async () => "0.2.0",
     readWindowsAppFingerprint: async () => "unchanged",
     finishWindowsInstall: async ({ appPath }) => ({ appPath, shortcutPath: `${appPath}.lnk` })
+  };
+}
+
+function enoughInstallCapacity() {
+  return {
+    availableBytes: 8 * 1024 ** 3,
+    requiredBytes: 3 * 1024 ** 3,
+    bundledBytes: 0,
+    targetPath: "C:\\Users\\fixture"
   };
 }
 
@@ -715,6 +891,16 @@ async function withWindowsFixture(callback) {
       `    size: ${installerBytes.length}`,
       ""
     ].join("\n"));
+    fs.writeFileSync(path.join(vendorDir, "windows-artifact-trust.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      mode: "authenticode",
+      version: "0.2.1",
+      artifact: {
+        fileName: installerName,
+        size: installerBytes.length,
+        sha512: crypto.createHash("sha512").update(installerBytes).digest("base64")
+      }
+    }, null, 2)}\n`);
     const existingApp = path.join(homeDir, "AppData", "Local", "Programs", "TritonAI Harness", "TritonAI Harness.exe");
     fs.mkdirSync(path.dirname(existingApp), { recursive: true });
     fs.writeFileSync(existingApp, "old Harness 0.2.0");

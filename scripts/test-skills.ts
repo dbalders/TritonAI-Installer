@@ -8,19 +8,24 @@ const {
 } = require("../src/installer/skill-manifest");
 const {
   MANAGED_SKILLS_MANIFEST_FILE,
-  installBundledSkills
+  SKILLS_TRANSACTION_JOURNAL_FILE,
+  installBundledSkills,
+  recoverInterruptedSkillsTransaction
 } = require("../src/installer/skills");
 const {
   assertCanonicalLocalSecureSkillsSource,
   assertCanonicalSecureSkillsRepository,
+  assertReleaseSkillsSourceInfo,
   findSkillsSourceDir,
   getEffectiveCloneRepositoryUrl,
   getEffectiveRepositoryUrl,
   sanitizeRepositoryUrl,
+  readRequireCleanSource,
   stageSkillsFromSource
 } = require("./prepare-skills-vendor");
 
 function main() {
+  assertReleaseSourceRequirements();
   assertSecureRepositoryProvenance();
   assertRootSecureRepositoryStaging();
   assertVendorActivationFailureRestoresPreviousBundle();
@@ -31,8 +36,139 @@ function main() {
   assertRejectsUnownedCollisions();
   assertStageFailurePreservesPreviousInstall();
   assertTransactionFailureRestoresPreviousInstallAndCleansBackup();
+  assertInterruptedTransactionRollsBackOnRetry();
+  assertCompletedTransactionCommitsOnRetry();
   assertRejectsInvalidBundles();
   console.log("Managed secure skills tests passed.");
+}
+
+function assertReleaseSourceRequirements() {
+  assert.strictEqual(readRequireCleanSource([]), false);
+  assert.strictEqual(readRequireCleanSource(["--require-clean"]), true);
+  assert.throws(() => readRequireCleanSource(["--unknown"]), /Unsupported secure skills vendor arguments/);
+  const commit = "a".repeat(40);
+  assert.deepStrictEqual(
+    assertReleaseSkillsSourceInfo({ type: "git", commit }),
+    { type: "git", commit }
+  );
+  assert.throws(
+    () => assertReleaseSkillsSourceInfo({ type: "local", commit, dirty: true }),
+    /refuses a dirty/
+  );
+  assert.throws(
+    () => assertReleaseSkillsSourceInfo({ type: "local", dirty: false }),
+    /exact Git commit/
+  );
+}
+
+function assertInterruptedTransactionRollsBackOnRetry() {
+  withTempRoot("tritonai-secure-interrupted-", (tempRoot) => {
+    const transactionParent = path.join(tempRoot, "codex");
+    const skillsDir = path.join(transactionParent, "skills");
+    const stageRoot = path.join(transactionParent, ".tritonai-secure-skills-stage-test");
+    const backupRoot = path.join(transactionParent, ".tritonai-secure-skills-backup-test");
+    fs.mkdirSync(skillsDir, { recursive: true });
+    fs.mkdirSync(stageRoot, { recursive: true });
+    fs.mkdirSync(backupRoot, { recursive: true });
+
+    writeSkill(path.join(backupRoot, "secure-existing"), "secure-existing", "old-v1");
+    fs.writeFileSync(
+      path.join(backupRoot, MANAGED_SKILLS_MANIFEST_FILE),
+      `${JSON.stringify(createManagedSkillsManifest(["secure-existing"]), null, 2)}\n`
+    );
+    writeSkill(path.join(skillsDir, "secure-existing"), "secure-existing", "new-v2");
+    writeSkill(path.join(skillsDir, "secure-new"), "secure-new", "new-v1");
+    fs.writeFileSync(
+      path.join(stageRoot, MANAGED_SKILLS_MANIFEST_FILE),
+      `${JSON.stringify(createManagedSkillsManifest(["secure-existing", "secure-new"]), null, 2)}\n`
+    );
+    writeInterruptedSkillsJournal({
+      transactionParent,
+      skillsDir,
+      stageRoot,
+      backupRoot,
+      previousSkills: ["secure-existing"],
+      incomingSkills: ["secure-existing", "secure-new"],
+      hadManagedManifest: true
+    });
+
+    const events = [];
+    assert.deepStrictEqual(
+      recoverInterruptedSkillsTransaction(skillsDir, (message) => events.push(message)),
+      { recovered: true, action: "rolled-back" }
+    );
+    assertSkillVersion(skillsDir, "secure-existing", "old-v1");
+    assert(!fs.existsSync(path.join(skillsDir, "secure-new")));
+    assert.deepStrictEqual(readJson(path.join(skillsDir, MANAGED_SKILLS_MANIFEST_FILE)).skills, ["secure-existing"]);
+    assert(events.some((message) => message.includes("Restored the previous")));
+    assert(!fs.existsSync(stageRoot));
+    assert(!fs.existsSync(backupRoot));
+    assert(!fs.existsSync(path.join(transactionParent, SKILLS_TRANSACTION_JOURNAL_FILE)));
+  });
+}
+
+function assertCompletedTransactionCommitsOnRetry() {
+  withTempRoot("tritonai-secure-committed-", (tempRoot) => {
+    const transactionParent = path.join(tempRoot, "codex");
+    const skillsDir = path.join(transactionParent, "skills");
+    const stageRoot = path.join(transactionParent, ".tritonai-secure-skills-stage-test");
+    const backupRoot = path.join(transactionParent, ".tritonai-secure-skills-backup-test");
+    fs.mkdirSync(skillsDir, { recursive: true });
+    fs.mkdirSync(stageRoot, { recursive: true });
+    fs.mkdirSync(backupRoot, { recursive: true });
+    writeSkill(path.join(skillsDir, "secure-existing"), "secure-existing", "new-v2");
+    fs.writeFileSync(
+      path.join(skillsDir, MANAGED_SKILLS_MANIFEST_FILE),
+      `${JSON.stringify(createManagedSkillsManifest(["secure-existing"]), null, 2)}\n`
+    );
+    writeSkill(path.join(backupRoot, "secure-existing"), "secure-existing", "old-v1");
+    fs.writeFileSync(
+      path.join(backupRoot, MANAGED_SKILLS_MANIFEST_FILE),
+      `${JSON.stringify(createManagedSkillsManifest(["secure-existing"]), null, 2)}\n`
+    );
+    writeInterruptedSkillsJournal({
+      transactionParent,
+      skillsDir,
+      stageRoot,
+      backupRoot,
+      previousSkills: ["secure-existing"],
+      incomingSkills: ["secure-existing"],
+      hadManagedManifest: true
+    });
+
+    assert.deepStrictEqual(
+      recoverInterruptedSkillsTransaction(skillsDir),
+      { recovered: true, action: "committed" }
+    );
+    assertSkillVersion(skillsDir, "secure-existing", "new-v2");
+    assert(!fs.existsSync(stageRoot));
+    assert(!fs.existsSync(backupRoot));
+    assert(!fs.existsSync(path.join(transactionParent, SKILLS_TRANSACTION_JOURNAL_FILE)));
+  });
+}
+
+function writeInterruptedSkillsJournal({
+  transactionParent,
+  skillsDir,
+  stageRoot,
+  backupRoot,
+  previousSkills,
+  incomingSkills,
+  hadManagedManifest
+}) {
+  fs.writeFileSync(
+    path.join(transactionParent, SKILLS_TRANSACTION_JOURNAL_FILE),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      skillsDir: path.basename(skillsDir),
+      stageRoot: path.basename(stageRoot),
+      backupRoot: path.basename(backupRoot),
+      previousSkills,
+      incomingSkills,
+      hadManagedManifest,
+      hadLegacyManifest: false
+    }, null, 2)}\n`
+  );
 }
 
 function assertSecureRepositoryProvenance() {

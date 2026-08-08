@@ -73,6 +73,7 @@ function prepareVendorArtifacts() {
   run(process.execPath, [path.join(root, "dist", "scripts", "prepare-plugins-vendor.js")]);
   run(process.execPath, [path.join(root, "dist", "scripts", "prepare-t3code-desktop-vendor.js")]);
   run(process.execPath, [path.join(root, "dist", "scripts", "prepare-codex-cli-vendor.js"), "mac-arm64"]);
+  run(process.execPath, [path.join(root, "dist", "scripts", "prepare-node-runtime-vendor.js"), "mac-arm64"]);
   run(process.execPath, [path.join(root, "dist", "scripts", "prepare-skills-vendor.js")]);
 }
 
