@@ -1218,7 +1218,7 @@ function run(command, args, emit, options: CommandOptions = {}) {
     const terminate = options.terminate || terminateProcessTree;
     const child = spawn(command, args, {
       env: options.env || process.env,
-      shell: Object.prototype.hasOwnProperty.call(options, "shell") ? options.shell : platform === "win32",
+      shell: resolveCommandShell(command, platform, options),
       detached: platform !== "win32"
     });
     let settled = false;
@@ -1284,7 +1284,7 @@ function runCapture(command, args, emit, options: CommandOptions = {}) {
     const terminate = options.terminate || terminateProcessTree;
     const child = spawn(command, args, {
       env: options.env || process.env,
-      shell: Object.prototype.hasOwnProperty.call(options, "shell") ? options.shell : platform === "win32",
+      shell: resolveCommandShell(command, platform, options),
       detached: platform !== "win32"
     });
     let settled = false;
@@ -1335,6 +1335,11 @@ function runCapture(command, args, emit, options: CommandOptions = {}) {
       }
     });
   });
+}
+
+function resolveCommandShell(command, platform, options: CommandOptions = {}) {
+  if (Object.prototype.hasOwnProperty.call(options, "shell")) return options.shell;
+  return platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
 }
 
 function runPowerShell(script, emit, options: CommandOptions = {}) {
@@ -1403,6 +1408,7 @@ module.exports = {
   verifyExpectedWindowsHarnessPublisher,
   getManagedMacAppPath,
   cleanupStaleWindowsUpgradeBackup,
+  resolveCommandShell,
   runWindowsInstaller,
   runDesktopCommand: run,
   runDesktopCommandCapture: runCapture,

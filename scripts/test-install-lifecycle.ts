@@ -7,6 +7,7 @@ const { InstallLifecycle } = require("../src/install-lifecycle");
 const { acquireSingleInstance } = require("../src/single-instance");
 const { terminateProcessTree } = require("../src/installer/process-termination");
 const {
+  resolveCommandShell,
   runDesktopCommand,
   runDesktopCommandCapture
 } = require("../src/installer/t3code-desktop");
@@ -22,6 +23,12 @@ const {
 } = require("../src/installer/runner");
 
 async function main() {
+  assert.strictEqual(resolveCommandShell("node.exe", "win32"), false);
+  assert.strictEqual(resolveCommandShell("npm.cmd", "win32"), true);
+  assert.strictEqual(resolveCommandShell("SCRIPT.BAT", "win32"), true);
+  assert.strictEqual(resolveCommandShell("npm.cmd", "darwin"), false);
+  assert.strictEqual(resolveCommandShell("node.exe", "win32", { shell: true }), true);
+  assert.strictEqual(resolveCommandShell("npm.cmd", "win32", { shell: false }), false);
   assertSingleInstanceOwnership();
   const lifecycle = new InstallLifecycle();
   assert.strictEqual(lifecycle.isInstallInProgress(), false);
