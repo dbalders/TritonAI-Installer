@@ -18,6 +18,8 @@ interface DiagnosticsInfo {
   supportReportFile: string;
   failedStep?: string | null;
   ok?: boolean;
+  failureComponent?: string | null;
+  reportAvailable?: boolean;
 }
 
 interface InstallPayload {
@@ -54,6 +56,7 @@ interface InstallerPlatformInfo {
 
 interface InstallerApi {
   getPlatform(): Promise<InstallerPlatformInfo>;
+  reportReady(): Promise<void>;
   openDocs(url: string): Promise<void>;
   startInstall(payload: InstallPayload): Promise<InstallResponse>;
   finishInstall(payload: FinishPayload): Promise<void>;

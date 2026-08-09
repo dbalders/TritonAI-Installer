@@ -37,6 +37,14 @@
       ]
     },
     {
+      "from": "vendor/node-runtime/mac-arm64",
+      "to": "vendor/node-runtime/mac-arm64",
+      "filter": [
+        "manifest.json",
+        "node-v*.tar.gz"
+      ]
+    },
+    {
       "from": "build/managed-config.generated.json",
       "to": "managed-config.json"
     },
@@ -49,7 +57,7 @@
     "icon": "build/icon.icns",
     "target": [
       {
-        "target": "dmg",
+        "target": "zip",
         "arch": [
           "arm64"
         ]
@@ -69,7 +77,7 @@
   },
   "dmg": {
     "artifactName": "TritonAI-Installer-${version}-${arch}.dmg",
-    "title": "Double-click to Install",
+    "title": "Double-click TritonAI Installer",
     "backgroundColor": "#eeeeee",
     "sign": false,
     "writeUpdateInfo": false

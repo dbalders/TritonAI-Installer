@@ -2,6 +2,18 @@
   "schemaVersion": 1,
   "checksumManifest": "artifacts/SHA256SUMS.txt",
   "windowsAuthenticodeProof": "artifacts/windows-installer/authenticode-signatures.json",
+  "packagedBootProofs": [
+    {
+      "platform": "macos-arm64",
+      "path": "artifacts/macos-release/packaged-boot.json",
+      "artifactIds": ["macos-dmg"]
+    },
+    {
+      "platform": "windows-x64",
+      "path": "artifacts/windows-installer/packaged-boot.json",
+      "artifactIds": ["windows-setup", "windows-portable"]
+    }
+  ],
   "artifacts": [
     {
       "id": "macos-dmg",

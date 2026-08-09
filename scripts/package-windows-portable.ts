@@ -21,7 +21,7 @@ const outputZip = path.join(artifactsDir, `${PRODUCT_NAME.replaceAll(" ", "-")}-
 function main() {
   if (process.env.TRITONAI_ALLOW_UNSIGNED_WINDOWS_DEV_BUILD !== "1") {
     throw new Error(
-      "This command creates an unsigned development artifact. Set TRITONAI_ALLOW_UNSIGNED_WINDOWS_DEV_BUILD=1 to opt in. Stable releases must use npm run package:win-installer."
+      "This command creates a legacy unsigned development ZIP. Set TRITONAI_ALLOW_UNSIGNED_WINDOWS_DEV_BUILD=1 to opt in. Releases must use npm run package:win-installer."
     );
   }
   fs.mkdirSync(artifactsDir, { recursive: true });
@@ -53,6 +53,8 @@ function main() {
   copyTree(path.join(root, "vendor", "t3code-desktop", "win-x64"), path.join(resourcesApp, "vendor", "t3code-desktop", "win-x64"));
   prepareCodexCliVendor();
   copyTree(path.join(root, "vendor", "codex-cli", "win-x64"), path.join(resourcesApp, "vendor", "codex-cli", "win-x64"));
+  prepareNodeRuntimeVendor();
+  copyTree(path.join(root, "vendor", "node-runtime", "win-x64"), path.join(resourcesApp, "vendor", "node-runtime", "win-x64"));
 
   fs.rmSync(outputZip, { force: true });
   console.log(`Creating ${outputZip}...`);
@@ -88,7 +90,12 @@ function prepareManagedConfig() {
 }
 
 function prepareT3CodeDesktopVendor() {
-  execFileSync(process.execPath, [path.join(root, "dist", "scripts", "prepare-t3code-desktop-vendor.js"), "win-x64"], {
+  execFileSync(process.execPath, [
+    path.join(root, "dist", "scripts", "prepare-t3code-desktop-vendor.js"),
+    "win-x64",
+    "--windows-trust-mode",
+    "unsigned"
+  ], {
     cwd: root,
     stdio: "inherit"
   });
@@ -96,6 +103,13 @@ function prepareT3CodeDesktopVendor() {
 
 function prepareCodexCliVendor() {
   execFileSync(process.execPath, [path.join(root, "dist", "scripts", "prepare-codex-cli-vendor.js"), "win-x64"], {
+    cwd: root,
+    stdio: "inherit"
+  });
+}
+
+function prepareNodeRuntimeVendor() {
+  execFileSync(process.execPath, [path.join(root, "dist", "scripts", "prepare-node-runtime-vendor.js"), "win-x64"], {
     cwd: root,
     stdio: "inherit"
   });

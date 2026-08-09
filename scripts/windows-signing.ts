@@ -3,10 +3,13 @@ const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const { Arch, Platform, build } = require("electron-builder");
+const { EXPECTED_WINDOWS_PUBLISHER_NAME } = require("../src/installer/windows-publisher-identity");
+const { getBundledWindowsInstaller } = require("../src/installer/t3code-desktop");
+const { assertWindowsArtifactTrustPolicyForFile } = require("../src/installer/windows-artifact-trust");
 
 const root = path.resolve(__dirname, "..", "..");
 const proofRelativePath = "artifacts/windows-installer/authenticode-signatures.json";
-const expectedWindowsPublisherName = "University of California San Diego";
+const expectedWindowsPublisherName = EXPECTED_WINDOWS_PUBLISHER_NAME;
 const requiredEnvironmentVariables = [
   "AZURE_TENANT_ID",
   "AZURE_CLIENT_ID",
@@ -138,6 +141,31 @@ function verifyWindowsReleaseSignatures({
   return { proof, proofPath };
 }
 
+function verifyWindowsPackagedBoot({ repositoryRoot = root, version }) {
+  if (process.platform !== "win32") throw new Error("Windows packaged boot verification must run on Windows.");
+  const [setupPath, portablePath] = expectedWindowsExecutables(repositoryRoot, version);
+  const proofPath = path.join(repositoryRoot, "artifacts", "windows-installer", "packaged-boot.json");
+  execFileSync("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    path.join(repositoryRoot, "scripts", "verify-windows-packaged-boot.ps1"),
+    "-RepositoryRoot",
+    repositoryRoot,
+    "-Version",
+    version,
+    "-SetupPath",
+    setupPath,
+    "-PortablePath",
+    portablePath,
+    "-ProofPath",
+    proofPath
+  ], { cwd: repositoryRoot, stdio: "inherit" });
+  return proofPath;
+}
+
 function verifyAuthenticodeExecutables({
   repositoryRoot = root,
   executablePaths,
@@ -184,6 +212,13 @@ async function main() {
     throw new Error("Stable Windows packaging must run on Windows.");
   }
   const pkg = require(path.join(root, "package.json"));
+  const bundledHarness = getBundledWindowsInstaller({ appRoot: root, resourcesPath: null, arch: "x64" });
+  if (!bundledHarness) throw new Error("Signed Windows packaging is missing its prepared Harness payload.");
+  assertWindowsArtifactTrustPolicyForFile(
+    bundledHarness.trustPolicy,
+    "authenticode",
+    bundledHarness.installerPath
+  );
   const baseConfiguration = JSON.parse(fs.readFileSync(path.join(root, "electron-builder.win.json"), "utf8"));
   const config = createSignedWindowsBuilderConfiguration(baseConfiguration);
 
@@ -194,6 +229,8 @@ async function main() {
   });
   const result = verifyWindowsReleaseSignatures({ version: pkg.version });
   console.log(`Windows release signatures verified: ${path.relative(root, result.proofPath)}`);
+  const bootProofPath = verifyWindowsPackagedBoot({ version: pkg.version });
+  console.log(`Windows packaged boot verified: ${path.relative(root, bootProofPath)}`);
 }
 
 function sha256(file) {
@@ -216,5 +253,6 @@ module.exports = {
   requiredEnvironmentVariables,
   resolveAzureTrustedSigningConfiguration,
   verifyAuthenticodeExecutables,
+  verifyWindowsPackagedBoot,
   verifyWindowsReleaseSignatures
 };

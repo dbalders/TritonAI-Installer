@@ -38,15 +38,28 @@ This creates a temp home directory, strips PATH down to OS basics, downloads the
 - Missing npm `--before` cutoff.
 - Config files that stop being generated.
 - Private Node/npm bootstrap regressions.
+- Missing, malformed, wrong-target, truncated, or checksum-mismatched bundled Node.js runtime payloads.
+- Insufficient disk capacity, including the payload-expansion, staging, and rollback reserve, before any managed installation directory is created.
+- Interrupted development-runtime downloads that would otherwise leave a reusable partial cache file.
+- macOS launchers that capture the installing account's literal home or fail the whole install when a standard account cannot write `/Applications`.
 - Regressions where TritonAI Harness keeps a stale legacy provider-status cache.
 - Regressions where the installer uses a random system `codex` instead of the managed UCSD Codex path.
 - Regressions where the installer exports its managed `PATH` or `CODEX_HOME` through shell profiles, Windows user variables, or its own process environment, including upgrades from the legacy global environment behavior.
 - Regressions where the managed Codex backend is missing, stale, copied from the wrong packaged payload, or falls back to npm without the package-age cutoff.
 - Regressions where Installer upgrades overwrite public/user skills, retain retired managed secure skills, accept malformed manifests, or lose the prior secure bundle after a staged copy failure.
-- Regressions where stable plugin packaging drifts from the exact sorted `google-workspace,microsoft-365` production selection or accepts a noncanonical origin, moving or mismatched ref/commit, implicit dirty checkout, ambiguous package selection, source/tests, symlinks, special files, unsafe paths, or manifest/package/file drift.
+- Regressions where stable plugin packaging drifts from the exact sorted `github,google-workspace,microsoft-365` production selection or accepts a noncanonical origin, moving or mismatched ref/commit, implicit dirty checkout, ambiguous package selection, source/tests, symlinks, special files, unsafe paths, or manifest/package/file drift.
 - Regressions where a Harness artifact omits or changes the exact managed plugin composition proof, or a packaged Installer omits that proof on macOS, Windows Setup, or portable paths.
 - Missing or publisher-mismatched macOS Harness signatures at both build-time vendoring and runtime activation, while allowing Developer ID certificate renewal under the pinned Team ID and bundle identifier.
-- Missing, invalid, publisher-mismatched, or stale Authenticode verification for Windows release executables, including independent Windows verification during the final release contract.
+- Missing, malformed, caller-selected, or artifact-mismatched Windows Harness trust policies; unsigned policy must skip only publisher checks while retaining release hash, version, composition, upgrade, and packaged-boot gates.
+- Missing, invalid, publisher-mismatched, or stale Authenticode verification in the future signed Windows lane, including independent verification during the final signed release contract.
+- Missing, invalid, publisher-mismatched, or untimestamped nested Harness Authenticode signatures when the bound policy is signed, at Windows vendoring time, immediately before NSIS execution, and on the installed Harness executable.
+- Final macOS DMGs, Windows Setup executables, or Windows portable executables that are signed but cannot actually render and remain healthy as packaged applications, plus stale boot evidence copied from different candidate bytes.
+- Accidental window close or ordinary quit while an install is mutating state, duplicate concurrent install requests, renderer progress-channel failures that would otherwise abort setup, and support-report failures that would otherwise mask the real install outcome.
+- A second Installer process bypassing the per-user Electron lock, truncated environment/profile/migration/launcher writes, non-atomic Windows shortcut replacement, or interrupted Node, Codex, managed Harness, launcher, and secure-skill swaps that cannot deterministically commit or restore on retry.
+- Support reports that lose stable component attribution for startup, prerequisite, TritonAI service, managed Codex, Harness desktop, or finalization failures.
+- Managed command/version probes, Windows environment discovery/cleanup, desktop native helpers, and direct or PowerShell Windows installer paths that hang indefinitely, omit their timeout, retry an ambiguously timed-out native installer, or fall through to an unowned `cmd.exe start` process.
+- Command trees or Node extractors that report timeout before confirmed termination, Windows smoke candidates that write a marker but hang or exit nonzero, and signed-policy Harness executables probed before Authenticode publisher verification.
+- Recovery downloads that trickle forever, exceed the manifest size ceiling, loop through redirects, poison a verified cache target, or leave partial files after failure.
 
 ## Legacy Provider Stale-State Reproduction
 
@@ -75,9 +88,23 @@ Run the same checks on hosted clean machines:
 - `macos-latest`: `npm ci`, `npm test`, `npm run test:clean-runtime`
 - `windows-latest`: `npm ci`, `npm test`, `npm run test:clean-runtime`
 
-The runtime test intentionally uses a temporary home, so it is safe for CI and does not depend on whatever the runner image already has installed.
+The unit suite proves packaged runtime identity and transactional activation without live downloads. The clean-runtime test intentionally exercises the network fallback in a temporary home, so it is safe for CI and does not depend on whatever the runner image already has installed.
 
 ## Release Gate
+
+Release validation includes a mandatory non-destructive native boot gate. macOS packaging verifies
+the final mounted DMG app directly. Windows packaging may run on macOS/Wine, so it records hashes
+and validates PE structure without claiming native execution; `npm run verify:win-installer:native`
+must then run against those exact, unchanged bytes on a clean Windows host. The final macOS app and
+the exact Windows portable and Setup-installed apps must render a visible window, complete
+renderer initialization, remain responsive for five seconds, and exit cleanly. The Windows gate
+also refuses to replace a pre-existing Installer and proves its temporary Setup installation was
+removed. `npm run release:contract` rejects missing, stale, cross-version, or hash-mismatched boot
+proofs. This gate intentionally does not accept source, unpacked-app, signature-only, or copied
+marker evidence.
+
+The native boot gate does not replace a full end-to-end install test because it never accepts an
+API key or mutates managed TritonAI state.
 
 Before distributing a signed installer, run one manual VM test per platform:
 

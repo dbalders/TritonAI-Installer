@@ -1,9 +1,12 @@
 const crypto = require("crypto");
 const fs = require("fs");
-const https = require("https");
 const os = require("os");
 const path = require("path");
 const { defaultAppRoot } = require("./app-root");
+const {
+  recoverInterruptedDirectoryTransaction,
+  writeDirectoryTransactionJournal
+} = require("./directory-transaction");
 const {
   EXPECTED_MAC_HARNESS_BUNDLE_ID,
   MACOS_CODESIGN_PATH,
@@ -12,7 +15,14 @@ const {
   macHarnessBundleIdentifierPlistArgs,
   macHarnessCodesignVerificationArgs
 } = require("./macos-harness-identity");
-const { getNodeRuntimePaths } = require("./prerequisites");
+const { downloadFileAtomic, getNodeRuntimePaths } = require("./prerequisites");
+const { writeFileAtomic } = require("./atomic-file");
+const { terminateProcessTree } = require("./process-termination");
+const { EXPECTED_WINDOWS_PUBLISHER_NAME } = require("./windows-publisher-identity");
+const {
+  WINDOWS_ARTIFACT_TRUST_FILE,
+  readWindowsArtifactTrustPolicy
+} = require("./windows-artifact-trust");
 const { spawn } = require("child_process");
 
 const RELEASE_BASE = "https://github.com/dbalders/TritonAI-Harness/releases/latest/download";
@@ -37,6 +47,18 @@ const WIN_INSTALL_DIR_NAMES = [
   "TritonAI Harness"
 ];
 const WIN_INSTALL_COMPLETE_MARKER = ".tritonai-install-complete";
+const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+const WINDOWS_INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
+const RELEASE_DOWNLOAD_TOTAL_TIMEOUT_MS = 10 * 60 * 1000;
+const RELEASE_MANIFEST_MAX_BYTES = 1024 * 1024;
+const MAC_APP_TRANSACTION_JOURNAL_FILE = ".tritonai-harness-app-transaction.json";
+const MAC_APP_STAGE_PREFIX = ".tritonai-harness-stage-";
+const MAC_APP_BACKUP_PREFIX = ".tritonai-harness-backup-";
+const MAC_APP_TRANSACTION_KIND = "managed TritonAI Harness app";
+const MAC_LAUNCHER_TRANSACTION_JOURNAL_FILE = ".tritonai-harness-launcher-transaction.json";
+const MAC_LAUNCHER_STAGE_PREFIX = ".tritonai-harness-launcher-stage-";
+const MAC_LAUNCHER_BACKUP_PREFIX = ".tritonai-harness-launcher-backup-";
+const MAC_LAUNCHER_TRANSACTION_KIND = "TritonAI Harness launcher";
 
 interface DesktopBundleOptions {
   arch?: NodeJS.Architecture;
@@ -48,9 +70,13 @@ interface CommandOptions {
   env?: NodeJS.ProcessEnv;
   shell?: boolean;
   allowFailure?: boolean;
+  timeoutMs?: number;
+  platform?: NodeJS.Platform;
+  terminate?: typeof terminateProcessTree;
 }
 
 interface WindowsInstallRuntime {
+  verifyExpectedWindowsHarnessPublisher?: typeof verifyExpectedWindowsHarnessPublisher;
   unblockWindowsFile?: typeof unblockWindowsFile;
   runWindowsInstaller?: typeof runWindowsInstaller;
   waitForWindowsT3CodeApp?: typeof waitForWindowsT3CodeApp;
@@ -68,6 +94,10 @@ interface WindowsInstallerCommandRuntime {
 
 interface MacLauncherOptions {
   launcherPath?: string;
+}
+
+interface MacLauncherInstallRuntime {
+  writeLauncher?: typeof writeMacAppLauncher;
 }
 
 async function installT3CodeDesktop({ paths, platform, arch, emit, env, resourcesPath, appRoot, packaged, windowsInstallRuntime }) {
@@ -109,7 +139,7 @@ async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, pa
   } else if (packaged) {
     throw new Error(`This packaged TritonAI Installer is missing a valid bundled ${TRITONAI_APP_DISPLAY_NAME} macOS image.`);
   } else {
-    const manifestText = await downloadText(`${MAC_RELEASE_BASE}/${MAC_MANIFEST_FILE}`);
+    const manifestText = await downloadText(`${MAC_RELEASE_BASE}/${MAC_MANIFEST_FILE}`, emit);
     const manifest = parseLatestYml(manifestText);
     const selected = selectMacDmg(manifest, arch);
     dmgPath = path.join(downloadDir, selected.fileName);
@@ -145,9 +175,30 @@ async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, pa
   if (appInstalled) {
     emit(`Closed ${TRITONAI_APP_DISPLAY_NAME} installer image.`);
   }
-  const shortcutPath = writeMacAppLauncher(paths, emit, arch);
+  const shortcutPath = installMacAppLauncher(paths, emit, arch);
   emit(`${TRITONAI_LAUNCHER_NAME} launcher installed at ${shortcutPath}`);
   return { appPath: shortcutPath, shortcutPath };
+}
+
+function installMacAppLauncher(
+  paths,
+  emit,
+  arch,
+  runtime: MacLauncherInstallRuntime = {}
+) {
+  const launcherWriter = runtime.writeLauncher || writeMacAppLauncher;
+  try {
+    return launcherWriter(paths, emit, arch);
+  } catch (error) {
+    if (!isPermissionError(error)) throw error;
+
+    const userLauncherPath = path.join(paths.homeDir, "Applications", MAC_MANAGED_APP_NAME);
+    emit(
+      `The shared Applications folder is not writable for this account; `
+      + `installing the ${TRITONAI_LAUNCHER_NAME} launcher for this user instead.`
+    );
+    return launcherWriter(paths, emit, arch, { launcherPath: userLauncherPath });
+  }
 }
 
 async function replaceMacAppTransactionally({
@@ -161,9 +212,22 @@ async function replaceMacAppTransactionally({
   validateMacAppBundle(sourceAppPath, "Mounted");
   const parent = path.dirname(managedAppPath);
   fs.mkdirSync(parent, { recursive: true });
-  const stageRoot = fs.mkdtempSync(path.join(parent, ".tritonai-harness-stage-"));
+  const journalPath = path.join(parent, MAC_APP_TRANSACTION_JOURNAL_FILE);
+  recoverInterruptedDirectoryTransaction({
+    journalPath,
+    kind: MAC_APP_TRANSACTION_KIND,
+    target: managedAppPath,
+    stagePrefix: MAC_APP_STAGE_PREFIX,
+    backupPrefix: MAC_APP_BACKUP_PREFIX,
+    validate: (candidate) => {
+      validateMacAppBundle(candidate, "Recovered");
+      return true;
+    },
+    emit
+  });
+  const stageRoot = fs.mkdtempSync(path.join(parent, MAC_APP_STAGE_PREFIX));
   const stagedAppPath = path.join(stageRoot, path.basename(managedAppPath));
-  const backupRoot = fs.mkdtempSync(path.join(parent, ".tritonai-harness-backup-"));
+  const backupRoot = fs.mkdtempSync(path.join(parent, MAC_APP_BACKUP_PREFIX));
   const previousAppPath = path.join(backupRoot, path.basename(managedAppPath));
   let previousMoved = false;
   let replacementActivated = false;
@@ -185,6 +249,18 @@ async function replaceMacAppTransactionally({
     emit(`Verified staged ${TRITONAI_APP_DISPLAY_NAME} app.`);
 
     await stopRunningApp({ emit });
+    writeDirectoryTransactionJournal({
+      journalPath,
+      kind: MAC_APP_TRANSACTION_KIND,
+      target: managedAppPath,
+      stageRoot,
+      backupRoot,
+      stagePrefix: MAC_APP_STAGE_PREFIX,
+      backupPrefix: MAC_APP_BACKUP_PREFIX,
+      stagedName: path.basename(managedAppPath),
+      backupName: path.basename(managedAppPath),
+      hadPrevious: fs.existsSync(managedAppPath)
+    });
     if (fs.existsSync(managedAppPath)) {
       fs.renameSync(managedAppPath, previousAppPath);
       previousMoved = true;
@@ -215,6 +291,7 @@ async function replaceMacAppTransactionally({
     if (replacementCompleted || !previousMoved) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
+    if (replacementCompleted) fs.rmSync(journalPath, { force: true });
   }
 }
 
@@ -292,16 +369,18 @@ async function installWindowsDesktop({
 
   let installerPath;
   let expectedVersion;
+  let windowsArtifactTrustMode = "authenticode";
   if (bundledInstaller) {
     verifyDownload(bundledInstaller.installerPath, bundledInstaller.expected);
     installerPath = stageWindowsInstallerInCache(bundledInstaller.installerPath, downloadDir);
     expectedVersion = bundledInstaller.version;
+    windowsArtifactTrustMode = bundledInstaller.trustPolicy.mode;
     verifyDownload(installerPath, bundledInstaller.expected);
     emit(`Using bundled ${TRITONAI_APP_DISPLAY_NAME} installer staged at ${installerPath}`);
   } else if (packaged) {
     throw new Error(`This packaged TritonAI Installer is missing a valid bundled ${TRITONAI_APP_DISPLAY_NAME} Windows installer.`);
   } else {
-    const manifestText = await downloadText(`${WIN_RELEASE_BASE}/${WIN_MANIFEST_FILE}`);
+    const manifestText = await downloadText(`${WIN_RELEASE_BASE}/${WIN_MANIFEST_FILE}`, emit);
     const manifest = parseLatestYml(manifestText);
     const selected = selectWindowsInstaller(manifest, arch);
     installerPath = path.join(downloadDir, selected.fileName);
@@ -330,9 +409,18 @@ async function installWindowsDesktop({
   const versionReader = windowsRuntime.readWindowsAppVersion || readWindowsAppVersion;
   const installFinisher = windowsRuntime.finishWindowsInstall || finishWindowsInstall;
   const upgradeBackupCleaner = windowsRuntime.cleanupStaleWindowsUpgradeBackup || cleanupStaleWindowsUpgradeBackup;
+  const publisherVerifier = windowsRuntime.verifyExpectedWindowsHarnessPublisher || verifyExpectedWindowsHarnessPublisher;
 
   if (existingAppPath) {
     upgradeBackupCleaner({ appPath: existingAppPath, emit });
+  }
+  if (windowsArtifactTrustMode === "authenticode") {
+    await publisherVerifier(installerPath, emit);
+  } else {
+    emit(
+      `WARNING: This Windows release intentionally contains an unsigned ${TRITONAI_APP_DISPLAY_NAME}. `
+      + "Its exact version and cryptographic release hash were verified, but Windows cannot verify a publisher until UC San Diego signing is available."
+    );
   }
   await unblock(installerPath, emit);
   emit(`Running ${TRITONAI_APP_DISPLAY_NAME} Windows installer...`);
@@ -344,6 +432,9 @@ async function installWindowsDesktop({
     throw new Error(`${TRITONAI_APP_DISPLAY_NAME} installer finished, but the app executable was not found in the current user's app folders.`);
   }
 
+  if (windowsArtifactTrustMode === "authenticode") {
+    await publisherVerifier(appPath, emit);
+  }
   const installedVersion = normalizeWindowsAppVersion(await versionReader(appPath, emit));
   if (installedVersion !== normalizedExpectedVersion) {
     throw new Error(
@@ -351,7 +442,6 @@ async function installWindowsDesktop({
       + `found ${installedVersion || "an unreadable version"} at ${appPath}.`
     );
   }
-
   if (
     existingAppPath
     && path.resolve(existingAppPath).toLowerCase() === path.resolve(appPath).toLowerCase()
@@ -421,32 +511,56 @@ function writeMacAppLauncher(paths, emit, arch, options: MacLauncherOptions = {}
   const launcherPath = options.launcherPath || MAC_TRITONAI_APP_PATH;
   const parent = path.dirname(launcherPath);
   fs.mkdirSync(parent, { recursive: true });
-  const stageRoot = fs.mkdtempSync(path.join(parent, ".tritonai-harness-launcher-stage-"));
-  const stagedLauncherPath = path.join(stageRoot, path.basename(launcherPath));
   const managedAppPath = getManagedMacAppPath(paths);
-  let backupRoot: string | null = null;
-  let previousLauncherPath: string | null = null;
+  const journalPath = path.join(parent, MAC_LAUNCHER_TRANSACTION_JOURNAL_FILE);
+  recoverInterruptedDirectoryTransaction({
+    journalPath,
+    kind: MAC_LAUNCHER_TRANSACTION_KIND,
+    target: launcherPath,
+    stagePrefix: MAC_LAUNCHER_STAGE_PREFIX,
+    backupPrefix: MAC_LAUNCHER_BACKUP_PREFIX,
+    validate: (candidate) => {
+      validateMacLauncherBundle(candidate, paths, managedAppPath, "Recovered");
+      return true;
+    },
+    emit
+  });
+  const stageRoot = fs.mkdtempSync(path.join(parent, MAC_LAUNCHER_STAGE_PREFIX));
+  const stagedLauncherPath = path.join(stageRoot, path.basename(launcherPath));
+  const backupRoot = fs.mkdtempSync(path.join(parent, MAC_LAUNCHER_BACKUP_PREFIX));
+  const previousLauncherPath = path.join(backupRoot, path.basename(launcherPath));
   let previousMoved = false;
   let replacementActivated = false;
   let replacementCompleted = false;
 
   try {
     writeMacAppLauncherBundle(stagedLauncherPath, paths, emit, arch, managedAppPath);
-    validateMacLauncherBundle(stagedLauncherPath, managedAppPath, "Staged");
+    validateMacLauncherBundle(stagedLauncherPath, paths, managedAppPath, "Staged");
+
+    writeDirectoryTransactionJournal({
+      journalPath,
+      kind: MAC_LAUNCHER_TRANSACTION_KIND,
+      target: launcherPath,
+      stageRoot,
+      backupRoot,
+      stagePrefix: MAC_LAUNCHER_STAGE_PREFIX,
+      backupPrefix: MAC_LAUNCHER_BACKUP_PREFIX,
+      stagedName: path.basename(launcherPath),
+      backupName: path.basename(launcherPath),
+      hadPrevious: fs.existsSync(launcherPath)
+    });
 
     if (fs.existsSync(launcherPath)) {
-      backupRoot = fs.mkdtempSync(path.join(parent, ".tritonai-harness-launcher-backup-"));
-      previousLauncherPath = path.join(backupRoot, path.basename(launcherPath));
       fs.renameSync(launcherPath, previousLauncherPath);
       previousMoved = true;
     }
     fs.renameSync(stagedLauncherPath, launcherPath);
     replacementActivated = true;
-    validateMacLauncherBundle(launcherPath, managedAppPath, "Installed");
+    validateMacLauncherBundle(launcherPath, paths, managedAppPath, "Installed");
     replacementCompleted = true;
     return launcherPath;
   } catch (error) {
-    if (previousMoved && previousLauncherPath) {
+    if (previousMoved) {
       try {
         fs.rmSync(launcherPath, { recursive: true, force: true });
         fs.renameSync(previousLauncherPath, launcherPath);
@@ -463,9 +577,10 @@ function writeMacAppLauncher(paths, emit, arch, options: MacLauncherOptions = {}
     throw new Error(`Could not create ${TRITONAI_LAUNCHER_NAME} launcher app: ${error.message}`, { cause: error });
   } finally {
     fs.rmSync(stageRoot, { recursive: true, force: true });
-    if (backupRoot && (replacementCompleted || !previousMoved)) {
+    if (replacementCompleted || !previousMoved) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
+    if (replacementCompleted) fs.rmSync(journalPath, { force: true });
   }
 }
 
@@ -485,35 +600,49 @@ function writeMacAppLauncherBundle(launcherPath, paths, emit, arch, managedAppPa
   fs.writeFileSync(executablePath, buildMacLauncherScript(paths, nodeBinary, managedAppPath), { mode: 0o755 });
 }
 
-function validateMacLauncherBundle(launcherPath, managedAppPath, label) {
+function validateMacLauncherBundle(launcherPath, paths, managedAppPath, label) {
   validateMacAppBundle(launcherPath, `${label} launcher`);
   const executablePath = path.join(launcherPath, "Contents", "MacOS", MAC_LAUNCHER_EXECUTABLE_NAME);
   if (process.platform === "darwin" && (fs.statSync(executablePath).mode & 0o111) === 0) {
     throw new Error(`${label} ${TRITONAI_LAUNCHER_NAME} launcher is not executable.`);
   }
   const script = fs.readFileSync(executablePath, "utf8");
-  if (!script.includes(`APP_PATH="${managedAppPath}"`)) {
+  const managedApp = relativePathFromHome(paths.homeDir, managedAppPath);
+  if (!script.includes(`APP_PATH="$HOME/${managedApp}"`)) {
     throw new Error(`${label} ${TRITONAI_LAUNCHER_NAME} launcher does not target the managed app.`);
   }
 }
 
 function buildMacLauncherScript(paths, nodeBinary, managedAppPath) {
+  const envFile = relativePathFromHome(paths.homeDir, paths.envFile);
+  const t3Home = relativePathFromHome(paths.homeDir, paths.t3Home);
+  const managedNode = relativePathFromHome(paths.homeDir, nodeBinary);
+  const defaultsPatcher = relativePathFromHome(paths.homeDir, paths.t3DefaultsPatcher);
+  const managedApp = relativePathFromHome(paths.homeDir, managedAppPath);
   return `#!/usr/bin/env sh
 set -eu
-if [ -f "${paths.envFile}" ]; then
+if [ -f "$HOME/${envFile}" ]; then
   # shellcheck disable=SC1090
-  . "${paths.envFile}"
+  . "$HOME/${envFile}"
 fi
-export TRITONAI_HOME="${paths.t3Home}"
-if [ -x "${nodeBinary}" ] && [ -f "${paths.t3DefaultsPatcher}" ]; then
-  "${nodeBinary}" "${paths.t3DefaultsPatcher}" >/dev/null 2>&1 || true
-elif [ -f "${paths.t3DefaultsPatcher}" ]; then
-  node "${paths.t3DefaultsPatcher}" >/dev/null 2>&1 || true
+export TRITONAI_HOME="$HOME/${t3Home}"
+if [ -x "$HOME/${managedNode}" ] && [ -f "$HOME/${defaultsPatcher}" ]; then
+  "$HOME/${managedNode}" "$HOME/${defaultsPatcher}" >/dev/null 2>&1 || true
+elif [ -f "$HOME/${defaultsPatcher}" ]; then
+  node "$HOME/${defaultsPatcher}" >/dev/null 2>&1 || true
 fi
-APP_PATH="${managedAppPath}"
+APP_PATH="$HOME/${managedApp}"
 APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist")
 exec "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE" "$@"
 `;
+}
+
+function relativePathFromHome(homeDir, target) {
+  const relative = path.relative(path.resolve(homeDir), path.resolve(target));
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`Managed launcher path must stay inside the current user's home: ${target}`);
+  }
+  return relative.split(path.sep).join("/");
 }
 
 function getManagedMacAppPath(paths) {
@@ -631,7 +760,7 @@ function writeWindowsLauncherScript({ paths, appPath, emit }) {
   const nodeBinary = getNodeRuntimePaths(paths, "win32", "x64").nodeBinary;
 
   fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-  fs.writeFileSync(launcherPath, `${buildWindowsEnvironmentScript(paths)}
+  writeFileAtomic(launcherPath, `${buildWindowsEnvironmentScript(paths)}
 $nodePath = '${escapePowerShellSingleQuoted(nodeBinary)}'
 $defaultsPatcher = '${escapePowerShellSingleQuoted(paths.t3DefaultsPatcher)}'
 if ((Test-Path $nodePath) -and (Test-Path $defaultsPatcher)) {
@@ -645,7 +774,7 @@ $workingDirectory = '${escapePowerShellSingleQuoted(workingDirectory)}'
 if (Test-Path $appPath) {
   Start-Process -FilePath $appPath -WorkingDirectory $workingDirectory | Out-Null
 }
-`);
+`, { mode: 0o600 });
   emit(`Created ${TRITONAI_LAUNCHER_NAME} Windows launcher: ${launcherPath}`);
   return launcherPath;
 }
@@ -664,14 +793,21 @@ if ([string]::IsNullOrWhiteSpace($desktop)) {
 }
 New-Item -ItemType Directory -Force -Path $desktop | Out-Null
 $shortcutPath = Join-Path $desktop '${escapePowerShellSingleQuoted(shortcutName)}'
+$temporaryShortcutPath = "$shortcutPath.$PID.tmp.lnk"
+$null = Remove-Item -LiteralPath $temporaryShortcutPath -Force -ErrorAction SilentlyContinue
 $shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = '${escapePowerShellSingleQuoted(shortcutTargetPath)}'
-$shortcut.Arguments = '${escapePowerShellSingleQuoted(shortcutArguments)}'
-$shortcut.WorkingDirectory = '${escapePowerShellSingleQuoted(workingDirectory)}'
-$shortcut.Description = '${escapePowerShellSingleQuoted(TRITONAI_LAUNCHER_NAME)}'
-$shortcut.IconLocation = '${escapePowerShellSingleQuoted(appPath)},0'
-$shortcut.Save()
+try {
+  $shortcut = $shell.CreateShortcut($temporaryShortcutPath)
+  $shortcut.TargetPath = '${escapePowerShellSingleQuoted(shortcutTargetPath)}'
+  $shortcut.Arguments = '${escapePowerShellSingleQuoted(shortcutArguments)}'
+  $shortcut.WorkingDirectory = '${escapePowerShellSingleQuoted(workingDirectory)}'
+  $shortcut.Description = '${escapePowerShellSingleQuoted(TRITONAI_LAUNCHER_NAME)}'
+  $shortcut.IconLocation = '${escapePowerShellSingleQuoted(appPath)},0'
+  $shortcut.Save()
+  Move-Item -LiteralPath $temporaryShortcutPath -Destination $shortcutPath -Force
+} finally {
+  Remove-Item -LiteralPath $temporaryShortcutPath -Force -ErrorAction SilentlyContinue
+}
 if (-not (Test-Path -LiteralPath $shortcutPath)) {
   throw "Shortcut was not created: $shortcutPath"
 }
@@ -691,12 +827,12 @@ async function runWindowsInstaller(
   const powerShellCaptureRunner = commandRuntime.runPowerShellCapture || runPowerShellCapture;
 
   if (platform !== "win32") {
-    await commandRunner(installerPath, args, emit, { env, shell: false });
+    await commandRunner(installerPath, args, emit, { env, shell: false, timeoutMs: WINDOWS_INSTALL_TIMEOUT_MS });
     return;
   }
 
   try {
-    await commandRunner(installerPath, args, emit, { env, shell: false });
+    await commandRunner(installerPath, args, emit, { env, shell: false, timeoutMs: WINDOWS_INSTALL_TIMEOUT_MS });
     return;
   } catch (error) {
     if (!isPermissionError(error)) {
@@ -712,21 +848,21 @@ async function runWindowsInstaller(
       "$ErrorActionPreference = 'Stop';",
       `$process = Start-Process -FilePath '${escapePowerShellSingleQuoted(installerPath)}'`,
       `  -ArgumentList '${escapePowerShellSingleQuoted(argumentList)}'`,
-      "  -Wait -PassThru;",
+      "  -PassThru;",
+      `$completed = $process.WaitForExit(${WINDOWS_INSTALL_TIMEOUT_MS});`,
+      "if (-not $completed) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; throw 'TritonAI Harness installer timed out.' };",
+      "$process.WaitForExit();",
       'Write-Output "TRITONAI_INSTALLER_EXIT_CODE=$($process.ExitCode)"'
-    ].join(" "), emit, { env });
+    ].join(" "), emit, { env, timeoutMs: WINDOWS_INSTALL_TIMEOUT_MS + 30_000 });
   } catch (powershellError) {
     if (!isPermissionError(powershellError)) {
       throw powershellError;
     }
-    emit(`PowerShell ${TRITONAI_APP_DISPLAY_NAME} installer launch was blocked by Windows (${powershellError.code || "permission denied"}).`);
-    await commandRunner("cmd.exe", [
-      "/d",
-      "/s",
-      "/c",
-      `start "" /wait "${installerPath}" ${args.join(" ")}`
-    ], emit, { env, shell: false });
-    return;
+    throw new Error(
+      `Windows blocked both safe ${TRITONAI_APP_DISPLAY_NAME} installer launch paths. `
+      + "The Installer will not fall through to cmd.exe because it cannot reliably own and terminate the nested NSIS process.",
+      { cause: powershellError }
+    );
   }
 
   const exitCodeMatch = /(?:^|\r?\n)TRITONAI_INSTALLER_EXIT_CODE=(-?\d+)(?:\r?\n|$)/.exec(powerShellOutput);
@@ -749,6 +885,53 @@ async function readWindowsAppVersion(appPath, emit) {
     emit
   );
   return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).pop() || null;
+}
+
+async function verifyExpectedWindowsHarnessPublisher(
+  executablePath,
+  emit,
+  commandRuntime: WindowsInstallerCommandRuntime = {}
+) {
+  const platform = commandRuntime.platform || process.platform;
+  if (platform !== "win32") {
+    throw new Error("TritonAI Harness Authenticode verification must run on Windows.");
+  }
+  const capture = commandRuntime.runPowerShellCapture || runPowerShellCapture;
+  const environment = {
+    ...process.env,
+    TRITONAI_HARNESS_SIGNATURE_PATH: executablePath,
+    TRITONAI_HARNESS_EXPECTED_PUBLISHER: EXPECTED_WINDOWS_PUBLISHER_NAME
+  };
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$target = [Environment]::GetEnvironmentVariable('TRITONAI_HARNESS_SIGNATURE_PATH', 'Process')",
+    "$expected = [Environment]::GetEnvironmentVariable('TRITONAI_HARNESS_EXPECTED_PUBLISHER', 'Process')",
+    "$signature = Get-AuthenticodeSignature -LiteralPath $target",
+    "$publisher = if ($null -eq $signature.SignerCertificate) { '' } else { $signature.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) }",
+    "[PSCustomObject]@{ status = [string]$signature.Status; publisher = $publisher; thumbprint = if ($signature.SignerCertificate) { $signature.SignerCertificate.Thumbprint } else { '' }; timestamp = if ($signature.TimeStamperCertificate) { $signature.TimeStamperCertificate.Subject } else { '' }; expected = $expected } | ConvertTo-Json -Compress"
+  ].join("; ");
+  const output = await capture(script, emit, { env: environment });
+  const jsonLine = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).pop();
+  let result;
+  try {
+    result = JSON.parse(jsonLine || "");
+  } catch (error) {
+    throw new Error(`Could not read ${TRITONAI_APP_DISPLAY_NAME} Authenticode verification output.`, { cause: error });
+  }
+  if (
+    result.status !== "Valid" ||
+    result.publisher !== EXPECTED_WINDOWS_PUBLISHER_NAME ||
+    result.expected !== EXPECTED_WINDOWS_PUBLISHER_NAME ||
+    !result.thumbprint ||
+    !result.timestamp
+  ) {
+    throw new Error(
+      `${TRITONAI_APP_DISPLAY_NAME} publisher verification failed for ${path.basename(executablePath)}; `
+      + `expected '${EXPECTED_WINDOWS_PUBLISHER_NAME}', found '${result.publisher || "no signer"}' (${result.status || "unknown"}).`
+    );
+  }
+  emit(`Verified ${TRITONAI_APP_DISPLAY_NAME} Windows publisher for ${path.basename(executablePath)}.`);
+  return result;
 }
 
 function readWindowsAppFingerprint(appPath) {
@@ -802,7 +985,22 @@ function getBundledWindowsInstaller(options: DesktopBundleOptions = {}) {
     const selected = selectWindowsInstaller(manifest, options.arch || process.arch);
     const installerPath = path.join(vendorDir, selected.fileName);
     if (fs.existsSync(installerPath)) {
-      return { manifestPath, installerPath, version: manifest.version, ...selected };
+      const policyPath = path.join(vendorDir, WINDOWS_ARTIFACT_TRUST_FILE);
+      if (!fs.existsSync(policyPath)) {
+        throw new Error(
+          `Bundled ${TRITONAI_APP_DISPLAY_NAME} Windows installer is missing ${WINDOWS_ARTIFACT_TRUST_FILE}; `
+          + "the release must declare whether Authenticode verification is required."
+        );
+      }
+      const trustPolicy = readWindowsArtifactTrustPolicy(policyPath, {
+        version: manifest.version,
+        artifact: {
+          fileName: selected.fileName,
+          size: selected.expected.size,
+          sha512: selected.expected.sha512
+        }
+      });
+      return { manifestPath, installerPath, policyPath, trustPolicy, version: manifest.version, ...selected };
     }
   }
 
@@ -987,62 +1185,24 @@ function verifyDownload(file, expected) {
   }
 }
 
-function download(url, target, emit) {
-  return new Promise((resolve, reject) => {
-    fs.rmSync(target, { force: true });
-    emit(`Downloading ${url}`);
-
-    const file = fs.createWriteStream(target);
-    file.on("error", (error) => {
-      fs.rmSync(target, { force: true });
-      reject(error);
-    });
-    https.get(url, (response) => {
-      if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
-        file.close();
-        fs.rmSync(target, { force: true });
-        download(new URL(response.headers.location, url).toString(), target, emit).then(resolve, reject);
-        return;
-      }
-
-      if (response.statusCode !== 200) {
-        file.close();
-        fs.rmSync(target, { force: true });
-        reject(new Error(`Download failed with HTTP ${response.statusCode}: ${url}`));
-        return;
-      }
-
-      response.pipe(file);
-      file.on("finish", () => file.close(resolve));
-    }).on("error", (error) => {
-      file.close();
-      fs.rmSync(target, { force: true });
-      reject(error);
-    });
+async function download(url, target, emit) {
+  return downloadFileAtomic(url, target, emit, {
+    totalTimeoutMs: RELEASE_DOWNLOAD_TOTAL_TIMEOUT_MS
   });
 }
 
-function downloadText(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, (response) => {
-      if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
-        downloadText(new URL(response.headers.location, url).toString()).then(resolve, reject);
-        return;
-      }
-
-      if (response.statusCode !== 200) {
-        reject(new Error(`Download failed with HTTP ${response.statusCode}: ${url}`));
-        return;
-      }
-
-      let body = "";
-      response.setEncoding("utf8");
-      response.on("data", (chunk) => {
-        body += chunk;
-      });
-      response.on("end", () => resolve(body));
-    }).on("error", reject);
-  });
+async function downloadText(url, emit) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-release-manifest-"));
+  const target = path.join(tempDir, "manifest.yml");
+  try {
+    await downloadFileAtomic(url, target, emit, {
+      totalTimeoutMs: RELEASE_DOWNLOAD_TOTAL_TIMEOUT_MS,
+      maxBytes: RELEASE_MANIFEST_MAX_BYTES
+    });
+    return fs.readFileSync(target, "utf8");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function unblockWindowsFile(file, emit) {
@@ -1054,26 +1214,62 @@ async function unblockWindowsFile(file, emit) {
 function run(command, args, emit, options: CommandOptions = {}) {
   return new Promise<void>((resolve, reject) => {
     emit(`$ ${command} ${args.join(" ")}`);
+    const platform = options.platform || process.platform;
+    const terminate = options.terminate || terminateProcessTree;
     const child = spawn(command, args, {
       env: options.env || process.env,
-      shell: Object.prototype.hasOwnProperty.call(options, "shell") ? options.shell : process.platform === "win32"
+      shell: resolveCommandShell(command, platform, options),
+      detached: platform !== "win32"
     });
+    let settled = false;
+    let timingOut = false;
+    const timeoutMs = options.timeoutMs || DEFAULT_COMMAND_TIMEOUT_MS;
+    const timer = setTimeout(() => {
+      if (settled || timingOut) return;
+      timingOut = true;
+      void terminate(child, { platform }).then(() => {
+        const error = Object.assign(
+          new Error(`${command} timed out after ${timeoutMs}ms and its process tree was terminated`),
+          { code: "ETIMEDOUT" }
+        );
+        if (options.allowFailure) {
+          emit(`${error.message}; continuing.`);
+          settle(resolve);
+        } else {
+          settle(() => reject(error));
+        }
+      }, (terminationError) => {
+        settle(() => reject(Object.assign(new Error(
+          `${command} timed out after ${timeoutMs}ms and termination could not be confirmed: ${terminationError.message}`,
+          { cause: terminationError }
+        ), { code: "ETERMINATE" })));
+      });
+    }, timeoutMs);
+    const settle = (callback) => {
+      if (settled) return false;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+      return true;
+    };
     child.stdout.on("data", (chunk) => emit(clean(chunk)));
     child.stderr.on("data", (chunk) => emit(clean(chunk)));
     child.on("error", (error) => {
+      if (settled || timingOut) return;
       if (options.allowFailure) {
         emit(`${command} failed: ${error.message}`);
-        resolve();
+        settle(resolve);
       } else {
-        reject(error);
+        settle(() => reject(error));
       }
     });
     child.on("close", (code) => {
+      if (settled || timingOut) return;
       if (code === 0 || options.allowFailure) {
         if (code !== 0) emit(`${command} exited with ${code}; continuing.`);
-        resolve();
+        settle(resolve);
       } else {
-        reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
+        settle(() => reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`)));
       }
     });
   });
@@ -1084,10 +1280,38 @@ function runCapture(command, args, emit, options: CommandOptions = {}) {
     emit(`$ ${command} ${args.join(" ")}`);
     let stdout = "";
     let stderr = "";
+    const platform = options.platform || process.platform;
+    const terminate = options.terminate || terminateProcessTree;
     const child = spawn(command, args, {
       env: options.env || process.env,
-      shell: Object.prototype.hasOwnProperty.call(options, "shell") ? options.shell : process.platform === "win32"
+      shell: resolveCommandShell(command, platform, options),
+      detached: platform !== "win32"
     });
+    let settled = false;
+    let timingOut = false;
+    const timeoutMs = options.timeoutMs || DEFAULT_COMMAND_TIMEOUT_MS;
+    const timer = setTimeout(() => {
+      if (settled || timingOut) return;
+      timingOut = true;
+      void terminate(child, { platform }).then(() => {
+        settle(() => reject(Object.assign(
+          new Error(`${command} timed out after ${timeoutMs}ms and its process tree was terminated`),
+          { code: "ETIMEDOUT" }
+        )));
+      }, (terminationError) => {
+        settle(() => reject(Object.assign(new Error(
+          `${command} timed out after ${timeoutMs}ms and termination could not be confirmed: ${terminationError.message}`,
+          { cause: terminationError }
+        ), { code: "ETERMINATE" })));
+      });
+    }, timeoutMs);
+    const settle = (callback) => {
+      if (settled) return false;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+      return true;
+    };
     child.stdout.on("data", (chunk) => {
       const text = clean(chunk);
       stdout += chunk.toString("utf8");
@@ -1098,15 +1322,24 @@ function runCapture(command, args, emit, options: CommandOptions = {}) {
       stderr += chunk.toString("utf8");
       if (text) emit(text);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (settled || timingOut) return;
+      settle(() => reject(error));
+    });
     child.on("close", (code) => {
+      if (settled || timingOut) return;
       if (code === 0) {
-        resolve(stdout);
+        settle(() => resolve(stdout));
       } else {
-        reject(new Error(`${command} ${args.join(" ")} exited with code ${code}${stderr ? `: ${stderr.trim()}` : ""}`));
+        settle(() => reject(new Error(`${command} ${args.join(" ")} exited with code ${code}${stderr ? `: ${stderr.trim()}` : ""}`)));
       }
     });
   });
+}
+
+function resolveCommandShell(command, platform, options: CommandOptions = {}) {
+  if (Object.prototype.hasOwnProperty.call(options, "shell")) return options.shell;
+  return platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
 }
 
 function runPowerShell(script, emit, options: CommandOptions = {}) {
@@ -1158,6 +1391,7 @@ module.exports = {
   installWindowsDesktop,
   replaceMacAppTransactionally,
   verifyExpectedMacHarnessPublisher,
+  installMacAppLauncher,
   writeMacAppLauncher,
   getBundledMacDmg,
   getBundledWindowsInstaller,
@@ -1171,7 +1405,12 @@ module.exports = {
   buildWindowsDesktopShortcutScript,
   findWindowsT3CodeApp,
   normalizeWindowsAppVersion,
+  verifyExpectedWindowsHarnessPublisher,
   getManagedMacAppPath,
   cleanupStaleWindowsUpgradeBackup,
-  runWindowsInstaller
+  resolveCommandShell,
+  runWindowsInstaller,
+  runDesktopCommand: run,
+  runDesktopCommandCapture: runCapture,
+  writeWindowsLauncherScript
 };

@@ -5,8 +5,17 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const { CODEX_CLI_VERSION } = require("../src/installer/npm-policy");
+const { writeFileAtomic } = require("../src/installer/atomic-file");
 const {
+  recoverInterruptedDirectoryTransaction,
+  writeDirectoryTransactionJournal
+} = require("../src/installer/directory-transaction");
+const {
+  CODEX_BACKUP_PREFIX,
+  CODEX_STAGE_PREFIX,
+  CODEX_TRANSACTION_JOURNAL_FILE,
   isCodexVendorDir,
+  recoverInterruptedCodexActivation,
   stageAndActivateBundledCodex,
   writeManagedCodexLauncher
 } = require("../src/installer/codex-vendor");
@@ -14,18 +23,178 @@ const { getPaths } = require("../src/installer/paths");
 const { getNodeRuntimePaths } = require("../src/installer/prerequisites");
 const {
   getManagedMacAppPath,
+  installMacAppLauncher,
   replaceMacAppTransactionally,
   writeMacAppLauncher
 } = require("../src/installer/t3code-desktop");
 
 async function main() {
+  assertAtomicFileReplacementPreservesPriorStateOnFailure();
+  assertInterruptedDirectoryReplacementRecoversDeterministically();
+  assertInterruptedCodexActivationRestoresPreviousRuntime();
   await assertMacReplacementStagesBeforeSwapAndRollsBack();
   assertMacLauncherStagesBeforeSwapAndRollsBack();
+  assertMacLauncherFallsBackForStandardAccounts();
   assertCodexVendorIdentityIsRequired();
   assertCodexReplacementStagesBeforeSwapAndRollsBack();
   if (process.platform !== "win32") assertManagedCodexLauncherIgnoresAmbientNode();
   assertWindowsManagedCodexLauncherPinsNode();
   console.log("Installer transaction tests passed.");
+}
+
+function assertInterruptedCodexActivationRestoresPreviousRuntime() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-codex-recovery-"));
+  const target = path.join(tempRoot, `openai-codex-${CODEX_CLI_VERSION}`);
+  try {
+    writeCodexVendor(target, "old-v1");
+    const stageRoot = fs.mkdtempSync(path.join(tempRoot, CODEX_STAGE_PREFIX));
+    const backupRoot = fs.mkdtempSync(path.join(tempRoot, CODEX_BACKUP_PREFIX));
+    fs.renameSync(target, path.join(backupRoot, "previous"));
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, "partial"), "interrupted");
+    const journalPath = path.join(tempRoot, CODEX_TRANSACTION_JOURNAL_FILE);
+    writeDirectoryTransactionJournal({
+      journalPath,
+      kind: "managed Codex CLI",
+      target,
+      stageRoot,
+      backupRoot,
+      stagePrefix: CODEX_STAGE_PREFIX,
+      backupPrefix: CODEX_BACKUP_PREFIX,
+      stagedName: "next",
+      backupName: "previous",
+      hadPrevious: true
+    });
+
+    assert.deepStrictEqual(recoverInterruptedCodexActivation({
+      target,
+      platform: "darwin",
+      arch: "arm64"
+    }), { recovered: true, action: "rolled-back" });
+    assert(isCodexVendorDir(target, "darwin", "arm64"));
+    assert(!fs.existsSync(stageRoot));
+    assert(!fs.existsSync(backupRoot));
+    assert(!fs.existsSync(journalPath));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertInterruptedDirectoryReplacementRecoversDeterministically() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-directory-recovery-"));
+  const target = path.join(tempRoot, "managed-payload");
+  const journalPath = path.join(tempRoot, ".payload-transaction.json");
+  const validate = (candidate) => fs.existsSync(path.join(candidate, "valid.marker"));
+  try {
+    const stageRoot = fs.mkdtempSync(path.join(tempRoot, ".payload-stage-"));
+    const backupRoot = fs.mkdtempSync(path.join(tempRoot, ".payload-backup-"));
+    fs.mkdirSync(path.join(backupRoot, "previous"), { recursive: true });
+    fs.writeFileSync(path.join(backupRoot, "previous", "valid.marker"), "old");
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, "invalid.partial"), "partial");
+    writeDirectoryTransactionJournal({
+      journalPath,
+      kind: "test payload",
+      target,
+      stageRoot,
+      backupRoot,
+      stagePrefix: ".payload-stage-",
+      backupPrefix: ".payload-backup-",
+      stagedName: "next",
+      backupName: "previous",
+      hadPrevious: true
+    });
+    assert.deepStrictEqual(recoverInterruptedDirectoryTransaction({
+      journalPath,
+      kind: "test payload",
+      target,
+      stagePrefix: ".payload-stage-",
+      backupPrefix: ".payload-backup-",
+      validate
+    }), { recovered: true, action: "rolled-back" });
+    assert.strictEqual(fs.readFileSync(path.join(target, "valid.marker"), "utf8"), "old");
+    assert(!fs.existsSync(journalPath));
+
+    const committedStage = fs.mkdtempSync(path.join(tempRoot, ".payload-stage-"));
+    const committedBackup = fs.mkdtempSync(path.join(tempRoot, ".payload-backup-"));
+    fs.mkdirSync(path.join(committedBackup, "previous"), { recursive: true });
+    fs.writeFileSync(path.join(committedBackup, "previous", "valid.marker"), "old");
+    fs.writeFileSync(path.join(target, "valid.marker"), "new");
+    writeDirectoryTransactionJournal({
+      journalPath,
+      kind: "test payload",
+      target,
+      stageRoot: committedStage,
+      backupRoot: committedBackup,
+      stagePrefix: ".payload-stage-",
+      backupPrefix: ".payload-backup-",
+      stagedName: "next",
+      backupName: "previous",
+      hadPrevious: true
+    });
+    assert.deepStrictEqual(recoverInterruptedDirectoryTransaction({
+      journalPath,
+      kind: "test payload",
+      target,
+      stagePrefix: ".payload-stage-",
+      backupPrefix: ".payload-backup-",
+      validate
+    }), { recovered: true, action: "committed" });
+    assert.strictEqual(fs.readFileSync(path.join(target, "valid.marker"), "utf8"), "new");
+    assert(!fs.existsSync(committedBackup));
+
+    fs.writeFileSync(journalPath, `${JSON.stringify({
+      schemaVersion: 1,
+      kind: "test payload",
+      targetName: path.basename(target),
+      stageRoot: "../outside",
+      backupRoot: ".payload-backup-hostile",
+      stagedName: "next",
+      backupName: "previous",
+      hadPrevious: true
+    })}\n`);
+    assert.throws(() => recoverInterruptedDirectoryTransaction({
+      journalPath,
+      kind: "test payload",
+      target,
+      stagePrefix: ".payload-stage-",
+      backupPrefix: ".payload-backup-",
+      validate
+    }), /Unsafe transaction directory name/);
+    assert(fs.existsSync(journalPath), "unsafe recovery evidence must remain for diagnosis");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertAtomicFileReplacementPreservesPriorStateOnFailure() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-atomic-file-"));
+  const target = path.join(tempRoot, "environment");
+  fs.writeFileSync(target, "previous\n", { mode: 0o640 });
+  const originalRenameSync = fs.renameSync;
+  try {
+    fs.renameSync = (source, destination) => {
+      if (destination === target) throw new Error("simulated atomic activation failure");
+      return originalRenameSync(source, destination);
+    };
+    assert.throws(
+      () => writeFileAtomic(target, "replacement\n", { preserveExistingMode: true }),
+      /simulated atomic activation failure/
+    );
+  } finally {
+    fs.renameSync = originalRenameSync;
+  }
+  try {
+    assert.strictEqual(fs.readFileSync(target, "utf8"), "previous\n");
+    assert.deepStrictEqual(fs.readdirSync(tempRoot), ["environment"]);
+    writeFileAtomic(target, "replacement\n", { preserveExistingMode: true });
+    assert.strictEqual(fs.readFileSync(target, "utf8"), "replacement\n");
+    if (process.platform !== "win32") {
+      assert.strictEqual(fs.statSync(target).mode & 0o777, 0o640);
+    }
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertManagedCodexLauncherIgnoresAmbientNode() {
@@ -123,14 +292,15 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
     writeMacApp(launcherPath, "old-launcher");
 
     assert.strictEqual(
-      writeMacAppLauncher(paths, () => {}, process.arch, { launcherPath }),
+      writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
       launcherPath
     );
     const installedLauncher = fs.readFileSync(
       path.join(launcherPath, "Contents", "MacOS", "TritonAI Harness"),
       "utf8"
     );
-    assert(installedLauncher.includes(`APP_PATH="${managedApp}"`));
+    assert(installedLauncher.includes('APP_PATH="$HOME/.agents/ucsd/apps/TritonAI Harness.app"'));
+    assert(!installedLauncher.includes(tempRoot), "shared launcher must resolve the launching account at runtime");
 
     writeMacApp(launcherPath, "old-launcher");
     const originalWriteFileSync = fs.writeFileSync;
@@ -142,7 +312,7 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
     };
     try {
       assert.throws(
-        () => writeMacAppLauncher(paths, () => {}, process.arch, { launcherPath }),
+        () => writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
         /simulated launcher staging failure/
       );
     } finally {
@@ -154,6 +324,9 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
       "failed launcher staging must not touch the Applications entry"
     );
 
+    writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath });
+    const previousValidLauncher = readMacAppVersion(launcherPath);
+
     const originalRenameSync = fs.renameSync;
     fs.renameSync = (source, target) => {
       if (source.includes(".tritonai-harness-launcher-stage-") && target === launcherPath) {
@@ -163,7 +336,7 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
     };
     try {
       assert.throws(
-        () => writeMacAppLauncher(paths, () => {}, process.arch, { launcherPath }),
+        () => writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
         /simulated launcher activation failure/
       );
     } finally {
@@ -171,7 +344,7 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
     }
     assert.strictEqual(
       readMacAppVersion(launcherPath),
-      "old-launcher",
+      previousValidLauncher,
       "failed launcher replacement must restore the Applications entry"
     );
 
@@ -186,7 +359,7 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
     };
     try {
       assert.throws(
-        () => writeMacAppLauncher(paths, () => {}, process.arch, { launcherPath }),
+        () => writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
         /Rollback also failed: simulated launcher rollback failure/
       );
     } finally {
@@ -197,8 +370,40 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
     assert(preservedLauncherBackup, "rollback failure must preserve the previous launcher for recovery");
     assert.strictEqual(
       readMacAppVersion(path.join(path.dirname(launcherPath), preservedLauncherBackup, path.basename(launcherPath))),
-      "old-launcher"
+      previousValidLauncher
     );
+
+    const recoveryEvents = [];
+    assert.strictEqual(
+      writeMacAppLauncher(paths, (message) => recoveryEvents.push(message), "arm64", { launcherPath }),
+      launcherPath
+    );
+    assert(recoveryEvents.some((message) => message.includes("Restored the previous TritonAI Harness launcher")));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertMacLauncherFallsBackForStandardAccounts() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-standard-user-"));
+  try {
+    const paths = getPaths(tempRoot, "darwin");
+    const attempts = [];
+    const fallbackPath = installMacAppLauncher(paths, () => {}, "arm64", {
+      writeLauncher: (_paths, _emit, _arch, options: { launcherPath?: string } = {}) => {
+        const launcherPath = options.launcherPath || "/Applications/TritonAI Harness.app";
+        attempts.push(launcherPath);
+        if (!options.launcherPath) {
+          throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        }
+        return launcherPath;
+      }
+    });
+    assert.deepStrictEqual(attempts, [
+      "/Applications/TritonAI Harness.app",
+      path.join(tempRoot, "Applications", "TritonAI Harness.app")
+    ]);
+    assert.strictEqual(fallbackPath, path.join(tempRoot, "Applications", "TritonAI Harness.app"));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -313,18 +518,30 @@ async function assertMacReplacementStagesBeforeSwapAndRollsBack() {
       "new"
     );
 
-    fs.rmSync(managedApp, { recursive: true, force: true });
-    let cleanInstallStopCalls = 0;
+    const recoveryEvents = [];
     await replaceMacAppTransactionally({
       sourceAppPath: sourceApp,
       managedAppPath: managedApp,
+      emit: (message) => recoveryEvents.push(message),
+      copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
+      validateStagedApp: async () => {},
+      stopRunningApp
+    });
+    assert.strictEqual(readMacAppVersion(managedApp), "newer");
+    assert(recoveryEvents.some((message) => message.includes("Restored the previous managed TritonAI Harness app")));
+
+    const cleanManagedApp = path.join(tempRoot, "clean-managed", "TritonAI Harness.app");
+    let cleanInstallStopCalls = 0;
+    await replaceMacAppTransactionally({
+      sourceAppPath: sourceApp,
+      managedAppPath: cleanManagedApp,
       emit: () => {},
       copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
       validateStagedApp: async () => {},
       stopRunningApp: async () => {
         cleanInstallStopCalls += 1;
         assert.strictEqual(
-          fs.existsSync(managedApp),
+          fs.existsSync(cleanManagedApp),
           false,
           "the same-bundle stop must also cover migrations without an existing managed app"
         );

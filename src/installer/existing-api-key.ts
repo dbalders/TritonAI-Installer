@@ -2,6 +2,7 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const { UCSD } = require("./constants");
 const { getPaths } = require("./paths");
+const { terminateProcessTree } = require("./process-termination");
 
 const API_KEY_ASSIGNMENT_PATTERN = (() => {
   const name = escapeRegExp(UCSD.apiKeyEnv);
@@ -75,11 +76,19 @@ function parseAssignmentValue(value) {
   return trimmed.replace(/\s+#.*$/, "");
 }
 
-function readWindowsEnvironmentVariable(name: string, scope: "User" | "Machine"): Promise<string> {
+function readWindowsEnvironmentVariable(
+  name: string,
+  scope: "User" | "Machine",
+  {
+    timeoutMs = 4_000,
+    spawnProcess = spawn,
+    terminate = terminateProcessTree
+  } = {}
+): Promise<string> {
   return new Promise<string>((resolve) => {
     const escapedName = String(name).replaceAll("'", "''");
     const escapedScope = String(scope).replaceAll("'", "''");
-    const child = spawn("powershell.exe", [
+    const child = spawnProcess("powershell.exe", [
       "-NoProfile",
       "-ExecutionPolicy",
       "Bypass",
@@ -89,22 +98,35 @@ function readWindowsEnvironmentVariable(name: string, scope: "User" | "Machine")
       windowsHide: true
     });
     let stdout = "";
+    let settled = false;
+    let timingOut = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
     const timer = setTimeout(() => {
-      child.kill();
-      resolve("");
-    }, 4000);
+      if (settled || timingOut) return;
+      timingOut = true;
+      void terminate(child, { platform: "win32" }).then(
+        () => finish(""),
+        (error) => {
+          console.error(`Could not terminate timed-out Windows environment lookup: ${error.message}`);
+          finish("");
+        }
+      );
+    }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
     });
     child.stderr.on("data", () => {});
     child.on("error", () => {
-      clearTimeout(timer);
-      resolve("");
+      if (!timingOut) finish("");
     });
     child.on("close", () => {
-      clearTimeout(timer);
-      resolve(stdout.trim());
+      if (!timingOut) finish(stdout.trim());
     });
   });
 }
@@ -119,6 +141,7 @@ function escapeRegExp(value) {
 
 module.exports = {
   findExistingApiKey,
+  readWindowsEnvironmentVariable,
   readApiKeyFromEnvFile,
   readApiKeyFromEnvText,
   parseAssignmentValue

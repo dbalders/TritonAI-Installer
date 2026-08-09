@@ -9,11 +9,13 @@ const {
   assertReleaseMayBeUpdated,
   assertReleaseSourceIdentity,
   assertWindowsAuthenticodeProof,
+  assertPackagedBootProofs,
   loadReleaseContract,
   requiredReleaseArtifacts,
   writeReleaseChecksumManifest
 } = require("./release-contract");
 const { expectedWindowsExecutables } = require("./windows-signing");
+const { createDmgFromApp } = require("./package-macos-release");
 const {
   activateStagedVendors,
   assertExplicitHarnessSource,
@@ -81,6 +83,7 @@ function main() {
     fs.mkdirSync(path.dirname(unpackedExecutable), { recursive: true });
     fs.writeFileSync(unpackedExecutable, "fixture:windows-unpacked\n");
     writeWindowsAuthenticodeProof(tempRoot, "0.2.1", artifacts);
+    writePackagedBootProofs(tempRoot, "0.2.1", artifacts);
 
     const result = writeFixtureChecksumManifest({ root: tempRoot, version: "0.2.1" });
     const manifestLines = fs.readFileSync(result.manifestPath, "utf8").trim().split(/\r?\n/);
@@ -90,6 +93,15 @@ function main() {
       assert.strictEqual(fileName, path.basename(fileName), "checksum entries must use basenames, never build-machine paths");
     }
     assert.doesNotThrow(() => assertFixtureWindowsProof({ root: tempRoot, version: "0.2.1" }));
+    assert.doesNotThrow(() => assertPackagedBootProofs({ root: tempRoot, version: "0.2.1", artifacts }));
+    const macArtifact = artifacts.find((entry) => entry.id === "macos-dmg");
+    fs.appendFileSync(macArtifact.absolutePath, "tampered");
+    assert.throws(
+      () => assertPackagedBootProofs({ root: tempRoot, version: "0.2.1", artifacts }),
+      /proof hash does not match/
+    );
+    fs.writeFileSync(macArtifact.absolutePath, "fixture:macos-dmg\n");
+    writePackagedBootProofs(tempRoot, "0.2.1", artifacts);
     const extraExecutable = {
       id: "windows-extra",
       platform: "windows-x64",
@@ -159,6 +171,7 @@ function main() {
     );
     fs.writeFileSync(setupArtifact.absolutePath, "fixture:windows-setup\n");
     writeWindowsAuthenticodeProof(tempRoot, "0.2.1", artifacts);
+    writePackagedBootProofs(tempRoot, "0.2.1", artifacts);
 
     writeHarnessVendorFixture(tempRoot, "win-x64", "latest.yml", "exe", "0.2.0");
     assert.throws(
@@ -170,36 +183,72 @@ function main() {
     const macConfig = JSON.parse(fs.readFileSync(path.join(repoRoot, "electron-builder.mac.json"), "utf8"));
     const winConfig = JSON.parse(fs.readFileSync(path.join(repoRoot, "electron-builder.win.json"), "utf8"));
     assert.strictEqual(macConfig.dmg.artifactName, "TritonAI-Installer-${version}-${arch}.dmg");
+    assert.strictEqual(macConfig.mac.target[0].target, "zip", "electron-builder must not use its mounted-volume DMG copy path");
     assert.strictEqual(winConfig.win.artifactName, "TritonAI-Installer-Setup-${version}-${arch}.${ext}");
     assert.strictEqual(winConfig.portable.artifactName, "TritonAI-Installer-${version}-${arch}-portable.${ext}");
     assert.strictEqual(macConfig.appId, "edu.ucsd.tritonai.installer");
     assert.strictEqual(winConfig.appId, "edu.ucsd.tritonai.installer");
     const macHarnessResource = macConfig.extraResources.find((resource) => resource.to === "vendor/t3code-desktop/mac-arm64");
     assert(macHarnessResource.filter.includes("tritonai-plugin-composition.json"));
+    assert.strictEqual(winConfig.asar, true, "Windows application code must be packed into ASAR");
+    const winHarnessResource = winConfig.extraResources.find((resource) => resource.to === "vendor/t3code-desktop/win-x64");
+    assert(winHarnessResource.filter.includes("tritonai-plugin-composition.json"));
+    assert(winHarnessResource.filter.includes("windows-artifact-trust.json"));
     assert(
-      winConfig.files.includes("vendor/t3code-desktop/win-x64/**/*"),
-      "Windows Setup and portable electron-builder targets must include the Harness plugin composition proof"
+      macConfig.extraResources.some((resource) => resource.to === "vendor/node-runtime/mac-arm64"),
+      "macOS packaging must include the pinned managed Node.js runtime"
+    );
+    assert(
+      winConfig.extraResources.some((resource) => resource.to === "vendor/node-runtime/win-x64"),
+      "Windows Setup and portable packaging must keep the pinned Node.js archive outside ASAR for native extraction"
     );
     assert(macConfig.extraResources.some((resource) => resource.to === "managed-plugin-composition.json"));
     assert(winConfig.extraResources.some((resource) => resource.to === "managed-plugin-composition.json"));
     const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
     assert(
-      packageJson.scripts["package:win-installer"].endsWith("node dist/scripts/windows-signing.js"),
-      "Stable Windows packaging must end at the fail-closed signing and Authenticode gate"
+      packageJson.scripts["package:win-installer"].endsWith("node dist/scripts/package-windows-unsigned.js"),
+      "Current Windows packaging must end at the explicit unsigned artifact proof"
+    );
+    assert.strictEqual(
+      packageJson.scripts["verify:win-installer:native"],
+      "npm run build && node dist/scripts/verify-windows-unsigned-release.js",
+      "Native Windows boot proof must be a separate exact-candidate gate"
+    );
+    assert(
+      packageJson.scripts["package:win-installer:signed"].endsWith("node dist/scripts/windows-signing.js"),
+      "Future signed Windows packaging must end at the fail-closed signing and Authenticode gate"
     );
     assert(
       packageJson.scripts["package:win-installer"].indexOf("prepare:plugins-vendor:latest:compiled")
-        < packageJson.scripts["package:win-installer"].indexOf("prepare:t3code-desktop-vendor:win:compiled"),
+        < packageJson.scripts["package:win-installer"].indexOf("prepare:t3code-desktop-vendor:win:unsigned:compiled"),
       "Windows packaging must resolve the latest stable plugins before accepting a composed Harness release"
     );
+    assert(
+      packageJson.scripts["package:win-installer"].includes("prepare:node-runtime:win:compiled"),
+      "Windows packaging must prepare the pinned offline Node.js runtime"
+    );
+    assert(packageJson.scripts["package:win-installer"].includes("prepare-skills-vendor.js --require-clean"));
+    assert(packageJson.scripts["package:win-installer:signed"].includes("prepare-skills-vendor.js --require-clean"));
     assert.strictEqual(
       packageJson.scripts["prepare:plugins-vendor:latest:compiled"],
       "node dist/scripts/prepare-plugins-vendor.js --latest"
     );
     const macReleaseSource = fs.readFileSync(path.join(repoRoot, "scripts", "package-macos-release.ts"), "utf8");
+    assert(macReleaseSource.includes('"--noextattr"'));
+    assert(macReleaseSource.includes('"attach"'));
+    assert(macReleaseSource.includes('"convert"'));
+    assert(macReleaseSource.includes('const dmgVolumeName = "Double-click TritonAI Installer"'));
+    assert(!macReleaseSource.includes('fs.symlinkSync("/Applications"'));
+    assert(!macReleaseSource.includes('"SetFile"'));
+    assert(!macReleaseSource.includes('"osascript"'));
+    testNativeMacDmgCreation(tempRoot);
     assert(
       macReleaseSource.includes('"prepare-plugins-vendor.js"), "--latest"'),
       "macOS release packaging must resolve the latest stable plugins"
+    );
+    assert(
+      macReleaseSource.includes('"prepare-node-runtime-vendor.js"), "mac-arm64"'),
+      "macOS release packaging must prepare the pinned offline Node.js runtime"
     );
 
     assert.deepStrictEqual(
@@ -298,6 +347,95 @@ function main() {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
   console.log("Release contract tests passed.");
+}
+
+function writePackagedBootProofs(repositoryRoot, version, artifacts) {
+  const crypto = require("crypto");
+  const definitions = [
+    {
+      platform: "macos-arm64",
+      proofPath: path.join(repositoryRoot, "artifacts", "macos-release", "packaged-boot.json"),
+      artifactIds: ["macos-dmg"],
+      markerPlatform: "darwin",
+      markerArch: "arm64"
+    },
+    {
+      platform: "windows-x64",
+      proofPath: path.join(repositoryRoot, "artifacts", "windows-installer", "packaged-boot.json"),
+      artifactIds: ["windows-setup", "windows-portable"],
+      markerPlatform: "win32",
+      markerArch: "x64"
+    }
+  ];
+  for (const definition of definitions) {
+    const candidates = definition.artifactIds.map((id) => {
+      const artifact = artifacts.find((entry) => entry.id === id);
+      return {
+        id,
+        path: artifact.relativePath.split(path.sep).join("/"),
+        sha256: crypto.createHash("sha256").update(fs.readFileSync(artifact.absolutePath)).digest("hex"),
+        marker: {
+          schemaVersion: 1,
+          productName: "TritonAI Installer",
+          version,
+          platform: definition.markerPlatform,
+          arch: definition.markerArch,
+          packaged: true,
+          healthyForMs: 5_000,
+          readyAt: "2026-08-06T00:00:00.000Z"
+        }
+      };
+    });
+    fs.mkdirSync(path.dirname(definition.proofPath), { recursive: true });
+    fs.writeFileSync(definition.proofPath, JSON.stringify({
+      schemaVersion: 1,
+      version,
+      platform: definition.platform,
+      verifiedAt: "2026-08-06T00:00:00.000Z",
+      candidates
+    }));
+  }
+}
+
+function testNativeMacDmgCreation(tempRoot) {
+  if (process.platform !== "darwin") return;
+  const appPath = path.join(tempRoot, "TritonAI Installer.app");
+  const contentsPath = path.join(appPath, "Contents");
+  const macosPath = path.join(contentsPath, "MacOS");
+  const targetDmg = path.join(tempRoot, "native-installer-test.dmg");
+  const mountPoint = path.join(tempRoot, "native-installer-test-mount");
+  fs.mkdirSync(macosPath, { recursive: true });
+  fs.writeFileSync(
+    path.join(contentsPath, "Info.plist"),
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0"><dict>',
+      '<key>CFBundleIdentifier</key><string>edu.ucsd.tritonai.installer.fixture</string>',
+      '<key>CFBundleName</key><string>TritonAI Installer</string>',
+      '<key>CFBundleExecutable</key><string>TritonAI Installer</string>',
+      '<key>CFBundlePackageType</key><string>APPL</string>',
+      '<key>CFBundleShortVersionString</key><string>1.0.0</string>',
+      '<key>CFBundleVersion</key><string>1</string>',
+      '</dict></plist>',
+      ''
+    ].join("\n")
+  );
+  fs.copyFileSync("/usr/bin/true", path.join(macosPath, "TritonAI Installer"));
+  fs.chmodSync(path.join(macosPath, "TritonAI Installer"), 0o755);
+  execFileSync("/usr/bin/codesign", ["--force", "--sign", "-", appPath], { stdio: "ignore" });
+  createDmgFromApp({ sourceApp: appPath, targetDmg });
+  assert(fs.statSync(targetDmg).size > 0, "native DMG creation must produce a non-empty image");
+  execFileSync("/usr/bin/hdiutil", ["verify", targetDmg], { stdio: "ignore" });
+  fs.mkdirSync(mountPoint, { recursive: true });
+  try {
+    execFileSync("/usr/bin/hdiutil", ["attach", targetDmg, "-nobrowse", "-readonly", "-mountpoint", mountPoint], {
+      stdio: "ignore"
+    });
+    assert(fs.lstatSync(path.join(mountPoint, "TritonAI Installer.app")).isDirectory());
+    assert(!fs.existsSync(path.join(mountPoint, "Applications")), "one-shot Installer DMG must not ask users to drag it to Applications");
+  } finally {
+    execFileSync("/usr/bin/hdiutil", ["detach", mountPoint], { stdio: "ignore" });
+  }
 }
 
 function writeHarnessVendorFixture(repositoryRoot, target, manifestName, extension, version) {

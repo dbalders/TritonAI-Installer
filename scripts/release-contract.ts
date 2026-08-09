@@ -31,6 +31,17 @@ function loadReleaseContract(root = defaultRoot) {
   if (!isSafeRepositoryRelativePath(contract.windowsAuthenticodeProof)) {
     throw new Error("Windows Authenticode proof path must be repository-relative.");
   }
+  if (
+    !Array.isArray(contract.packagedBootProofs) ||
+    contract.packagedBootProofs.length !== 2 ||
+    contract.packagedBootProofs.some((proof) =>
+      !isSafeRepositoryRelativePath(proof.path) ||
+      !Array.isArray(proof.artifactIds) ||
+      proof.artifactIds.length === 0
+    )
+  ) {
+    throw new Error("Release contract must define repository-relative macOS and Windows packaged boot proofs.");
+  }
   return contract;
 }
 
@@ -71,6 +82,7 @@ function writeReleaseChecksumManifest({
     throw new Error(`Missing required release artifacts: ${missing.map((entry) => entry.relativePath).join(", ")}`);
   }
   assertWindowsAuthenticodeProof({ root, version, contract, artifacts, verifyAuthenticode });
+  assertPackagedBootProofs({ root, version, contract, artifacts });
 
   const lines = artifacts
     .map((entry) => `${sha256(entry.absolutePath)}  ${entry.fileName}`)
@@ -82,6 +94,79 @@ function writeReleaseChecksumManifest({
   fs.renameSync(temporaryPath, manifestPath);
   verifyReleaseChecksumManifest({ root, version, contract });
   return { artifacts, manifestPath };
+}
+
+function assertPackagedBootProofs({
+  root = defaultRoot,
+  version,
+  contract = loadReleaseContract(root),
+  artifacts = requiredReleaseArtifacts({ root, version, contract })
+}) {
+  const byId = new Map<string, any>(artifacts.map((artifact) => [artifact.id, artifact]));
+  const expectedPlatforms = new Set(["macos-arm64", "windows-x64"]);
+  const actualPlatforms = new Set(contract.packagedBootProofs.map((definition) => definition.platform));
+  if (
+    actualPlatforms.size !== expectedPlatforms.size ||
+    [...expectedPlatforms].some((platform) => !actualPlatforms.has(platform))
+  ) {
+    throw new Error("Packaged boot proofs must cover exactly macos-arm64 and windows-x64.");
+  }
+
+  return contract.packagedBootProofs.map((definition) => {
+    const proofPath = path.join(root, definition.path);
+    if (!isRegularFile(proofPath)) {
+      throw new Error(`Missing packaged boot proof: ${definition.path}`);
+    }
+    const proof = JSON.parse(fs.readFileSync(proofPath, "utf8"));
+    if (
+      proof.schemaVersion !== 1 ||
+      proof.version !== version ||
+      proof.platform !== definition.platform ||
+      !isIsoDate(proof.verifiedAt) ||
+      !Array.isArray(proof.candidates)
+    ) {
+      throw new Error(`Invalid packaged boot proof: ${definition.path}`);
+    }
+    const candidates = new Map<string, any>(proof.candidates.map((candidate) => [candidate.id, candidate]));
+    if (proof.candidates.length !== definition.artifactIds.length || candidates.size !== definition.artifactIds.length) {
+      throw new Error(`Packaged boot proof does not exactly cover ${definition.artifactIds.join(", ")}.`);
+    }
+    for (const artifactId of definition.artifactIds) {
+      const artifact = byId.get(artifactId);
+      const candidate = candidates.get(artifactId);
+      if (!artifact || artifact.platform !== definition.platform || !candidate) {
+        throw new Error(`Packaged boot proof omits ${artifactId}.`);
+      }
+      if (
+        candidate.path !== artifact.relativePath.split(path.sep).join("/") ||
+        candidate.sha256 !== sha256(artifact.absolutePath)
+      ) {
+        throw new Error(`Packaged boot proof hash does not match ${artifact.relativePath}.`);
+      }
+      const marker = candidate.marker;
+      const expectedMarkerPlatform = definition.platform === "macos-arm64" ? "darwin" : "win32";
+      const expectedMarkerArch = definition.platform === "macos-arm64" ? "arm64" : "x64";
+      if (
+        marker?.schemaVersion !== 1 ||
+        marker.productName !== "TritonAI Installer" ||
+        marker.version !== version ||
+        marker.platform !== expectedMarkerPlatform ||
+        marker.arch !== expectedMarkerArch ||
+        marker.packaged !== true ||
+        !Number.isInteger(marker.healthyForMs) ||
+        marker.healthyForMs < 5_000 ||
+        !isIsoDate(marker.readyAt)
+      ) {
+        throw new Error(`Packaged boot proof has an invalid runtime marker for ${artifactId}.`);
+      }
+    }
+    return { proof, proofPath };
+  });
+}
+
+function isIsoDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return false;
+  return Number.isFinite(Date.parse(value));
 }
 
 function assertWindowsAuthenticodeProof({
@@ -276,6 +361,7 @@ function main() {
 if (require.main === module) main();
 
 module.exports = {
+  assertPackagedBootProofs,
   assertBundledHarnessVendorContract,
   assertWindowsAuthenticodeProof,
   assertReleaseMayBeUpdated,

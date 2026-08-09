@@ -15,6 +15,7 @@ build/managed-plugin-composition.generated.json
 *.zip
 vendor/skills/
 vendor/codex-cli/
+vendor/node-runtime/
 vendor/t3code-desktop/
 vendor/plugins/
 

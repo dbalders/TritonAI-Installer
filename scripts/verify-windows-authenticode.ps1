@@ -32,7 +32,7 @@ foreach ($ArtifactPath in $Paths) {
     )
   }
   if ($Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-    throw "Invalid Authenticode signature for $ArtifactPath: $($Signature.Status) $($Signature.StatusMessage)"
+    throw "Invalid Authenticode signature for ${ArtifactPath}: $($Signature.Status) $($Signature.StatusMessage)"
   }
   if ($PublisherName -cne $ExpectedPublisherName) {
     throw "Authenticode publisher mismatch for $ArtifactPath. Expected '$ExpectedPublisherName', found '$PublisherName'."

@@ -16,5 +16,6 @@
 - [x] Preserve public, community, and user-added skill directories across Installer upgrades.
 - [x] Replace/remove only previously Installer-owned secure skills and reject unowned name collisions.
 - [x] Migrate old installs by removing the legacy root `manifest.json` without removing its public skill directories.
-- [x] Fail closed on stable Windows packaging unless Azure Trusted Signing succeeds and every distributable EXE passes publisher-bound Authenticode verification.
+- [x] Keep an explicit hash-bound unsigned Windows release lane until Azure Trusted Signing is available, with cross-build support, SmartScreen warnings, and a separate exact-byte native packaged-boot proof.
+- [x] Keep a separate future signed lane that fails closed unless every nested and distributable EXE passes publisher-bound, timestamped Authenticode verification.
 - [ ] Verify end-to-end on clean macOS and Windows VMs with a real UCSD/TritonAI key.

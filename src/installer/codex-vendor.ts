@@ -1,8 +1,17 @@
 const fs = require("fs");
 const path = require("path");
 const { defaultAppRoot } = require("./app-root");
+const {
+  recoverInterruptedDirectoryTransaction,
+  writeDirectoryTransactionJournal
+} = require("./directory-transaction");
+const { writeFileAtomic } = require("./atomic-file");
 
 const { CODEX_CLI_VERSION } = require("./npm-policy");
+const CODEX_TRANSACTION_JOURNAL_FILE = ".codex-install-transaction.json";
+const CODEX_STAGE_PREFIX = ".codex-install-stage-";
+const CODEX_BACKUP_PREFIX = ".codex-install-backup-";
+const CODEX_TRANSACTION_KIND = "managed Codex CLI";
 
 interface BundleOptions {
   resourcesPath?: string;
@@ -45,10 +54,12 @@ function installBundledCodexCli({
 function stageAndActivateBundledCodex({ source, target, platform = process.platform, arch = process.arch }) {
   const parent = path.dirname(target);
   fs.mkdirSync(parent, { recursive: true });
-  const stageRoot = fs.mkdtempSync(path.join(parent, ".codex-install-stage-"));
+  recoverInterruptedCodexActivation({ target, platform, arch });
+  const stageRoot = fs.mkdtempSync(path.join(parent, CODEX_STAGE_PREFIX));
   const stagedInstall = path.join(stageRoot, "next");
-  const backupRoot = fs.mkdtempSync(path.join(parent, ".codex-install-backup-"));
+  const backupRoot = fs.mkdtempSync(path.join(parent, CODEX_BACKUP_PREFIX));
   const previousInstall = path.join(backupRoot, "previous");
+  const journalPath = path.join(parent, CODEX_TRANSACTION_JOURNAL_FILE);
   let previousMoved = false;
   let activationCompleted = false;
 
@@ -66,6 +77,19 @@ function stageAndActivateBundledCodex({ source, target, platform = process.platf
       ? path.join(stagedInstall, "codex.cmd")
       : path.join(stagedInstall, "bin", "codex");
     if (platform !== "win32") fs.chmodSync(stagedBinary, 0o755);
+
+    writeDirectoryTransactionJournal({
+      journalPath,
+      kind: CODEX_TRANSACTION_KIND,
+      target,
+      stageRoot,
+      backupRoot,
+      stagePrefix: CODEX_STAGE_PREFIX,
+      backupPrefix: CODEX_BACKUP_PREFIX,
+      stagedName: "next",
+      backupName: "previous",
+      hadPrevious: fs.existsSync(target)
+    });
 
     if (fs.existsSync(target)) {
       fs.renameSync(target, previousInstall);
@@ -91,6 +115,7 @@ function stageAndActivateBundledCodex({ source, target, platform = process.platf
     if (activationCompleted || !previousMoved) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
+    if (activationCompleted) fs.rmSync(journalPath, { force: true });
   }
 
   const binary = platform === "win32"
@@ -99,6 +124,20 @@ function stageAndActivateBundledCodex({ source, target, platform = process.platf
   if (!fs.existsSync(binary)) {
     throw new Error(`Bundled Codex CLI activation did not retain the expected binary: ${binary}`);
   }
+}
+
+function recoverInterruptedCodexActivation({ target, platform = process.platform, arch = process.arch, emit = () => {} }) {
+  const parent = path.dirname(target);
+  fs.mkdirSync(parent, { recursive: true });
+  return recoverInterruptedDirectoryTransaction({
+    journalPath: path.join(parent, CODEX_TRANSACTION_JOURNAL_FILE),
+    kind: CODEX_TRANSACTION_KIND,
+    target,
+    stagePrefix: CODEX_STAGE_PREFIX,
+    backupPrefix: CODEX_BACKUP_PREFIX,
+    validate: (candidate) => isCodexVendorDir(candidate, platform, arch),
+    emit
+  });
 }
 
 function findBundledCodexDir(options: BundleOptions = {}): string | null {
@@ -212,7 +251,7 @@ function writeManagedCodexLauncher({
   if (platform === "win32") {
     const windowsNodePath = relativeNodeBinary.replaceAll("/", "\\");
     const windowsCodexPath = relativeCodexJs.replaceAll("/", "\\");
-    fs.writeFileSync(launcher, [
+    writeFileAtomic(launcher, [
       "@echo off",
       "setlocal",
       "set \"SCRIPT_DIR=%~dp0\"",
@@ -223,13 +262,13 @@ function writeManagedCodexLauncher({
       ")",
       `"%NODE_BIN%" "%SCRIPT_DIR%${windowsCodexPath}" %*`,
       "",
-    ].join("\r\n"));
+    ].join("\r\n"), { mode: 0o755 });
     return launcher;
   }
 
   const posixNodePath = relativeNodeBinary.split(path.sep).join("/");
   const posixCodexPath = relativeCodexJs.split(path.sep).join("/");
-  fs.writeFileSync(launcher, [
+  writeFileAtomic(launcher, [
     "#!/usr/bin/env sh",
     "set -eu",
     "SCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)",
@@ -240,8 +279,7 @@ function writeManagedCodexLauncher({
     "fi",
     `exec "$NODE_BIN" "$SCRIPT_DIR/${posixCodexPath}" "$@"`,
     "",
-  ].join("\n"));
-  fs.chmodSync(launcher, 0o755);
+  ].join("\n"), { mode: 0o755 });
   return launcher;
 }
 
@@ -259,9 +297,13 @@ function managedCodexEntrypoint(installRoot: string, platform: NodeJS.Platform):
 }
 
 module.exports = {
+  CODEX_BACKUP_PREFIX,
+  CODEX_STAGE_PREFIX,
+  CODEX_TRANSACTION_JOURNAL_FILE,
   installBundledCodexCli,
   findBundledCodexDir,
   isCodexVendorDir,
+  recoverInterruptedCodexActivation,
   stageAndActivateBundledCodex,
   codexTargetName,
   writeManagedCodexLauncher,

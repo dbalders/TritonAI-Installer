@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { writeFileAtomic } = require("./atomic-file");
 const { UCSD } = require("./constants");
 const { getTritonAiEnvironment } = require("./codex-environment");
 const { prepareWindowsEnvironmentMigration } = require("./windows-environment-migration");
@@ -37,7 +38,7 @@ async function saveEnvironment({ apiKey, paths, platform, nodeRuntime, emit, win
     const migration = prepareWindowsEnvironmentMigration({ paths, ...windowsEnvironmentMigrationRuntime });
     const lines = buildWindowsEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment });
 
-    fs.writeFileSync(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
+    writeFileAtomic(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
     emit(`Saved private TritonAI Harness environment at ${paths.envFile}`);
     return migration;
   }
@@ -45,7 +46,7 @@ async function saveEnvironment({ apiKey, paths, platform, nodeRuntime, emit, win
   removeLegacyShellProfileIntegration(paths.homeDir, paths.envFile);
   const lines = buildMacEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment });
 
-  fs.writeFileSync(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
+  writeFileAtomic(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
   emit(`Saved private TritonAI Harness environment at ${paths.envFile}`);
 }
 
@@ -73,7 +74,14 @@ function removeLegacyShellProfileIntegration(homeDir, envFile) {
 
     const updated = kept.join(newline);
     if (updated !== existing) {
-      fs.writeFileSync(profile, updated);
+      const writeTarget = fs.lstatSync(profile).isSymbolicLink()
+        ? fs.realpathSync(profile)
+        : profile;
+      const targetStat = fs.lstatSync(writeTarget);
+      if (!targetStat.isFile() || targetStat.isSymbolicLink()) {
+        throw new Error(`Shell profile must resolve to a regular file before TritonAI can update it: ${profile}`);
+      }
+      writeFileAtomic(writeTarget, updated, { preserveExistingMode: true });
     }
   }
 }

@@ -6,11 +6,18 @@ const required = [
   "runner.ts",
   "test-electron3.ts",
   "src/main.ts",
+  "src/install-lifecycle.ts",
+  "src/single-instance.ts",
+  "src/packaged-boot-smoke.ts",
   "src/preload.ts",
   "src/global.d.ts",
   "src/installer/app-root.ts",
   "src/installer/runner.ts",
+  "src/installer/atomic-file.ts",
+  "src/installer/directory-transaction.ts",
+  "src/installer/process-termination.ts",
   "src/installer/prerequisites.ts",
+  "src/installer/install-preflight.ts",
   "src/installer/codex-environment.ts",
   "src/installer/diagnostics.ts",
   "src/installer/installer-version-marker.ts",
@@ -21,6 +28,7 @@ const required = [
   "src/installer/existing-api-key.ts",
   "src/installer/tritonai-connection.ts",
   "src/installer/t3code-desktop.ts",
+  "src/installer/windows-publisher-identity.ts",
   "src/installer/codex-vendor.ts",
   "src/installer/npm-policy.ts",
   "src/installer/constants.ts",
@@ -40,6 +48,10 @@ const required = [
   "build/installer.nsh",
   "scripts/verify-npm-age.ts",
   "scripts/test-clean-install-dry-run.ts",
+  "scripts/test-prerequisites.ts",
+  "scripts/test-install-preflight.ts",
+  "scripts/test-install-lifecycle.ts",
+  "scripts/test-packaged-boot-smoke.ts",
   "scripts/test-installer-version-marker.ts",
   "scripts/test-skills.ts",
   "scripts/test-plugins.ts",
@@ -53,6 +65,7 @@ const required = [
   "scripts/prepare-skills-vendor.ts",
   "scripts/prepare-plugins-vendor.ts",
   "scripts/prepare-codex-cli-vendor.ts",
+  "scripts/prepare-node-runtime-vendor.ts",
   "scripts/prepare-t3code-desktop-vendor.ts",
   "scripts/prepare-developer-id-csr.ts",
   "scripts/import-developer-id-cert.ts",
@@ -64,8 +77,11 @@ const required = [
   "scripts/release-contract.ts",
   "scripts/clean-release-output.ts",
   "scripts/package-windows-portable.ts",
+  "scripts/package-windows-unsigned.ts",
+  "scripts/verify-windows-unsigned-release.ts",
   "scripts/windows-signing.ts",
   "scripts/verify-windows-authenticode.ps1",
+  "scripts/verify-windows-packaged-boot.ps1",
   "scripts/test-windows-signing.ts",
   "scripts/trust-macos-dev-artifacts.ts",
   "tsconfig.json",
@@ -97,19 +113,37 @@ if (commonJsRendererPatterns.some((pattern) => pattern.test(rendererOutput))) {
 
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const windowsPackageScript = packageJson.scripts?.["package:win-installer"] || "";
-const windowsBuildCount = windowsPackageScript.match(/npm run build/g)?.length || 0;
-if (windowsBuildCount !== 1) {
-  throw new Error(`Windows packaging must compile exactly once; found ${windowsBuildCount} build steps.`);
+const signedWindowsPackageScript = packageJson.scripts?.["package:win-installer:signed"] || "";
+const nativeWindowsVerificationScript = packageJson.scripts?.["verify:win-installer:native"] || "";
+for (const [name, script, ending] of [
+  ["package:win-installer", windowsPackageScript, "node dist/scripts/package-windows-unsigned.js"],
+  ["package:win-installer:signed", signedWindowsPackageScript, "node dist/scripts/windows-signing.js"]
+]) {
+  const buildCount = script.match(/npm run build/g)?.length || 0;
+  if (buildCount !== 1) {
+    throw new Error(`${name} must compile exactly once; found ${buildCount} build steps.`);
+  }
+  if (!script.endsWith(ending)) {
+    throw new Error(`${name} must end with ${ending}.`);
+  }
 }
-if (!windowsPackageScript.endsWith("node dist/scripts/windows-signing.js")) {
-  throw new Error("Windows release packaging must end at the fail-closed signing and Authenticode gate.");
+if (!windowsPackageScript.includes("prepare:t3code-desktop-vendor:win:unsigned:compiled")) {
+  throw new Error("Current Windows release packaging must explicitly bind the unsigned Harness trust policy.");
+}
+if (!signedWindowsPackageScript.includes("prepare:t3code-desktop-vendor:win:compiled")) {
+  throw new Error("Signed Windows release packaging must explicitly bind the Authenticode Harness trust policy.");
+}
+if (nativeWindowsVerificationScript !== "npm run build && node dist/scripts/verify-windows-unsigned-release.js") {
+  throw new Error("Unsigned Windows native verification must run the exact-candidate verifier.");
 }
 
 for (const scriptName of [
   "clean:release-output:compiled",
   "prepare:managed-config:compiled",
   "prepare:t3code-desktop-vendor:win:compiled",
+  "prepare:t3code-desktop-vendor:win:unsigned:compiled",
   "prepare:codex-cli-vendor:win:compiled",
+  "prepare:node-runtime:win:compiled",
   "prepare:skills-vendor:compiled",
   "prepare:plugins-vendor:compiled",
   "prepare:plugins-vendor:latest:compiled"

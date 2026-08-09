@@ -15,6 +15,12 @@ const {
   macHarnessBundleIdentifierPlistArgs,
   macHarnessCodesignVerificationArgs
 } = require("../src/installer/macos-harness-identity");
+const { EXPECTED_WINDOWS_PUBLISHER_NAME } = require("../src/installer/windows-publisher-identity");
+const {
+  WINDOWS_ARTIFACT_TRUST_FILE,
+  assertWindowsArtifactTrustMode,
+  createWindowsArtifactTrustPolicy
+} = require("../src/installer/windows-artifact-trust");
 
 const root = path.resolve(__dirname, "..", "..");
 const {
@@ -48,6 +54,7 @@ function readHarnessSourceEnvironment(env: NodeJS.ProcessEnv = {}) {
 
 function main() {
   const target = process.argv[2] || process.env.TRITONAI_HARNESS_VENDOR_TARGET || defaultTarget();
+  const windowsTrustMode = readWindowsTrustMode(process.argv.slice(3));
   assertExplicitHarnessSource({ expectedVersion: expectedHarnessVersion, macReleaseBase, winReleaseBase, target });
 
   if (target === "mac-arm64") {
@@ -56,16 +63,25 @@ function main() {
   }
 
   if (target === "win-x64") {
-    prepareWindowsVendor("x64");
+    prepareWindowsVendor("x64", windowsTrustMode);
     return;
   }
 
   if (target === "all") {
-    prepareAllVendors();
+    prepareAllVendors(windowsTrustMode);
     return;
   }
 
   throw new Error(`Unsupported TritonAI Harness vendor target: ${target}`);
+}
+
+function readWindowsTrustMode(args) {
+  const optionIndex = args.indexOf("--windows-trust-mode");
+  if (optionIndex === -1) return "authenticode";
+  if (optionIndex !== args.length - 2) {
+    throw new Error("--windows-trust-mode must be followed by exactly one mode and no unknown arguments.");
+  }
+  return assertWindowsArtifactTrustMode(args[optionIndex + 1]);
 }
 
 function defaultTarget() {
@@ -110,8 +126,8 @@ function stageMacVendor(arch) {
   }
 }
 
-function prepareWindowsVendor(arch) {
-  const stage = stageWindowsVendor(arch);
+function prepareWindowsVendor(arch, trustMode = "authenticode") {
+  const stage = stageWindowsVendor(arch, trustMode);
   try {
     activateStagedVendors([stage]);
     console.log(`Prepared ${path.relative(root, path.join(stage.vendorDir, stage.assetName))}`);
@@ -120,7 +136,8 @@ function prepareWindowsVendor(arch) {
   }
 }
 
-function stageWindowsVendor(arch) {
+function stageWindowsVendor(arch, trustMode = "authenticode") {
+  assertWindowsArtifactTrustMode(trustMode);
   const vendorDir = path.join(root, "vendor", "t3code-desktop", `win-${arch}`);
   const stagingDir = createSiblingTempDir(vendorDir, ".harness-win-vendor-");
   try {
@@ -132,6 +149,9 @@ function stageWindowsVendor(arch) {
     const selected = selectManifestFile(manifest, new RegExp(`^${escapeRegExp(expectedName)}$`));
     const installerPath = path.join(stagingDir, selected.fileName);
     downloadVerified(`${winReleaseBase}/${selected.fileName}`, installerPath, selected.expected);
+    if (trustMode === "authenticode") {
+      verifyExpectedWindowsHarnessPublisher(installerPath);
+    }
     downloadAndVerifyPluginComposition(
       winReleaseBase,
       stagingDir,
@@ -139,6 +159,16 @@ function stageWindowsVendor(arch) {
       installerPath,
       selected.expected,
       publishedPluginCompositionFile("win", arch)
+    );
+    const trustPolicy = createWindowsArtifactTrustPolicy({
+      mode: trustMode,
+      version: manifest.version,
+      artifactPath: installerPath
+    });
+    fs.writeFileSync(
+      path.join(stagingDir, WINDOWS_ARTIFACT_TRUST_FILE),
+      `${JSON.stringify(trustPolicy, null, 2)}\n`,
+      "utf8"
     );
     return { stagingDir, vendorDir, version: manifest.version, assetName: selected.fileName };
   } catch (error) {
@@ -209,11 +239,11 @@ function verifyPluginCompositionProof({
   return actual;
 }
 
-function prepareAllVendors() {
+function prepareAllVendors(windowsTrustMode = "authenticode") {
   const stages = [];
   try {
     stages.push(stageMacVendor("arm64"));
-    stages.push(stageWindowsVendor("x64"));
+    stages.push(stageWindowsVendor("x64", windowsTrustMode));
     assertMatchingManifestVersions(stages.map((stage) => stage.version));
     activateStagedVendors(stages);
     for (const stage of stages) {
@@ -406,6 +436,42 @@ function verifyExpectedMacHarnessPublisher(
   }
 }
 
+function verifyExpectedWindowsHarnessPublisher(
+  executablePath,
+  { platform = process.platform, execute = execFileSync } = {}
+) {
+  if (platform !== "win32") {
+    throw new Error("Stable Windows Harness vendoring and publisher verification must run on Windows.");
+  }
+  const verifier = path.join(root, "scripts", "verify-windows-authenticode.ps1");
+  const encodedPaths = Buffer.from(JSON.stringify([executablePath]), "utf8").toString("base64");
+  const output = execute("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    verifier,
+    "-ExpectedPublisherName",
+    EXPECTED_WINDOWS_PUBLISHER_NAME,
+    "-EncodedPaths",
+    encodedPaths
+  ], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+  const results = JSON.parse(String(output));
+  if (
+    !Array.isArray(results) ||
+    results.length !== 1 ||
+    path.resolve(results[0].path).toLowerCase() !== path.resolve(executablePath).toLowerCase() ||
+    results[0].status !== "Valid" ||
+    results[0].publisherName !== EXPECTED_WINDOWS_PUBLISHER_NAME ||
+    !results[0].thumbprint ||
+    !results[0].timestampSubject
+  ) {
+    throw new Error(`TritonAI Harness Windows publisher verification returned invalid evidence for ${executablePath}.`);
+  }
+  return results[0];
+}
+
 function readMacHarnessBundleIdentifier(appPath) {
   return execFileSync(MACOS_PLUTIL_PATH, macHarnessBundleIdentifierPlistArgs(appPath), { encoding: "utf8" });
 }
@@ -504,7 +570,9 @@ module.exports = {
   publishedPluginCompositionFile,
   readHarnessSourceEnvironment,
   pluginCompositionFile,
+  readWindowsTrustMode,
   selectManifestFile,
   verifyPluginCompositionProof,
-  verifyExpectedMacHarnessPublisher
+  verifyExpectedMacHarnessPublisher,
+  verifyExpectedWindowsHarnessPublisher
 };

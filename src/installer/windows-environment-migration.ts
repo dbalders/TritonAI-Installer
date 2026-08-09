@@ -2,6 +2,8 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const { UCSD } = require("./constants");
+const { writeFileAtomic } = require("./atomic-file");
+const { terminateProcessTree } = require("./process-termination");
 
 const WINDOWS_ENVIRONMENT_MIGRATION_SCHEMA_VERSION = 1;
 const LEGACY_INSTALLER_VERSIONS = new Set(["0.2.0", "0.2.1"]);
@@ -12,6 +14,7 @@ const LEGACY_ENVIRONMENT_NAMES = new Set([
   UCSD.codexHomeEnv,
   "T3CODE_HOME"
 ]);
+const WINDOWS_ENVIRONMENT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 
 function prepareWindowsEnvironmentMigration({
   paths,
@@ -307,43 +310,58 @@ function readJson(filePath) {
 }
 
 function writeJsonAtomically(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
-  let fileDescriptor = null;
-  try {
-    fileDescriptor = fs.openSync(temporaryPath, "wx", 0o600);
-    fs.writeFileSync(fileDescriptor, `${JSON.stringify(value)}\n`, "utf8");
-    fs.fsyncSync(fileDescriptor);
-    fs.closeSync(fileDescriptor);
-    fileDescriptor = null;
-    fs.renameSync(temporaryPath, filePath);
-  } catch (error) {
-    if (fileDescriptor !== null) {
-      try { fs.closeSync(fileDescriptor); } catch {}
-    }
-    try { fs.rmSync(temporaryPath, { force: true }); } catch {}
-    throw error;
-  }
+  writeFileAtomic(filePath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
 }
 
 function isIsoDate(value) {
   return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
 
-function runPowerShell(command, description) {
+function runPowerShell(command, description, {
+  platform = process.platform,
+  timeoutMs = WINDOWS_ENVIRONMENT_COMMAND_TIMEOUT_MS,
+  spawnProcess = spawn,
+  terminate = terminateProcessTree
+} = {}) {
   return new Promise<void>((resolve, reject) => {
-    if (process.platform !== "win32") {
+    if (platform !== "win32") {
       reject(new Error(`PowerShell cleanup is only available on Windows while ${description}`));
       return;
     }
     const encodedCommand = Buffer.from(command, "utf16le").toString("base64");
-    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand], {
+    const child = spawnProcess("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand], {
       windowsHide: true
     });
-    child.on("error", reject);
+    let settled = false;
+    let timingOut = false;
+    const settle = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    const timer = setTimeout(() => {
+      if (settled || timingOut) return;
+      timingOut = true;
+      void terminate(child, { platform: "win32" }).then(() => {
+        settle(() => reject(Object.assign(
+          new Error(`PowerShell timed out after ${timeoutMs}ms while ${description}; its process tree was terminated`),
+          { code: "ETIMEDOUT" }
+        )));
+      }, (terminationError) => {
+        settle(() => reject(Object.assign(new Error(
+          `PowerShell timed out after ${timeoutMs}ms while ${description}, and termination could not be confirmed: ${terminationError.message}`,
+          { cause: terminationError }
+        ), { code: "ETERMINATE" })));
+      });
+    }, timeoutMs);
+    child.on("error", (error) => {
+      if (!timingOut) settle(() => reject(error));
+    });
     child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`PowerShell exited with code ${code} while ${description}`));
+      if (timingOut) return;
+      if (code === 0) settle(resolve);
+      else settle(() => reject(new Error(`PowerShell exited with code ${code} while ${description}`)));
     });
   });
 }
@@ -353,5 +371,6 @@ module.exports = {
   parseLegacyWindowsEnvironment,
   planWindowsEnvironmentCleanup,
   planWindowsPathCleanup,
-  prepareWindowsEnvironmentMigration
+  prepareWindowsEnvironmentMigration,
+  runPowerShell
 };
