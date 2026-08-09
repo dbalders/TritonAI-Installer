@@ -232,7 +232,7 @@ async function assertEnvironmentIsHarnessScoped() {
     }
 
     const macPaths = getPaths(tempRoot, "darwin");
-    const macRuntime = getNodeRuntimePaths(macPaths, "darwin", process.arch);
+    const macRuntime = getNodeRuntimePaths(macPaths, "darwin", "arm64");
     await saveEnvironment({ apiKey: "private-key", paths: macPaths, platform: "darwin", nodeRuntime: macRuntime, emit: () => {} });
 
     const macEnvironment = fs.readFileSync(macPaths.envFile, "utf8");
@@ -550,7 +550,7 @@ async function assertRunInstallRequiresApiKey() {
 async function assertRunInstallStopsBeforeDesktopWhenConnectionFails() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-connection-fail-"));
   const paths = getPaths(tempRoot, "darwin");
-  const runtimeArch = process.arch;
+  const runtimeArch = "arm64";
   const fakeRuntime = getNodeRuntimePaths(paths, "darwin", runtimeArch);
   let environmentSaveAttempted = false;
   let desktopInstallAttempted = false;

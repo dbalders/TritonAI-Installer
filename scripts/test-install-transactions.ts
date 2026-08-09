@@ -292,7 +292,7 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
     writeMacApp(launcherPath, "old-launcher");
 
     assert.strictEqual(
-      writeMacAppLauncher(paths, () => {}, process.arch, { launcherPath }),
+      writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
       launcherPath
     );
     const installedLauncher = fs.readFileSync(
@@ -312,7 +312,7 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
     };
     try {
       assert.throws(
-        () => writeMacAppLauncher(paths, () => {}, process.arch, { launcherPath }),
+        () => writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
         /simulated launcher staging failure/
       );
     } finally {
@@ -324,7 +324,7 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
       "failed launcher staging must not touch the Applications entry"
     );
 
-    writeMacAppLauncher(paths, () => {}, process.arch, { launcherPath });
+    writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath });
     const previousValidLauncher = readMacAppVersion(launcherPath);
 
     const originalRenameSync = fs.renameSync;
@@ -336,7 +336,7 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
     };
     try {
       assert.throws(
-        () => writeMacAppLauncher(paths, () => {}, process.arch, { launcherPath }),
+        () => writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
         /simulated launcher activation failure/
       );
     } finally {
@@ -359,7 +359,7 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
     };
     try {
       assert.throws(
-        () => writeMacAppLauncher(paths, () => {}, process.arch, { launcherPath }),
+        () => writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
         /Rollback also failed: simulated launcher rollback failure/
       );
     } finally {
@@ -375,7 +375,7 @@ function assertMacLauncherStagesBeforeSwapAndRollsBack() {
 
     const recoveryEvents = [];
     assert.strictEqual(
-      writeMacAppLauncher(paths, (message) => recoveryEvents.push(message), process.arch, { launcherPath }),
+      writeMacAppLauncher(paths, (message) => recoveryEvents.push(message), "arm64", { launcherPath }),
       launcherPath
     );
     assert(recoveryEvents.some((message) => message.includes("Restored the previous TritonAI Harness launcher")));
