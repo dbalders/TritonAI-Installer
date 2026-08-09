@@ -12,6 +12,10 @@ const {
 
 const NODE_VERSION = "22.23.2";
 const NODE_DIST_BASE = "https://nodejs.org/download/release";
+const NODE_ARCHIVE_SHA256 = Object.freeze({
+  "mac-arm64": "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
+  "win-x64": "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97"
+});
 const NODE_VENDOR_SCHEMA_VERSION = 1;
 const NODE_RUNTIME_MARKER = ".tritonai-node-runtime.json";
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
@@ -123,15 +127,17 @@ function getNodeRuntimePaths(paths, platform = process.platform, arch = process.
 
 function getNodeDistribution(platform = process.platform, arch = process.arch) {
   const normalized = normalizePlatform(platform, arch);
+  const target = nodeTargetName(platform, arch);
   const archiveExt = platform === "win32" ? "zip" : "tar.gz";
   const nodeDirName = `node-v${NODE_VERSION}-${normalized.nodePlatform}-${normalized.nodeArch}`;
   const archiveName = `${nodeDirName}.${archiveExt}`;
   return {
-    target: nodeTargetName(platform, arch),
+    target,
     nodeDirName,
     archiveName,
     archiveUrl: `${NODE_DIST_BASE}/v${NODE_VERSION}/${archiveName}`,
-    shasumsUrl: `${NODE_DIST_BASE}/v${NODE_VERSION}/SHASUMS256.txt`
+    shasumsUrl: `${NODE_DIST_BASE}/v${NODE_VERSION}/SHASUMS256.txt`,
+    sha256: NODE_ARCHIVE_SHA256[target]
   };
 }
 
@@ -183,7 +189,11 @@ async function installNodeRuntimeFromNetwork({
   const archivePath = path.join(paths.cacheDir, nodePaths.archiveName);
   const shasumsPath = path.join(paths.cacheDir, `SHASUMS256-v${NODE_VERSION}.txt`);
   await downloadFileAtomic(nodePaths.shasumsUrl, shasumsPath, emit);
-  const expectedSha256 = checksumForArchive(shasumsPath, nodePaths.archiveName);
+  const publishedSha256 = checksumForArchive(shasumsPath, nodePaths.archiveName);
+  if (publishedSha256 !== nodePaths.sha256) {
+    throw new Error(`Published checksum does not match the reviewed digest for ${nodePaths.archiveName}`);
+  }
+  const expectedSha256 = nodePaths.sha256;
 
   if (fs.existsSync(archivePath)) {
     try {
@@ -639,6 +649,7 @@ module.exports = {
   runExtractionCommand,
   shouldFallbackWindowsExtraction,
   NODE_VERSION,
+  NODE_ARCHIVE_SHA256,
   NODE_VENDOR_SCHEMA_VERSION,
   NODE_TRANSACTION_JOURNAL_FILE,
   NODE_STAGE_PREFIX,

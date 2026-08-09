@@ -189,7 +189,9 @@ function assertAtomicFileReplacementPreservesPriorStateOnFailure() {
     assert.deepStrictEqual(fs.readdirSync(tempRoot), ["environment"]);
     writeFileAtomic(target, "replacement\n", { preserveExistingMode: true });
     assert.strictEqual(fs.readFileSync(target, "utf8"), "replacement\n");
-    assert.strictEqual(fs.statSync(target).mode & 0o777, 0o640);
+    if (process.platform !== "win32") {
+      assert.strictEqual(fs.statSync(target).mode & 0o777, 0o640);
+    }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

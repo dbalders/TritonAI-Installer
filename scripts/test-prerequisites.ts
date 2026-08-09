@@ -12,6 +12,7 @@ const {
   NODE_TRANSACTION_JOURNAL_FILE,
   NODE_VENDOR_SCHEMA_VERSION,
   NODE_VERSION,
+  NODE_ARCHIVE_SHA256,
   downloadFileAtomic,
   ensurePrerequisites,
   findBundledNodeArchive,
@@ -24,6 +25,7 @@ const {
 const { writeDirectoryTransactionJournal } = require("../src/installer/directory-transaction");
 
 async function main() {
+  assertReviewedNodeArchiveDigests();
   await assertPackagedRuntimeIsRequiredAndInstalledTransactionally();
   assertInterruptedRuntimeActivationRestoresPreviousRuntime();
   await assertInterruptedDownloadRetriesWithoutPoisoningTarget();
@@ -32,6 +34,15 @@ async function main() {
   await assertDownloadRedirectLimit();
   await assertExtractionWatchdogTerminatesTimedOutProcess();
   console.log("Installer prerequisite tests passed.");
+}
+
+function assertReviewedNodeArchiveDigests() {
+  assert.deepStrictEqual(NODE_ARCHIVE_SHA256, {
+    "mac-arm64": "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
+    "win-x64": "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97"
+  });
+  assert.strictEqual(getNodeDistribution("darwin", "arm64").sha256, NODE_ARCHIVE_SHA256["mac-arm64"]);
+  assert.strictEqual(getNodeDistribution("win32", "x64").sha256, NODE_ARCHIVE_SHA256["win-x64"]);
 }
 
 async function assertExtractionWatchdogTerminatesTimedOutProcess() {

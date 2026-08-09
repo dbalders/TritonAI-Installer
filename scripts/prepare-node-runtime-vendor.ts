@@ -36,7 +36,11 @@ async function prepareNodeRuntimeVendor(targetName) {
 
   try {
     await downloadFileAtomic(distribution.shasumsUrl, shasumsPath, console.log);
-    const sha256 = checksumForArchive(shasumsPath, distribution.archiveName);
+    const publishedSha256 = checksumForArchive(shasumsPath, distribution.archiveName);
+    if (publishedSha256 !== distribution.sha256) {
+      throw new Error(`Published checksum does not match the reviewed digest for ${distribution.archiveName}`);
+    }
+    const sha256 = distribution.sha256;
     await downloadFileAtomic(distribution.archiveUrl, archivePath, console.log);
     verifyArchive(archivePath, { sha256 });
     const size = fs.statSync(archivePath).size;
