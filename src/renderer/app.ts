@@ -12,6 +12,7 @@ interface RendererState {
   credentialError: string | null;
   existingCredentialHandle: string;
   credentialHandle: string;
+  replacingExistingCredentials: boolean;
   secondKeyVisible: boolean;
   supportInfo: DiagnosticsInfo | null;
 }
@@ -28,6 +29,7 @@ const state: RendererState = {
   credentialError: null,
   existingCredentialHandle: "",
   credentialHandle: "",
+  replacingExistingCredentials: false,
   secondKeyVisible: false,
   supportInfo: null
 };
@@ -103,6 +105,9 @@ const secondaryApiKeyInput = document.getElementById("api-key-secondary") as HTM
 const secondaryApiKeyVisibilityToggle = document.getElementById("api-key-secondary-visibility-toggle");
 const secondaryKeyGroup = document.getElementById("secondary-key-group");
 const multipleKeyToggle = document.getElementById("multiple-key-toggle") as HTMLButtonElement;
+const replaceExistingCredentialsButton = document.getElementById(
+  "replace-existing-credentials"
+) as HTMLButtonElement;
 const continueButton = document.getElementById("continue-button") as HTMLButtonElement;
 
 function show(panelName) {
@@ -226,6 +231,7 @@ function useExistingCredentials(existingCredentials) {
     : "";
   if (!handle || apiKeyInput.value.trim()) return;
   state.existingCredentialHandle = handle;
+  state.replacingExistingCredentials = false;
   updateCredentialControls();
 }
 
@@ -729,11 +735,17 @@ function updateCredentialControls() {
   if (apiKeyHelp) {
     apiKeyHelp.textContent = state.credentialError || getCredentialHelpText(hasApiKey);
   }
+  if (replaceExistingCredentialsButton) {
+    replaceExistingCredentialsButton.hidden = !hasExistingCredentials;
+  }
 }
 
 function getCredentialHelpText(hasApiKey) {
+  if (state.replacingExistingCredentials) {
+    return "Enter the replacement access key setup for this computer.";
+  }
   if (state.existingCredentialHandle && !hasApiKey) {
-    return "Found an existing TritonAI access setup on this computer.";
+    return "Found a saved TritonAI access setup. Add a key only if you need another model route.";
   }
   if (state.existingCredentialHandle && hasApiKey) {
     return "We’ll check this key together with the saved access setup.";
@@ -883,6 +895,15 @@ secondaryApiKeyVisibilityToggle?.addEventListener("click", () => {
 multipleKeyToggle?.addEventListener("click", () => {
   setSecondKeyVisible(!state.secondKeyVisible);
   (state.secondKeyVisible ? secondaryApiKeyInput : apiKeyInput).focus();
+});
+
+replaceExistingCredentialsButton?.addEventListener("click", () => {
+  state.existingCredentialHandle = "";
+  state.replacingExistingCredentials = true;
+  state.credentialHandle = "";
+  clearCredentialError();
+  updateCredentialControls();
+  apiKeyInput.focus();
 });
 
 document.getElementById("open-docs")?.addEventListener("click", () => {

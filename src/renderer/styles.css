@@ -1490,6 +1490,17 @@ input:focus {
   text-underline-offset: 3px;
 }
 
+.credential-mode-actions {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.replace-existing-credentials[hidden] {
+  display: none;
+}
+
 .form .actions,
 .actions {
   display: flex;
