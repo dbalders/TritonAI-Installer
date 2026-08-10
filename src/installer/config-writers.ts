@@ -188,7 +188,7 @@ function buildT3CodeSettings(existing, paths) {
       }
     },
     textGenerationModelSelection: {
-      instanceId: "codex",
+      instanceId: UCSD.modelRoute(codexModel) === "frontier" ? "codex_frontier" : "codex",
       model: codexModel
     }
   };
@@ -1323,24 +1323,28 @@ function getCodexModelMetadata(paths) {
 }
 
 function getEffectiveCodexModel(paths) {
-  return paths.externalModelsEnabled === true
+  const models = getCodexModels(paths);
+  const preferred = paths.externalModelsEnabled === true
     ? UCSD.codexModel
     : UCSD.restrictedCodexModel;
+  if (Object.prototype.hasOwnProperty.call(models, preferred)) return preferred;
+  const fallback = Object.keys(models)[0];
+  if (!fallback) {
+    throw new Error("The verified TritonAI access keys do not expose any managed models.");
+  }
+  return fallback;
 }
 
 function getCodexModels(paths) {
-  if (paths.externalModelsEnabled !== true) {
-    // Key capability is an upper bound: a packaged operator catalog cannot
-    // grant models that the installed key cannot access.
-    return Object.fromEntries(
-      Object.entries(UCSD.codexModels).filter(
-        ([slug, model]) =>
-          slug === UCSD.restrictedCodexModel ||
-          objectValue(model).availableToRestrictedKeys === true
-      )
-    );
-  }
-  return UCSD.codexModels;
+  // Key capability is an upper bound: a packaged operator catalog cannot
+  // grant models that the installed credentials cannot access.
+  return Object.fromEntries(
+    Object.entries(UCSD.codexModels).filter(([slug]) => {
+      const route = UCSD.modelRoute(slug);
+      if (route === "frontier") return paths.externalModelsEnabled === true;
+      return paths.onPremModelsEnabled !== false;
+    })
+  );
 }
 
 function getT3SettingsPaths(paths) {

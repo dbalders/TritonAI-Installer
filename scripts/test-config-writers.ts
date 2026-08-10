@@ -476,6 +476,68 @@ function assertFrontierSessionRouteColumnsStayCoherent() {
   }
 }
 
+function assertFrontierOnlyCatalogExcludesOnPremModels() {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    return;
+  }
+
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-frontier-only-catalog-"));
+  try {
+    const paths = getPaths(tempRoot, process.platform);
+    paths.externalModelsEnabled = true;
+    paths.onPremModelsEnabled = false;
+    writeT3CodeSettings(paths);
+
+    const settings = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
+    const customModels = settings.providerInstances.codex.config.customModels;
+    assert(customModels.length > 0, "frontier-only credentials must retain frontier models");
+    assert(
+      customModels.every((model) => UCSD.modelRoute(model) === "frontier"),
+      "frontier-only credentials must not expose on-prem models"
+    );
+    assert(!customModels.includes("api-deepseek-v4-flash"));
+    assert.deepStrictEqual(
+      Object.keys(settings.providers.codex.customModelMetadata).sort(),
+      [...customModels].sort()
+    );
+    assert.strictEqual(settings.textGenerationModelSelection.instanceId, "codex_frontier");
+
+    const stateDbPath = path.join(path.dirname(paths.t3Settings), "state.sqlite");
+    const db = new DatabaseSync(stateDbPath);
+    db.exec(`
+      CREATE TABLE projection_threads (
+        thread_id TEXT PRIMARY KEY,
+        model_selection_json TEXT NOT NULL
+      );
+    `);
+    db.prepare(`
+      INSERT INTO projection_threads (thread_id, model_selection_json)
+      VALUES (?, ?)
+    `).run(
+      "thread-on-prem",
+      JSON.stringify({ instanceId: "codex", model: "api-deepseek-v4-flash" })
+    );
+    db.close();
+
+    const result = runDefaultsPatcher(paths);
+    assert.strictEqual(result.status, 0, result.stderr);
+    const patched = new DatabaseSync(stateDbPath);
+    const selection = JSON.parse(
+      patched.prepare(
+        "SELECT model_selection_json FROM projection_threads WHERE thread_id = 'thread-on-prem'"
+      ).get().model_selection_json
+    );
+    patched.close();
+    assert.strictEqual(selection.instanceId, "codex_frontier");
+    assert(customModels.includes(selection.model));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 function assertValidUnknownSettingsSurvive() {
   withGeneratedPatcher((paths) => {
     const settingsPaths = getManagedSettingsPaths(paths);
@@ -1046,6 +1108,7 @@ function assertWindowsDaclCoversReplacementAndBackup() {
 function main() {
   assertSessionMigrationPreservesCurrentCodexRows();
   assertFrontierSessionRouteColumnsStayCoherent();
+  assertFrontierOnlyCatalogExcludesOnPremModels();
   assertValidUnknownSettingsSurvive();
   assertLiveWriterDiscardsMalformedProviderEnvironment();
   assertDevelopmentSettingsAreNotManaged();
