@@ -433,6 +433,23 @@ function assertFrontierSessionRouteColumnsStayCoherent() {
       JSON.stringify({ model: "gpt-5.6-sol" })
     );
     db.prepare(`
+      INSERT INTO provider_session_runtime (
+        thread_id, provider_name, provider_instance_id, adapter_key,
+        status, resume_cursor_json, runtime_payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "thread-divergent-route",
+      "codex",
+      "codex",
+      "codex",
+      "running",
+      null,
+      JSON.stringify({
+        model: "api-deepseek-v4-flash",
+        modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" }
+      })
+    );
+    db.prepare(`
       INSERT INTO projection_thread_sessions (
         thread_id, status, provider_name, provider_instance_id
       ) VALUES (?, ?, ?, ?)
@@ -456,6 +473,9 @@ function assertFrontierSessionRouteColumnsStayCoherent() {
     const topLevelRuntime = patched.prepare(
       "SELECT provider_instance_id, runtime_payload_json FROM provider_session_runtime WHERE thread_id = 'thread-frontier-top-level'"
     ).get();
+    const divergentRuntime = patched.prepare(
+      "SELECT provider_instance_id, runtime_payload_json FROM provider_session_runtime WHERE thread_id = 'thread-divergent-route'"
+    ).get();
     const projectionSession = patched.prepare(
       "SELECT provider_instance_id FROM projection_thread_sessions"
     ).get();
@@ -476,6 +496,8 @@ function assertFrontierSessionRouteColumnsStayCoherent() {
       JSON.parse(topLevelRuntime.runtime_payload_json).modelSelection.model,
       "gpt-5.6-sol"
     );
+    assert.strictEqual(divergentRuntime.provider_instance_id, "codex_frontier");
+    assert.strictEqual(JSON.parse(divergentRuntime.runtime_payload_json).model, "gpt-5.6-sol");
     assert.strictEqual(projectionSession.provider_instance_id, "codex_frontier");
     assert.strictEqual(
       JSON.parse(projectionThread.model_selection_json).instanceId,

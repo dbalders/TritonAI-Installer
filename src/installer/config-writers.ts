@@ -643,6 +643,11 @@ function patchSessionState(db) {
         UPDATE provider_session_runtime
         SET runtime_payload_json = json_set(
           runtime_payload_json,
+          '$.model',
+          COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ),
           '$.modelSelection.model',
           COALESCE(
             json_extract(runtime_payload_json, '$.modelSelection.model'),
@@ -689,6 +694,11 @@ function patchSessionState(db) {
         UPDATE provider_session_runtime
         SET runtime_payload_json = json_set(
           runtime_payload_json,
+          '$.model',
+          COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ),
           '$.modelSelection.model',
           COALESCE(
             json_extract(runtime_payload_json, '$.modelSelection.model'),
