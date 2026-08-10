@@ -19,6 +19,13 @@ const { defaultAppRoot } = require("./app-root");
 const { writeInstallerVersionMarker } = require("./installer-version-marker");
 const { inspectBundledPluginComposition } = require("./plugins");
 const { terminateProcessTree } = require("./process-termination");
+const {
+  checkAndAssignCredentials,
+  credentialEnvironment,
+  credentialValues,
+  normalizeCredentialBundle,
+  primaryApiKey
+} = require("./credentials");
 const { version: packageInstallerVersion } = require(path.join(defaultAppRoot(__dirname), "package.json"));
 const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const VERSION_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
@@ -28,7 +35,11 @@ interface InstallError extends Error {
 }
 
 async function runInstall(payload, runtime) {
-  const apiKey = payload && typeof payload.apiKey === "string" ? payload.apiKey.trim() : "";
+  let credentials = normalizeCredentialBundle({
+    ...(payload && payload.credentials),
+    apiKey: payload && payload.apiKey
+  });
+  let apiKey = primaryApiKey(credentials);
   runtime = runtime || {};
   const platform = runtime.platform || process.platform;
   const arch = runtime.arch || process.arch;
@@ -40,7 +51,7 @@ async function runInstall(payload, runtime) {
     platform,
     arch,
     installerVersion: runtime.installerVersion,
-    secretValues: [apiKey]
+    secretValues: credentialValues(credentials)
   });
   const emit = createDiagnosticEmitter(runtime.emit || (() => {}), diagnostics);
   const desktopApps: DesktopApps = {};
@@ -77,8 +88,11 @@ async function runInstall(payload, runtime) {
       emit
     });
     diagnostics.setStep("connect");
-    const connection = await verifyTritonAiConnection({ apiKey, runtime, emit });
-    paths.externalModelsEnabled = connection.externalModelsEnabled;
+    const connection = await verifyTritonAiCredentials({ credentials, runtime, emit });
+    credentials = connection.credentials;
+    apiKey = primaryApiKey(credentials);
+    paths.externalModelsEnabled = connection.access.frontier;
+    paths.onPremModelsEnabled = connection.access.onPrem;
 
     diagnostics.setStep("prepare");
     const shouldSeedOnboardingWorkspace = isFreshInstall(paths);
@@ -112,7 +126,7 @@ async function runInstall(payload, runtime) {
     emit("Saving TritonAI access key environment...");
     const environmentSaver = runtime.saveEnvironment || saveEnvironment;
     environmentMigration = await environmentSaver({
-      apiKey,
+      credentials,
       paths,
       platform,
       nodeRuntime,
@@ -122,7 +136,7 @@ async function runInstall(payload, runtime) {
 
     diagnostics.setStep("tools");
     const tool = getTool("t3code");
-    await ensureCodexCliForT3({ apiKey, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
+    await ensureCodexCliForT3({ credentials, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
 
     diagnostics.setStep("shortcut");
     const desktopInstaller = runtime.installT3CodeDesktop || installT3CodeDesktop;
@@ -136,7 +150,7 @@ async function runInstall(payload, runtime) {
       resourcesPath: runtime.resourcesPath,
       appRoot: runtime.appRoot,
       packaged: runtime.packaged,
-      env: buildEnv(apiKey, paths, nodeRuntime, platform)
+      env: buildEnv(credentials, paths, nodeRuntime, platform)
     });
     if (result && result.appPath) {
       desktopApps.t3code = result.appPath;
@@ -151,7 +165,7 @@ async function runInstall(payload, runtime) {
 
     emit(`Configuring ${tool.name} for UCSD routing...`);
     configWriters[tool.configWriter](paths);
-    await runT3DefaultsPatcher({ apiKey, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
+    await runT3DefaultsPatcher({ credentials, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
 
     diagnostics.setStep("verify");
     const markerWriter = runtime.writeInstallerVersionMarker || writeInstallerVersionMarker;
@@ -252,12 +266,12 @@ function isFreshInstall(paths) {
     && !fs.existsSync(paths.t3Settings);
 }
 
-async function ensureCodexCliForT3({ apiKey, paths, nodeRuntime, runtime, emit }) {
+async function ensureCodexCliForT3({ credentials, paths, nodeRuntime, runtime, emit }) {
   const managedBinary = managedCodexBinary(paths, runtime.platform);
   const managedVersion = isExecutable(managedBinary, runtime.platform)
     ? await getCodexVersionForRuntime({
         binary: managedBinary,
-        env: buildEnv(apiKey, paths, nodeRuntime, runtime.platform),
+        env: buildEnv(credentials, paths, nodeRuntime, runtime.platform),
         platform: runtime.platform,
         runtime,
         emit
@@ -268,7 +282,7 @@ async function ensureCodexCliForT3({ apiKey, paths, nodeRuntime, runtime, emit }
     emit(managedVersion
       ? `Found managed Codex ${managedVersion}; installing managed Codex ${CODEX_CLI_VERSION} for TritonAI Harness.`
       : `Installing managed Codex ${CODEX_CLI_VERSION} for TritonAI Harness.`);
-    await installManagedCodexCli({ apiKey, paths, nodeRuntime, runtime, emit });
+    await installManagedCodexCli({ credentials, paths, nodeRuntime, runtime, emit });
   } else {
     paths.codexBinaryPath = managedBinary;
     emit(`Found managed Codex ${managedVersion}; using it for TritonAI Harness.`);
@@ -282,12 +296,12 @@ async function ensureCodexCliForT3({ apiKey, paths, nodeRuntime, runtime, emit }
   });
   paths.codexBinaryPath = managedBinary;
   emit("Pinned managed Codex to the managed Node.js runtime.");
-  await verifyManagedCodexCli({ apiKey, paths, nodeRuntime, runtime, emit });
+  await verifyManagedCodexCli({ credentials, paths, nodeRuntime, runtime, emit });
 
   emit("Verifying TritonAI Codex backend...");
   await runCommands(CODEX_CLI.verify, {
     emit,
-    env: buildEnv(apiKey, paths, nodeRuntime, runtime.platform),
+    env: buildEnv(credentials, paths, nodeRuntime, runtime.platform),
     paths,
     nodeRuntime,
     commandRunner: runtime.commandRunner,
@@ -295,11 +309,11 @@ async function ensureCodexCliForT3({ apiKey, paths, nodeRuntime, runtime, emit }
   });
 }
 
-async function verifyManagedCodexCli({ apiKey, paths, nodeRuntime, runtime, emit }) {
+async function verifyManagedCodexCli({ credentials, paths, nodeRuntime, runtime, emit }) {
   const managedBinary = managedCodexBinary(paths, runtime.platform);
   const installedVersion = await getCodexVersionForRuntime({
     binary: managedBinary,
-    env: buildEnv(apiKey, paths, nodeRuntime, runtime.platform),
+    env: buildEnv(credentials, paths, nodeRuntime, runtime.platform),
     platform: runtime.platform,
     runtime,
     emit
@@ -309,7 +323,7 @@ async function verifyManagedCodexCli({ apiKey, paths, nodeRuntime, runtime, emit
   }
 }
 
-async function installManagedCodexCli({ apiKey, paths, nodeRuntime, runtime, emit }) {
+async function installManagedCodexCli({ credentials, paths, nodeRuntime, runtime, emit }) {
   const bundledInstaller = runtime.installBundledCodexCli || installBundledCodexCli;
   const installedFromBundle = await bundledInstaller({
     paths,
@@ -330,7 +344,7 @@ async function installManagedCodexCli({ apiKey, paths, nodeRuntime, runtime, emi
 
   await runCommands(getCommands(CODEX_CLI, "install", runtime.platform), {
     emit,
-    env: buildEnv(apiKey, paths, nodeRuntime, runtime.platform),
+    env: buildEnv(credentials, paths, nodeRuntime, runtime.platform),
     paths,
     nodeRuntime,
     commandRunner: runtime.commandRunner
@@ -369,7 +383,7 @@ async function installOptionalDesktopApp({ desktopInstaller, paths, platform, ar
   }
 }
 
-async function runT3DefaultsPatcher({ apiKey, paths, nodeRuntime, runtime, emit }) {
+async function runT3DefaultsPatcher({ credentials, paths, nodeRuntime, runtime, emit }) {
   if (!fs.existsSync(paths.t3DefaultsPatcher)) {
     return;
   }
@@ -379,32 +393,27 @@ async function runT3DefaultsPatcher({ apiKey, paths, nodeRuntime, runtime, emit 
   const command = nodeRuntime && nodeRuntime.nodeBinary ? nodeRuntime.nodeBinary : "node";
   await commandRunner(command, [paths.t3DefaultsPatcher], {
     emit,
-    env: buildEnv(apiKey, paths, nodeRuntime, runtime.platform),
+    env: buildEnv(credentials, paths, nodeRuntime, runtime.platform),
     allowFailure: true
   });
 }
 
-async function verifyTritonAiConnection({ apiKey, runtime, emit }) {
-  emit("Checking TritonAI connection...");
+async function verifyTritonAiCredentials({ credentials, runtime, emit }) {
+  emit("Checking TritonAI model access...");
   const connectionChecker = runtime.checkTritonAiConnection || checkTritonAiConnection;
-  const result = await connectionChecker({
-    apiKey,
+  const result = await checkAndAssignCredentials({
+    apiKeys: credentialValues(credentials),
+    checkConnection: connectionChecker,
     baseUrl: UCSD.baseUrl,
     timeoutMs: 10000
   });
-  const externalModelsEnabled = getExternalModelsEnabled(result);
-  emit(externalModelsEnabled
-    ? "External model access verified."
-    : "External model access unavailable; configuring on-premises DeepSeek only.");
-  emit("TritonAI connection verified.");
-  return { externalModelsEnabled };
+  if (result.access.onPrem) emit("On-premises model access verified.");
+  if (result.access.frontier) emit("Frontier model access verified.");
+  emit("TritonAI model routing verified.");
+  return result;
 }
 
-function getExternalModelsEnabled(result) {
-  return result?.externalModelsEnabled === true;
-}
-
-function buildEnv(apiKey, paths, nodeRuntime, platform = process.platform) {
+function buildEnv(credentials, paths, nodeRuntime, platform = process.platform) {
   const delimiter = platform === "win32" ? ";" : ":";
   const pathEntries = [
     paths.binDir,
@@ -413,15 +422,17 @@ function buildEnv(apiKey, paths, nodeRuntime, platform = process.platform) {
     nodeRuntime && nodeRuntime.nodeBinDir,
     process.env.PATH || ""
   ].filter(Boolean);
+  const inheritedEnvironment = { ...process.env };
+  delete inheritedEnvironment[UCSD.apiKeyEnv];
+  delete inheritedEnvironment[UCSD.onPremApiKeyEnv];
+  delete inheritedEnvironment[UCSD.frontierApiKeyEnv];
 
   return {
-    ...process.env,
+    ...inheritedEnvironment,
     PATH: pathEntries.join(delimiter),
     ...getTritonAiEnvironment(paths),
     [UCSD.codexHomeEnv]: paths.codexHome,
-    ...(apiKey ? {
-      [UCSD.apiKeyEnv]: apiKey
-    } : {}),
+    ...credentialEnvironment(credentials),
     ...(nodeRuntime ? buildNodeLifecycleEnv(nodeRuntime) : {})
   };
 }

@@ -239,7 +239,7 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     const currentRuntimePayload = JSON.parse(currentRuntimeAfter.runtime_payload_json);
     assert.strictEqual(currentRuntimePayload.model, UCSD.restrictedCodexModel);
     assert.deepStrictEqual(currentRuntimePayload.modelSelection, {
-      instanceId: "codex-work",
+      instanceId: "codex",
       model: UCSD.restrictedCodexModel
     });
     assert.strictEqual(currentRuntimePayload.activeTurnId, "active-codex-turn");
@@ -257,7 +257,7 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     const opusRuntimePayload = JSON.parse(opusRuntimeAfter.runtime_payload_json);
     assert.strictEqual(opusRuntimePayload.model, UCSD.restrictedCodexModel);
     assert.deepStrictEqual(opusRuntimePayload.modelSelection, {
-      instanceId: "codex-work",
+      instanceId: "codex",
       model: UCSD.restrictedCodexModel,
       options: [{ id: "reasoningEffort", value: "high" }]
     });

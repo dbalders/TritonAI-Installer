@@ -3,6 +3,7 @@ const { UCSD } = require("./constants");
 
 interface ConnectionResponse {
   statusCode: number;
+  body: unknown;
 }
 
 interface RequestJsonOptions {
@@ -25,18 +26,42 @@ async function checkTritonAiConnection({ apiKey, baseUrl = UCSD.baseUrl, timeout
   });
 
   assertConnectionResponse(response);
-
-  const externalModelsEnabled = await canSendExternalModelMessage({
-    apiKey,
-    baseUrl,
-    timeoutMs,
-    model: UCSD.externalModelProbe
-  });
+  let access = classifyModelAccess(response.body);
+  const modelCatalogReported = response.body
+    && typeof response.body === "object"
+    && Array.isArray((response.body as { data?: unknown }).data);
+  if (!modelCatalogReported) {
+    const externalModelsEnabled = await canSendExternalModelMessage({
+      apiKey,
+      baseUrl,
+      timeoutMs,
+      model: UCSD.externalModelProbe
+    });
+    access = { onPrem: true, frontier: externalModelsEnabled };
+  }
 
   return {
     ok: true,
-    externalModelsEnabled
+    access,
+    externalModelsEnabled: access.frontier
   };
+}
+
+function classifyModelAccess(body): { onPrem: boolean; frontier: boolean } {
+  const record = body && typeof body === "object" ? body as { data?: unknown } : {};
+  const data = Array.isArray(record.data) ? record.data : [];
+  const modelIds = new Set<string>(data.flatMap((entry): string[] => {
+    if (typeof entry === "string") return [entry];
+    const model = entry && typeof entry === "object" ? entry as { id?: unknown } : {};
+    if (typeof model.id === "string") return [model.id];
+    return [];
+  }));
+  const access = { onPrem: false, frontier: false };
+  for (const modelId of modelIds) {
+    if (!Object.prototype.hasOwnProperty.call(UCSD.codexModels, modelId)) continue;
+    access[UCSD.modelRoute(modelId) === "on-prem" ? "onPrem" : "frontier"] = true;
+  }
+  return access;
 }
 
 function assertConnectionResponse(response: ConnectionResponse) {
@@ -110,9 +135,24 @@ function requestJson({ url, method = "GET", apiKey, timeoutMs, body }: RequestJs
         } : {})
       }
     }, (response) => {
-      response.resume();
+      const chunks: Buffer[] = [];
+      let byteLength = 0;
+      response.on("data", (chunk) => {
+        const bytes = Buffer.from(chunk);
+        byteLength += bytes.length;
+        if (byteLength <= 1024 * 1024) chunks.push(bytes);
+      });
       response.on("end", () => {
-        resolve({ statusCode: response.statusCode || 0 });
+        const text = Buffer.concat(chunks).toString("utf8").trim();
+        let responseBody: unknown = null;
+        if (text) {
+          try {
+            responseBody = JSON.parse(text);
+          } catch {
+            responseBody = null;
+          }
+        }
+        resolve({ statusCode: response.statusCode || 0, body: responseBody });
       });
     });
 
@@ -129,4 +169,9 @@ function requestJson({ url, method = "GET", apiKey, timeoutMs, body }: RequestJs
   });
 }
 
-module.exports = { checkTritonAiConnection, modelsUrlForBase, chatCompletionsUrlForBase };
+module.exports = {
+  checkTritonAiConnection,
+  classifyModelAccess,
+  modelsUrlForBase,
+  chatCompletionsUrlForBase
+};

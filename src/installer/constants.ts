@@ -86,6 +86,8 @@ let cachedManagedConfig = null;
 
 const UCSD = {
   apiKeyEnv: "TRITONAI_API_KEY",
+  onPremApiKeyEnv: "TRITONAI_ONPREM_API_KEY",
+  frontierApiKeyEnv: "TRITONAI_FRONTIER_API_KEY",
   baseUrlEnv: "UCSD_AI_BASE_URL",
   docsUrlEnv: "UCSD_AI_DOCS_URL",
   allowEnvConfigEnv: "UCSD_ALLOW_MANAGED_CONFIG_ENV",
@@ -110,6 +112,10 @@ const UCSD = {
   },
   get codexModels() {
     return getManagedConfig().codexModels;
+  },
+  modelRoute(modelId) {
+    const model = getManagedConfig().codexModels[modelId];
+    return model && model.availableToRestrictedKeys === true ? "on-prem" : "frontier";
   }
 };
 

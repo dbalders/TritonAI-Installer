@@ -4,14 +4,11 @@ const { UCSD } = require("./constants");
 const { getPaths } = require("./paths");
 const { terminateProcessTree } = require("./process-termination");
 
-const API_KEY_ASSIGNMENT_PATTERN = (() => {
-  const name = escapeRegExp(UCSD.apiKeyEnv);
-  return new RegExp(`^\\s*(?:export\\s+|\\$env:)?${name}\\s*=\\s*(.+?)\\s*$`, "i");
-})();
+const API_KEY_ENV_NAMES = [UCSD.apiKeyEnv, UCSD.onPremApiKeyEnv, UCSD.frontierApiKeyEnv];
 
 type WindowsEnvironmentReader = (name: string, scope: "User" | "Machine") => Promise<string>;
 
-async function findExistingApiKey({
+async function findExistingCredentials({
   homeDir,
   platform = process.platform,
   env = process.env,
@@ -21,46 +18,86 @@ async function findExistingApiKey({
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   windowsEnvReader?: WindowsEnvironmentReader;
-} = {}): Promise<ExistingApiKey | null> {
-  const processValue = normalizeApiKey(env && env[UCSD.apiKeyEnv]);
-  if (processValue) {
-    return { apiKey: processValue, source: "processEnvironment" };
+} = {}) {
+  const processCredentials = readCredentialsFromEnvironment(env || {});
+  if (hasCredentials(processCredentials)) {
+    return { credentials: processCredentials, source: "processEnvironment" };
   }
 
   if (platform === "win32") {
-    const userValue = normalizeApiKey(await windowsEnvReader(UCSD.apiKeyEnv, "User"));
-    if (userValue) {
-      return { apiKey: userValue, source: "windowsUserEnvironment" };
+    const userCredentials = await readWindowsCredentials("User", windowsEnvReader);
+    if (hasCredentials(userCredentials)) {
+      return { credentials: userCredentials, source: "windowsUserEnvironment" };
     }
 
-    const machineValue = normalizeApiKey(await windowsEnvReader(UCSD.apiKeyEnv, "Machine"));
-    if (machineValue) {
-      return { apiKey: machineValue, source: "windowsMachineEnvironment" };
+    const machineCredentials = await readWindowsCredentials("Machine", windowsEnvReader);
+    if (hasCredentials(machineCredentials)) {
+      return { credentials: machineCredentials, source: "windowsMachineEnvironment" };
     }
   }
 
   const paths = getPaths(homeDir, platform);
-  const fileValue = normalizeApiKey(readApiKeyFromEnvFile(paths.envFile));
-  return fileValue ? { apiKey: fileValue, source: "installerEnvFile" } : null;
+  const fileCredentials = readCredentialsFromEnvFile(paths.envFile);
+  return hasCredentials(fileCredentials)
+    ? { credentials: fileCredentials, source: "installerEnvFile" }
+    : null;
+}
+
+async function findExistingApiKey(options = {}): Promise<ExistingApiKey | null> {
+  const existing = await findExistingCredentials(options);
+  if (!existing) return null;
+  const apiKey = existing.credentials.sharedApiKey
+    || existing.credentials.onPremApiKey
+    || existing.credentials.frontierApiKey;
+  return apiKey ? { apiKey, source: existing.source } : null;
+}
+
+function readCredentialsFromEnvironment(environment): TritonAiCredentials {
+  const sharedApiKey = normalizeApiKey(environment[UCSD.apiKeyEnv]);
+  if (sharedApiKey) return { sharedApiKey };
+  const onPremApiKey = normalizeApiKey(environment[UCSD.onPremApiKeyEnv]);
+  const frontierApiKey = normalizeApiKey(environment[UCSD.frontierApiKeyEnv]);
+  return {
+    ...(onPremApiKey ? { onPremApiKey } : {}),
+    ...(frontierApiKey ? { frontierApiKey } : {})
+  };
+}
+
+async function readWindowsCredentials(scope, windowsEnvReader) {
+  const values = await Promise.all(
+    API_KEY_ENV_NAMES.map(async (name) => [name, await windowsEnvReader(name, scope)])
+  );
+  return readCredentialsFromEnvironment(Object.fromEntries(values));
+}
+
+function hasCredentials(credentials: TritonAiCredentials) {
+  return Boolean(credentials.sharedApiKey || credentials.onPremApiKey || credentials.frontierApiKey);
 }
 
 function readApiKeyFromEnvFile(envFile) {
-  if (!envFile || !fs.existsSync(envFile)) {
-    return "";
-  }
-
-  const content = fs.readFileSync(envFile, "utf8");
-  return readApiKeyFromEnvText(content);
+  const credentials = readCredentialsFromEnvFile(envFile);
+  return credentials.sharedApiKey || credentials.onPremApiKey || credentials.frontierApiKey || "";
 }
 
 function readApiKeyFromEnvText(content) {
-  for (const line of String(content || "").split(/\r?\n/)) {
-    const match = line.match(API_KEY_ASSIGNMENT_PATTERN);
-    if (!match) continue;
-    return parseAssignmentValue(match[1]);
-  }
+  const credentials = readCredentialsFromEnvText(content);
+  return credentials.sharedApiKey || credentials.onPremApiKey || credentials.frontierApiKey || "";
+}
 
-  return "";
+function readCredentialsFromEnvFile(envFile): TritonAiCredentials {
+  if (!envFile || !fs.existsSync(envFile)) return {};
+  return readCredentialsFromEnvText(fs.readFileSync(envFile, "utf8"));
+}
+
+function readCredentialsFromEnvText(content): TritonAiCredentials {
+  const environment: Record<string, string> = {};
+  for (const line of String(content || "").split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+|\$env:)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/i);
+    if (!match) continue;
+    const name = API_KEY_ENV_NAMES.find((candidate) => candidate.toUpperCase() === match[1].toUpperCase());
+    if (name) environment[name] = parseAssignmentValue(match[2]);
+  }
+  return readCredentialsFromEnvironment(environment);
 }
 
 function parseAssignmentValue(value) {
@@ -135,14 +172,13 @@ function normalizeApiKey(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 module.exports = {
+  findExistingCredentials,
   findExistingApiKey,
   readWindowsEnvironmentVariable,
   readApiKeyFromEnvFile,
   readApiKeyFromEnvText,
+  readCredentialsFromEnvFile,
+  readCredentialsFromEnvText,
   parseAssignmentValue
 };

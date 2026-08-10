@@ -1,7 +1,6 @@
 const TRITONAI_APP_DISPLAY_NAME = "TritonAI Harness";
 
 interface RendererState {
-  apiKey: string;
   docsUrl: string;
   installPhase: string;
   installStepIndex: number;
@@ -11,12 +10,13 @@ interface RendererState {
   detailProgress: Record<string, number>;
   progressValue: number;
   credentialError: string | null;
-  prefilledApiKey: string;
+  existingCredentialHandle: string;
+  credentialHandle: string;
+  secondKeyVisible: boolean;
   supportInfo: DiagnosticsInfo | null;
 }
 
 const state: RendererState = {
-  apiKey: "",
   docsUrl: "",
   installPhase: "idle",
   installStepIndex: -1,
@@ -26,7 +26,9 @@ const state: RendererState = {
   detailProgress: {},
   progressValue: 0,
   credentialError: null,
-  prefilledApiKey: "",
+  existingCredentialHandle: "",
+  credentialHandle: "",
+  secondKeyVisible: false,
   supportInfo: null
 };
 
@@ -97,6 +99,10 @@ const installerVersionLabel = document.getElementById("installer-version-label")
 const apiKeyInput = document.getElementById("api-key") as HTMLInputElement;
 const apiKeyHelp = document.getElementById("api-key-help");
 const apiKeyVisibilityToggle = document.getElementById("api-key-visibility-toggle");
+const secondaryApiKeyInput = document.getElementById("api-key-secondary") as HTMLInputElement;
+const secondaryApiKeyVisibilityToggle = document.getElementById("api-key-secondary-visibility-toggle");
+const secondaryKeyGroup = document.getElementById("secondary-key-group");
+const multipleKeyToggle = document.getElementById("multiple-key-toggle") as HTMLButtonElement;
 const continueButton = document.getElementById("continue-button") as HTMLButtonElement;
 
 function show(panelName) {
@@ -184,7 +190,7 @@ async function init() {
   if (platform.version && installerVersionLabel) {
     installerVersionLabel.textContent = `Installer v${platform.version}`;
   }
-  prefillExistingApiKey(platform.existingApiKey);
+  useExistingCredentials(platform.existingCredentials);
   resetInstallUi();
 
   installerApi.onLog((message) => {
@@ -214,16 +220,12 @@ function updateDocsControls() {
   }
 }
 
-function prefillExistingApiKey(existingApiKey) {
-  const apiKey = existingApiKey && typeof existingApiKey.apiKey === "string"
-    ? existingApiKey.apiKey.trim()
+function useExistingCredentials(existingCredentials) {
+  const handle = existingCredentials && typeof existingCredentials.handle === "string"
+    ? existingCredentials.handle
     : "";
-  if (!apiKey || apiKeyInput.value.trim()) {
-    return;
-  }
-
-  apiKeyInput.value = apiKey;
-  state.prefilledApiKey = apiKey;
+  if (!handle || apiKeyInput.value.trim()) return;
+  state.existingCredentialHandle = handle;
   updateCredentialControls();
 }
 
@@ -685,6 +687,7 @@ function getInstallerErrorMessage(error) {
 function isAccessKeyError(message) {
   const normalized = String(message || "").toLowerCase();
   return normalized.includes("tritonai rejected the access key")
+    || normalized.includes("could not verify access key")
     || normalized.includes("access key is required");
 }
 
@@ -703,13 +706,20 @@ function brandCopy(value) {
 
 function updateCredentialControls() {
   const hasApiKey = Boolean(apiKeyInput.value.trim());
+  const hasExistingCredentials = Boolean(state.existingCredentialHandle);
+  const hasSecondaryKey = !state.secondKeyVisible || Boolean(secondaryApiKeyInput.value.trim());
+  const isChecking = state.installPhase === "checking";
   const isInstalling = state.installPhase === "running";
   const isComplete = state.installPhase === "complete";
-  continueButton.disabled = !hasApiKey || isInstalling || isComplete;
-  continueButton.setAttribute("aria-busy", String(isInstalling));
+  continueButton.disabled = (!(hasApiKey && hasSecondaryKey) && !hasExistingCredentials)
+    || isChecking
+    || isInstalling
+    || isComplete;
+  continueButton.setAttribute("aria-busy", String(isChecking || isInstalling));
+  continueButton.textContent = isChecking ? "Checking access..." : "Check access & install";
   if (apiKeyHelp) {
     apiKeyHelp.classList.toggle("is-error", Boolean(state.credentialError));
-    apiKeyHelp.classList.toggle("is-ready", hasApiKey && !state.credentialError);
+    apiKeyHelp.classList.toggle("is-ready", (hasApiKey || hasExistingCredentials) && !state.credentialError);
   }
   apiKeyInput.setAttribute("aria-invalid", state.credentialError ? "true" : "false");
   const inputWrap = apiKeyInput.closest(".input-wrap");
@@ -722,29 +732,51 @@ function updateCredentialControls() {
 }
 
 function getCredentialHelpText(hasApiKey) {
-  if (hasApiKey && state.prefilledApiKey && apiKeyInput.value.trim() === state.prefilledApiKey) {
-    return "Found an existing TritonAI access key on this computer.";
+  if (state.existingCredentialHandle && !hasApiKey) {
+    return "Found an existing TritonAI access setup on this computer.";
   }
 
-  return "Required for UC San Diego-managed model access.";
+  return state.secondKeyVisible
+    ? "We’ll detect which key belongs to on-prem and frontier models."
+    : "Most people only need one key.";
 }
 
 function setCredentialError(message) {
   state.credentialError = message;
-  apiKeyInput.setCustomValidity(message);
+  const target = /access key 2|additional access key/i.test(message)
+    ? secondaryApiKeyInput
+    : apiKeyInput;
+  target.setCustomValidity(message);
   updateCredentialControls();
 }
 
 function clearCredentialError() {
   state.credentialError = null;
   apiKeyInput.setCustomValidity("");
+  secondaryApiKeyInput.setCustomValidity("");
   updateCredentialControls();
 }
 
-function handleCredentialInput() {
-  if (state.prefilledApiKey && apiKeyInput.value.trim() !== state.prefilledApiKey) {
-    state.prefilledApiKey = "";
+function describeModelAccess(access) {
+  if (access.onPrem && access.frontier) {
+    return "Access verified for on-prem and frontier models. Routing is automatic.";
   }
+  if (access.frontier) return "Access verified for frontier models.";
+  return "Access verified for on-prem models.";
+}
+
+function getAccessCheckErrorMessage(error) {
+  const rawMessage = error && error.message
+    ? error.message
+    : "TritonAI access could not be checked.";
+  return String(rawMessage)
+    .replace(/^Error invoking remote method 'installer:check-access': Error:\s*/i, "")
+    .replace(/^Error:\s*/i, "");
+}
+
+function handleCredentialInput() {
+  state.existingCredentialHandle = "";
+  state.credentialHandle = "";
   clearCredentialError();
 }
 
@@ -752,29 +784,69 @@ function refreshCredentialControlsSoon() {
   setTimeout(updateCredentialControls, 0);
 }
 
-function setApiKeyVisible(isVisible) {
-  if (!apiKeyInput || !apiKeyVisibilityToggle) return;
-  apiKeyInput.type = isVisible ? "text" : "password";
-  apiKeyVisibilityToggle.classList.toggle("is-visible", isVisible);
-  apiKeyVisibilityToggle.setAttribute("aria-pressed", String(isVisible));
-  apiKeyVisibilityToggle.setAttribute(
+function setApiKeyVisible(input, toggle, isVisible, label = "TritonAI access key") {
+  if (!input || !toggle) return;
+  input.type = isVisible ? "text" : "password";
+  toggle.classList.toggle("is-visible", isVisible);
+  toggle.setAttribute("aria-pressed", String(isVisible));
+  toggle.setAttribute(
     "aria-label",
-    isVisible ? "Hide TritonAI access key" : "Show TritonAI access key"
+    isVisible ? `Hide ${label}` : `Show ${label}`
   );
-  apiKeyVisibilityToggle.title = isVisible ? "Hide access key" : "Show access key";
+  toggle.title = isVisible ? `Hide ${label}` : `Show ${label}`;
 }
 
-(document.getElementById("credentials-form") as HTMLFormElement).addEventListener("submit", (event) => {
+function setSecondKeyVisible(isVisible) {
+  state.secondKeyVisible = isVisible;
+  if (secondaryKeyGroup) secondaryKeyGroup.hidden = !isVisible;
+  multipleKeyToggle.setAttribute("aria-expanded", String(isVisible));
+  multipleKeyToggle.textContent = isVisible ? "Use one key" : "I have another access key";
+  if (!isVisible) {
+    secondaryApiKeyInput.setCustomValidity("");
+    setApiKeyVisible(secondaryApiKeyInput, secondaryApiKeyVisibilityToggle, false, "additional access key");
+  }
+  clearCredentialError();
+}
+
+(document.getElementById("credentials-form") as HTMLFormElement).addEventListener("submit", async (event) => {
   event.preventDefault();
-  state.apiKey = apiKeyInput.value.trim();
-  if (!state.apiKey) {
+  const apiKeys = [
+    apiKeyInput.value.trim(),
+    ...(state.secondKeyVisible ? [secondaryApiKeyInput.value.trim()] : [])
+  ].filter(Boolean);
+  if (apiKeys.length === 0 && !state.existingCredentialHandle) {
     apiKeyInput.setCustomValidity("Enter your TritonAI access key to continue.");
     apiKeyInput.reportValidity();
     updateCredentialControls();
     return;
   }
+  if (
+    state.secondKeyVisible
+    && !secondaryApiKeyInput.value.trim()
+    && !state.existingCredentialHandle
+  ) {
+    secondaryApiKeyInput.setCustomValidity("Enter the additional access key or choose Use one key.");
+    secondaryApiKeyInput.reportValidity();
+    return;
+  }
   clearCredentialError();
-  startInstallFlow();
+  state.installPhase = "checking";
+  updateCredentialControls();
+  try {
+    const result = await installerApi.checkAccess(
+      state.existingCredentialHandle
+        ? { existingCredentialHandle: state.existingCredentialHandle }
+        : { apiKeys }
+    );
+    state.credentialHandle = result.credentialHandle;
+    if (apiKeyHelp) apiKeyHelp.textContent = describeModelAccess(result.access);
+    apiKeyInput.value = "";
+    secondaryApiKeyInput.value = "";
+    await startInstallFlow();
+  } catch (error) {
+    state.installPhase = "idle";
+    setCredentialError(getAccessCheckErrorMessage(error));
+  }
 });
 
 apiKeyInput.addEventListener("input", handleCredentialInput);
@@ -783,10 +855,31 @@ apiKeyInput.addEventListener("keyup", updateCredentialControls);
 apiKeyInput.addEventListener("paste", refreshCredentialControlsSoon);
 apiKeyInput.addEventListener("drop", refreshCredentialControlsSoon);
 apiKeyInput.addEventListener("focus", updateCredentialControls);
+secondaryApiKeyInput.addEventListener("input", handleCredentialInput);
+secondaryApiKeyInput.addEventListener("change", handleCredentialInput);
+secondaryApiKeyInput.addEventListener("keyup", updateCredentialControls);
+secondaryApiKeyInput.addEventListener("paste", refreshCredentialControlsSoon);
+secondaryApiKeyInput.addEventListener("drop", refreshCredentialControlsSoon);
+secondaryApiKeyInput.addEventListener("focus", updateCredentialControls);
 
 apiKeyVisibilityToggle?.addEventListener("click", () => {
-  setApiKeyVisible(apiKeyInput.type === "password");
+  setApiKeyVisible(apiKeyInput, apiKeyVisibilityToggle, apiKeyInput.type === "password");
   apiKeyInput.focus();
+});
+
+secondaryApiKeyVisibilityToggle?.addEventListener("click", () => {
+  setApiKeyVisible(
+    secondaryApiKeyInput,
+    secondaryApiKeyVisibilityToggle,
+    secondaryApiKeyInput.type === "password",
+    "additional access key"
+  );
+  secondaryApiKeyInput.focus();
+});
+
+multipleKeyToggle?.addEventListener("click", () => {
+  setSecondKeyVisible(!state.secondKeyVisible);
+  (state.secondKeyVisible ? secondaryApiKeyInput : apiKeyInput).focus();
 });
 
 document.getElementById("open-docs")?.addEventListener("click", () => {
@@ -850,7 +943,7 @@ async function startInstallFlow() {
 
   try {
     const response = await installerApi.startInstall({
-      apiKey: state.apiKey
+      credentialHandle: state.credentialHandle
     });
 
     renderComplete(response);
@@ -959,11 +1052,22 @@ function createPreviewInstallerApi(): InstallerApi {
       managedConfig: {
         apiDocsUrl: ""
       },
-      existingApiKey: null
+      existingCredentials: null
     }),
     reportReady: async () => {},
     openDocs: async (url) => {
       if (url) window.open(url, "_blank", "noopener,noreferrer");
+    },
+    checkAccess: async (payload) => {
+      const count = payload.apiKeys?.filter(Boolean).length || 1;
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      return {
+        credentialHandle: "preview-credentials",
+        access: { onPrem: true, frontier: true },
+        assignments: count > 1
+          ? { onPremKeyIndex: 0, frontierKeyIndex: 1 }
+          : { onPremKeyIndex: 0, frontierKeyIndex: 0 }
+      };
     },
     startInstall: async (payload) => {
       const steps = [

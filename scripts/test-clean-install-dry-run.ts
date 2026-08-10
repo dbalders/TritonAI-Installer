@@ -1106,7 +1106,13 @@ async function runDryRun(platform, options) {
       assert.strictEqual(t3CodeDesktopInstalls[0].env[name], value);
     }
     assert.strictEqual(t3CodeDesktopInstalls[0].env.CODEX_HOME, paths.codexHome);
-    assert.strictEqual(t3CodeDesktopInstalls[0].env.TRITONAI_API_KEY, "test-key");
+    if (externalModelsEnabled) {
+      assert.strictEqual(t3CodeDesktopInstalls[0].env.TRITONAI_API_KEY, "test-key");
+      assert.strictEqual(t3CodeDesktopInstalls[0].env.TRITONAI_ONPREM_API_KEY, undefined);
+    } else {
+      assert.strictEqual(t3CodeDesktopInstalls[0].env.TRITONAI_API_KEY, undefined);
+      assert.strictEqual(t3CodeDesktopInstalls[0].env.TRITONAI_ONPREM_API_KEY, "test-key");
+    }
     const patcherRuns = commands.filter((entry) => entry.args.includes(paths.t3DefaultsPatcher));
     assert.strictEqual(patcherRuns.length, 1);
     assert.strictEqual(patcherRuns[0].command, fakeRuntime.nodeBinary);
@@ -1428,16 +1434,18 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       patched.close();
       assert.deepStrictEqual(selection, {
         ...legacySelection,
+        instanceId: externalModelsEnabled ? "codex_frontier" : "codex",
         model: externalModelsEnabled ? "gpt-5.6-sol" : UCSD.restrictedCodexModel
       });
       assert.deepStrictEqual(migratedOpusSelection, {
         ...opusSelection,
+        instanceId: externalModelsEnabled ? "codex_frontier" : "codex",
         model: externalModelsEnabled ? "claude-opus-5" : UCSD.restrictedCodexModel
       });
       assert.deepStrictEqual(
         preservedDeepSeekSelection,
-        deepSeekSelection,
-        "upgrades must preserve an explicit DeepSeek selection"
+        { ...deepSeekSelection, instanceId: "codex" },
+        "upgrades must preserve an explicit DeepSeek model while routing it on premises"
       );
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });

@@ -195,11 +195,13 @@ function buildT3CodeSettings(existing, paths) {
 }
 
 function writeT3CodeDefaultsPatcher(paths) {
+  const effectiveModel = getEffectiveCodexModel(paths);
   const modelSelection = {
-    instanceId: "codex",
-    model: getEffectiveCodexModel(paths)
+    instanceId: UCSD.modelRoute(effectiveModel) === "frontier" ? "codex_frontier" : "codex",
+    model: effectiveModel
   };
   const customModels = getCodexModelSlugs(paths);
+  const frontierModels = customModels.filter((model) => UCSD.modelRoute(model) === "frontier");
   const modelReplacements = Object.fromEntries(
     Object.entries(LEGACY_CODEX_MODEL_REPLACEMENTS as Record<string, string>)
       .filter(([legacyModel]) => !customModels.includes(legacyModel))
@@ -223,8 +225,9 @@ const stateDbPaths = ${JSON.stringify(stateDbPaths)};
 const managedSettingsPlatform = ${JSON.stringify(paths.platform)};
 const modelSelection = ${JSON.stringify(modelSelection)};
 const customModels = ${JSON.stringify(customModels)};
+const frontierModels = ${JSON.stringify(frontierModels)};
 const modelReplacements = ${JSON.stringify(modelReplacements)};
-const codexInstanceIds = new Set(["codex"]);
+const codexInstanceIds = new Set(["codex", "codex_frontier"]);
 const customModelMetadata = ${JSON.stringify(customModelMetadata)};
 const codexBinaryPath = ${JSON.stringify(getCodexBinaryPath(paths))};
 const codexHomePath = ${JSON.stringify(paths.codexHome)};
@@ -377,6 +380,46 @@ function codexInstancePlaceholders() {
   return Array.from(codexInstanceIds, () => "?").join(", ");
 }
 
+function frontierModelPlaceholders() {
+  return frontierModels.map(() => "?").join(", ");
+}
+
+function routeSelectionColumn(db, table, column, deletedFilter = "") {
+  if (frontierModels.length === 0) {
+    db.prepare(\`
+      UPDATE \${table}
+      SET \${column} = json_set(\${column}, '$.instanceId', 'codex')
+      WHERE json_valid(\${column})
+        AND (
+          COALESCE(json_extract(\${column}, '$.instanceId'), '') IN (\${codexInstancePlaceholders()})
+          OR COALESCE(json_extract(\${column}, '$.provider'), '') = 'codex'
+        )
+        AND json_extract(\${column}, '$.model') IN (\${allowedModelPlaceholders()})
+      \${deletedFilter}
+    \`).run(...codexInstanceIds, ...customModels);
+    return;
+  }
+  db.prepare(\`
+    UPDATE \${table}
+    SET \${column} = json_set(
+      \${column},
+      '$.instanceId',
+      CASE
+        WHEN json_extract(\${column}, '$.model') IN (\${frontierModelPlaceholders()})
+          THEN 'codex_frontier'
+        ELSE 'codex'
+      END
+    )
+    WHERE json_valid(\${column})
+      AND (
+        COALESCE(json_extract(\${column}, '$.instanceId'), '') IN (\${codexInstancePlaceholders()})
+        OR COALESCE(json_extract(\${column}, '$.provider'), '') = 'codex'
+      )
+      AND json_extract(\${column}, '$.model') IN (\${allowedModelPlaceholders()})
+    \${deletedFilter}
+  \`).run(...frontierModels, ...codexInstanceIds, ...customModels);
+}
+
 function patchSelectionColumn(db, table, column) {
   if (!hasTable(db, table) || !hasColumn(db, table, column)) return;
   const deletedFilter = hasColumn(db, table, "deleted_at") ? "AND deleted_at IS NULL" : "";
@@ -406,6 +449,7 @@ function patchSelectionColumn(db, table, column) {
     )
     \${deletedFilter}
   \`).run(JSON.stringify(modelSelection), ...codexInstanceIds, ...customModels);
+  routeSelectionColumn(db, table, column, deletedFilter);
 }
 
 function patchEvents(db, selectionKey) {
@@ -434,13 +478,44 @@ function patchEvents(db, selectionKey) {
         OR json_extract(payload_json, '$.\${selectionKey}.model') NOT IN (\${allowedModelPlaceholders()})
       )
   \`).run(JSON.stringify(modelSelection), ...codexInstanceIds, ...customModels);
+  if (frontierModels.length > 0) {
+    db.prepare(\`
+      UPDATE orchestration_events
+      SET payload_json = json_set(
+        payload_json,
+        '$.\${selectionKey}.instanceId',
+        CASE
+          WHEN json_extract(payload_json, '$.\${selectionKey}.model') IN (\${frontierModelPlaceholders()})
+            THEN 'codex_frontier'
+          ELSE 'codex'
+        END
+      )
+      WHERE json_type(payload_json, '$.\${selectionKey}') IS NOT NULL
+        AND (
+          COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), '') IN (\${codexInstancePlaceholders()})
+          OR COALESCE(json_extract(payload_json, '$.\${selectionKey}.provider'), '') = 'codex'
+        )
+        AND json_extract(payload_json, '$.\${selectionKey}.model') IN (\${allowedModelPlaceholders()})
+    \`).run(...frontierModels, ...codexInstanceIds, ...customModels);
+  } else {
+    db.prepare(\`
+      UPDATE orchestration_events
+      SET payload_json = json_set(payload_json, '$.\${selectionKey}.instanceId', 'codex')
+      WHERE json_type(payload_json, '$.\${selectionKey}') IS NOT NULL
+        AND (
+          COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), '') IN (\${codexInstancePlaceholders()})
+          OR COALESCE(json_extract(payload_json, '$.\${selectionKey}.provider'), '') = 'codex'
+        )
+        AND json_extract(payload_json, '$.\${selectionKey}.model') IN (\${allowedModelPlaceholders()})
+    \`).run(...codexInstanceIds, ...customModels);
+  }
 }
 
 function patchSessionState(db) {
   if (hasTable(db, "projection_thread_sessions")) {
     const hasProviderInstanceId = hasColumn(db, "projection_thread_sessions", "provider_instance_id");
     const providerInstanceColumn = hasProviderInstanceId
-      ? ", provider_instance_id = 'codex'"
+      ? ", provider_instance_id = ?"
       : "";
     const providerSessionColumn = hasColumn(db, "projection_thread_sessions", "provider_session_id")
       ? ", provider_session_id = NULL"
@@ -466,7 +541,7 @@ function patchSessionState(db) {
             \${activeTurnColumn}
             \${lastErrorColumn}
         WHERE \${legacyPredicate}
-      \`).run();
+      \`).run(...(hasProviderInstanceId ? [modelSelection.instanceId] : []));
     }
   }
 
@@ -487,9 +562,34 @@ function patchSessionState(db) {
           AND json_extract(runtime_payload_json, '$.modelSelection.model') = ?
       \`).run(replacementModel, legacyModel);
     }
+    if (frontierModels.length > 0) {
+      db.prepare(\`
+        UPDATE provider_session_runtime
+        SET runtime_payload_json = json_set(
+          runtime_payload_json,
+          '$.modelSelection.instanceId',
+          CASE
+            WHEN json_extract(runtime_payload_json, '$.modelSelection.model') IN (\${frontierModelPlaceholders()})
+              THEN 'codex_frontier'
+            ELSE 'codex'
+          END
+        )
+        WHERE provider_name = 'codex'
+          AND json_valid(runtime_payload_json)
+          AND json_extract(runtime_payload_json, '$.modelSelection.model') IN (\${allowedModelPlaceholders()})
+      \`).run(...frontierModels, ...customModels);
+    } else {
+      db.prepare(\`
+        UPDATE provider_session_runtime
+        SET runtime_payload_json = json_set(runtime_payload_json, '$.modelSelection.instanceId', 'codex')
+        WHERE provider_name = 'codex'
+          AND json_valid(runtime_payload_json)
+          AND json_extract(runtime_payload_json, '$.modelSelection.model') IN (\${allowedModelPlaceholders()})
+      \`).run(...customModels);
+    }
     const hasProviderInstanceId = hasColumn(db, "provider_session_runtime", "provider_instance_id");
     const providerInstanceColumn = hasProviderInstanceId
-      ? "provider_instance_id = 'codex',"
+      ? "provider_instance_id = ?,"
       : "";
     const legacyPredicate = legacyNonCodexPredicate(db, "provider_session_runtime");
     if (legacyPredicate) {
@@ -512,6 +612,7 @@ function patchSessionState(db) {
             END
         WHERE \${legacyPredicate}
       \`).run(
+        ...(hasProviderInstanceId ? [modelSelection.instanceId] : []),
         modelSelection.model,
         JSON.stringify(modelSelection),
         modelSelection.model,

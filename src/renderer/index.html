@@ -12,20 +12,33 @@
         <div class="setup-card">
           <div class="panel-header">
             <h2 id="credentials-title">Let's get you set up.</h2>
-            <p id="credentials-copy">Add your TritonAI access key to install and use TritonAI Harness.</p>
+            <p id="credentials-copy">Add your TritonAI access key. We’ll check which models it can use and configure the right routing automatically.</p>
           </div>
 
           <form id="credentials-form" class="form">
-            <div class="input-wrap">
-              <input id="api-key" name="api-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="TritonAI access key" aria-describedby="api-key-help" required />
-              <button type="button" class="visibility-toggle" id="api-key-visibility-toggle" aria-label="Show TritonAI access key" aria-pressed="false" title="Show access key">
-                <span class="eye-icon" aria-hidden="true"></span>
-              </button>
+            <div class="credential-field">
+              <label class="field-label" for="api-key">TritonAI access key</label>
+              <div class="input-wrap">
+                <input id="api-key" name="api-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="api-key-help" />
+                <button type="button" class="visibility-toggle" id="api-key-visibility-toggle" aria-label="Show TritonAI access key" aria-pressed="false" title="Show access key">
+                  <span class="eye-icon" aria-hidden="true"></span>
+                </button>
+              </div>
             </div>
-            <p class="field-help" id="api-key-help" aria-live="polite">Required for UC San Diego-managed model access.</p>
+            <div class="credential-field secondary-key-group" id="secondary-key-group" hidden>
+              <label class="field-label" for="api-key-secondary">Additional access key</label>
+              <div class="input-wrap">
+                <input id="api-key-secondary" name="api-key-secondary" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="api-key-help" />
+                <button type="button" class="visibility-toggle" id="api-key-secondary-visibility-toggle" aria-label="Show additional TritonAI access key" aria-pressed="false" title="Show additional access key">
+                  <span class="eye-icon" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+            <p class="field-help credential-note" id="api-key-help" aria-live="polite">Most people only need one key.</p>
+            <button type="button" class="multiple-key-toggle" id="multiple-key-toggle" aria-expanded="false" aria-controls="secondary-key-group">I have another access key</button>
 
             <div class="actions">
-              <button type="submit" class="primary" id="continue-button" disabled>Continue</button>
+              <button type="submit" class="primary" id="continue-button" disabled>Check access &amp; install</button>
               <button type="button" class="link-button" id="open-docs-footer">Don't have a key?</button>
             </div>
           </form>

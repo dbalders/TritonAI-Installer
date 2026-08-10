@@ -4,6 +4,7 @@ const { writeFileAtomic } = require("./atomic-file");
 const { UCSD } = require("./constants");
 const { getTritonAiEnvironment } = require("./codex-environment");
 const { prepareWindowsEnvironmentMigration } = require("./windows-environment-migration");
+const { credentialEnvironment, normalizeCredentialBundle } = require("./credentials");
 
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -13,30 +14,36 @@ function powerShellLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function buildWindowsEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment }) {
+function buildWindowsEnvironmentLines({ apiKey, credentials, pathEntries, tritonAiEnvironment }) {
+  const credentialEntries = Object.entries(credentialEnvironment(
+    normalizeCredentialBundle({ ...credentials, apiKey })
+  ));
   return [
     `$env:PATH = ${powerShellLiteral(`${pathEntries.join(";")};`)} + $env:PATH`,
     ...Object.entries(tritonAiEnvironment).map(([name, value]) => `$env:${name} = ${powerShellLiteral(value)}`),
-    apiKey ? `$env:${UCSD.apiKeyEnv} = ${powerShellLiteral(apiKey)}` : null
+    ...credentialEntries.map(([name, value]) => `$env:${name} = ${powerShellLiteral(value)}`)
   ].filter(Boolean);
 }
 
-function buildMacEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment }) {
+function buildMacEnvironmentLines({ apiKey, credentials, pathEntries, tritonAiEnvironment }) {
+  const credentialEntries = Object.entries(credentialEnvironment(
+    normalizeCredentialBundle({ ...credentials, apiKey })
+  ));
   return [
     `export PATH=${shellQuote(pathEntries.join(":"))}:$PATH`,
     ...Object.entries(tritonAiEnvironment).map(([name, value]) => `export ${name}=${shellQuote(value)}`),
-    apiKey ? `export ${UCSD.apiKeyEnv}=${shellQuote(apiKey)}` : null
+    ...credentialEntries.map(([name, value]) => `export ${name}=${shellQuote(value)}`)
   ].filter(Boolean);
 }
 
-async function saveEnvironment({ apiKey, paths, platform, nodeRuntime, emit, windowsEnvironmentMigrationRuntime = {} }) {
+async function saveEnvironment({ apiKey, credentials, paths, platform, nodeRuntime, emit, windowsEnvironmentMigrationRuntime = {} }) {
   fs.mkdirSync(path.dirname(paths.envFile), { recursive: true });
   const pathEntries = [paths.binDir, paths.codexBinDir, paths.nodeGlobalBinDir, nodeRuntime && nodeRuntime.nodeBinDir].filter(Boolean);
   const tritonAiEnvironment = getTritonAiEnvironment(paths) as Record<string, string>;
 
   if (platform === "win32") {
     const migration = prepareWindowsEnvironmentMigration({ paths, ...windowsEnvironmentMigrationRuntime });
-    const lines = buildWindowsEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment });
+    const lines = buildWindowsEnvironmentLines({ apiKey, credentials, pathEntries, tritonAiEnvironment });
 
     writeFileAtomic(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
     emit(`Saved private TritonAI Harness environment at ${paths.envFile}`);
@@ -44,7 +51,7 @@ async function saveEnvironment({ apiKey, paths, platform, nodeRuntime, emit, win
   }
 
   removeLegacyShellProfileIntegration(paths.homeDir, paths.envFile);
-  const lines = buildMacEnvironmentLines({ apiKey, pathEntries, tritonAiEnvironment });
+  const lines = buildMacEnvironmentLines({ apiKey, credentials, pathEntries, tritonAiEnvironment });
 
   writeFileAtomic(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
   emit(`Saved private TritonAI Harness environment at ${paths.envFile}`);
