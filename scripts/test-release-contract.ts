@@ -233,6 +233,11 @@ function main() {
       packageJson.scripts["prepare:plugins-vendor:latest:compiled"],
       "node dist/scripts/prepare-plugins-vendor.js --latest"
     );
+    assert.strictEqual(
+      packageJson.scripts["prepare:plugins-vendor"],
+      "npm run build && npm run prepare:plugins-vendor:compiled --",
+      "Explicit plugin preparation must forward release selectors such as --production"
+    );
     const macReleaseSource = fs.readFileSync(path.join(repoRoot, "scripts", "package-macos-release.ts"), "utf8");
     assert(macReleaseSource.includes('"--noextattr"'));
     assert(macReleaseSource.includes('"attach"'));

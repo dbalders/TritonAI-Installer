@@ -33,7 +33,7 @@
     "prepare:managed-config:compiled": "node dist/scripts/write-managed-config.js",
     "prepare:skills-vendor": "npm run build && npm run prepare:skills-vendor:compiled",
     "prepare:skills-vendor:compiled": "node dist/scripts/prepare-skills-vendor.js",
-    "prepare:plugins-vendor": "npm run build && npm run prepare:plugins-vendor:compiled",
+    "prepare:plugins-vendor": "npm run build && npm run prepare:plugins-vendor:compiled --",
     "prepare:plugins-vendor:compiled": "node dist/scripts/prepare-plugins-vendor.js",
     "prepare:plugins-vendor:latest:compiled": "node dist/scripts/prepare-plugins-vendor.js --latest",
     "prepare:codex-cli-vendor": "npm run build && node dist/scripts/prepare-codex-cli-vendor.js",
