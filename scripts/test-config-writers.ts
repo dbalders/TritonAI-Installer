@@ -530,6 +530,15 @@ function assertFrontierOnlyCatalogExcludesOnPremModels() {
         thread_id TEXT PRIMARY KEY,
         model_selection_json TEXT NOT NULL
       );
+      CREATE TABLE provider_session_runtime (
+        thread_id TEXT PRIMARY KEY,
+        provider_name TEXT NOT NULL,
+        provider_instance_id TEXT,
+        adapter_key TEXT,
+        status TEXT,
+        resume_cursor_json TEXT,
+        runtime_payload_json TEXT
+      );
     `);
     db.prepare(`
       INSERT INTO projection_threads (thread_id, model_selection_json)
@@ -537,6 +546,20 @@ function assertFrontierOnlyCatalogExcludesOnPremModels() {
     `).run(
       "thread-on-prem",
       JSON.stringify({ instanceId: "codex", model: "api-deepseek-v4-flash" })
+    );
+    db.prepare(`
+      INSERT INTO provider_session_runtime (
+        thread_id, provider_name, provider_instance_id, runtime_payload_json
+      ) VALUES (?, ?, ?, ?)
+    `).run(
+      "thread-on-prem",
+      "codex",
+      "codex",
+      JSON.stringify({
+        model: "api-deepseek-v4-flash",
+        modelSelection: settings.textGenerationModelSelection,
+        customRuntimeField: { keep: true }
+      })
     );
     db.close();
 
@@ -548,9 +571,17 @@ function assertFrontierOnlyCatalogExcludesOnPremModels() {
         "SELECT model_selection_json FROM projection_threads WHERE thread_id = 'thread-on-prem'"
       ).get().model_selection_json
     );
+    const runtimeRow = patched.prepare(
+      "SELECT provider_instance_id, runtime_payload_json FROM provider_session_runtime WHERE thread_id = 'thread-on-prem'"
+    ).get();
+    const runtimePayload = JSON.parse(runtimeRow.runtime_payload_json);
     patched.close();
     assert.strictEqual(selection.instanceId, "codex_frontier");
     assert(customModels.includes(selection.model));
+    assert.strictEqual(runtimeRow.provider_instance_id, "codex_frontier");
+    assert.strictEqual(runtimePayload.model, selection.model);
+    assert.deepStrictEqual(runtimePayload.modelSelection, selection);
+    assert.deepStrictEqual(runtimePayload.customRuntimeField, { keep: true });
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

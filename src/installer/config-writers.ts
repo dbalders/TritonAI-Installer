@@ -602,6 +602,42 @@ function patchSessionState(db) {
           AND json_extract(runtime_payload_json, '$.modelSelection.model') = ?
       \`).run(replacementModel, legacyModel);
     }
+    const unavailableProviderInstanceColumn = hasProviderInstanceId
+      ? ", provider_instance_id = ?"
+      : "";
+    db.prepare(\`
+      UPDATE provider_session_runtime
+      SET runtime_payload_json = json_set(
+            runtime_payload_json,
+            '$.model', ?,
+            '$.modelSelection', json(?)
+          )
+          \${unavailableProviderInstanceColumn}
+      WHERE provider_name = 'codex'
+        AND json_valid(runtime_payload_json)
+        AND (
+          (
+            json_extract(runtime_payload_json, '$.modelSelection.model') IS NOT NULL
+            AND json_extract(runtime_payload_json, '$.modelSelection.model')
+              NOT IN (\${allowedModelPlaceholders()})
+          )
+          OR (
+            json_extract(runtime_payload_json, '$.model') IS NOT NULL
+            AND json_extract(runtime_payload_json, '$.model')
+              NOT IN (\${allowedModelPlaceholders()})
+          )
+          OR (
+            json_extract(runtime_payload_json, '$.modelSelection.model') IS NULL
+            AND json_extract(runtime_payload_json, '$.model') IS NULL
+          )
+        )
+    \`).run(
+      modelSelection.model,
+      JSON.stringify(modelSelection),
+      ...(hasProviderInstanceId ? [modelSelection.instanceId] : []),
+      ...customModels,
+      ...customModels
+    );
     if (frontierModels.length > 0) {
       db.prepare(\`
         UPDATE provider_session_runtime
