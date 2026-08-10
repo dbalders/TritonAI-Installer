@@ -1421,6 +1421,22 @@ h2 {
   margin-top: 22px;
 }
 
+.credential-field + .credential-field {
+  margin-top: 16px;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 7px;
+  color: #1d3153;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.secondary-key-group[hidden] {
+  display: none;
+}
+
 input {
   height: 42px;
   padding: 0 52px 0 18px;
@@ -1445,12 +1461,44 @@ input:focus {
   margin-top: 8px;
 }
 
+.field-help.credential-note {
+  display: block;
+  color: #59677b;
+  font-weight: 400;
+}
+
 .field-help::before {
   display: none;
 }
 
 .field-help.is-error {
   display: block;
+}
+
+.multiple-key-toggle {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 24px;
+  align-items: center;
+  padding: 0;
+  margin-top: 10px;
+  background: transparent;
+  color: #1d3153;
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.credential-mode-actions {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.replace-existing-credentials[hidden] {
+  display: none;
 }
 
 .form .actions,
@@ -1474,7 +1522,7 @@ input:focus {
 .form .primary,
 .primary {
   display: inline-flex;
-  width: 148px;
+  width: 214px;
   height: 42px;
   min-height: 42px;
   align-items: center;

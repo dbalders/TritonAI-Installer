@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import { spawn } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
 import { InstallLifecycle } from "./install-lifecycle";
 import { acquireSingleInstance } from "./single-instance";
@@ -13,7 +14,13 @@ import {
 const { runInstall } = require("./installer/runner");
 const { getInstallPreview } = require("./installer/tool-manifest");
 const { UCSD } = require("./installer/constants");
-const { findExistingApiKey } = require("./installer/existing-api-key");
+const { findExistingCredentials } = require("./installer/existing-api-key");
+const { checkTritonAiConnection } = require("./installer/tritonai-connection");
+const {
+  checkAndAssignCredentials,
+  credentialValues,
+  mergeCredentialValues
+} = require("./installer/credentials");
 const { readPluginCompositionRequirement } = require("./installer/plugins");
 
 const INSTALLER_DMG_VOLUME_TITLE = "TritonAI Installer";
@@ -28,6 +35,14 @@ let smokeRendererReady = false;
 let smokeFinished = false;
 let installCloseNoticeVisible = false;
 const installLifecycle = new InstallLifecycle();
+const credentialSessions = new Map<string, TritonAiCredentials>();
+
+function storeCredentialSession(credentials): string {
+  if (credentialSessions.size >= 8) credentialSessions.clear();
+  const handle = randomUUID();
+  credentialSessions.set(handle, credentials);
+  return handle;
+}
 
 if (packagedBootSmoke) {
   fs.mkdirSync(packagedBootSmoke.userDataPath, { recursive: true, mode: 0o700 });
@@ -40,9 +55,9 @@ if (packagedBootSmoke) {
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 580,
-    height: 390,
+    height: 500,
     minWidth: 540,
-    minHeight: 360,
+    minHeight: 390,
     title: "TritonAI Installer",
     webPreferences: {
       preload: path.join(__dirname, "preload.js")
@@ -95,10 +110,10 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
         version: app.getVersion(),
         preview: getInstallPreview(process.platform),
         managedConfig: { apiDocsUrl: UCSD.apiDocsUrl },
-        existingApiKey: null
+        existingCredentials: null
       };
     }
-    const existingApiKey = await findExistingApiKey({
+    const existing = await findExistingCredentials({
       homeDir: app.getPath("home"),
       platform: process.platform
     });
@@ -111,7 +126,13 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
       managedConfig: {
         apiDocsUrl: UCSD.apiDocsUrl
       },
-      existingApiKey
+      existingCredentials: existing
+        ? {
+            handle: storeCredentialSession(existing.credentials),
+            source: existing.source,
+            keyCount: credentialValues(existing.credentials).length
+          }
+        : null
     };
   });
 
@@ -128,12 +149,37 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
     await shell.openExternal(url);
   });
 
+  ipcMain.handle("installer:check-access", async (_event, payload: CredentialCheckPayload = {}) => {
+    const existingCredentials = payload.existingCredentialHandle
+      ? credentialSessions.get(payload.existingCredentialHandle)
+      : undefined;
+    if (payload.existingCredentialHandle && !existingCredentials) {
+      throw new Error("The saved access-key session expired. Enter the key again to continue.");
+    }
+    const apiKeys = mergeCredentialValues(existingCredentials, payload.apiKeys);
+    const result = await checkAndAssignCredentials({
+      apiKeys,
+      checkConnection: checkTritonAiConnection,
+      baseUrl: UCSD.baseUrl,
+      timeoutMs: 10_000
+    });
+    return {
+      credentialHandle: storeCredentialSession(result.credentials),
+      access: result.access,
+      assignments: result.assignments
+    };
+  });
+
   ipcMain.handle("installer:start", async (event, payload: InstallPayload) => {
     assertInstallMutationAllowed(packagedBootSmoke);
     installLifecycle.beginInstall();
     installCompleted = false;
     try {
-      const result = await runInstall(payload, {
+      const credentials = credentialSessions.get(payload.credentialHandle);
+      if (!credentials) {
+        throw new Error("Check TritonAI access before starting the installation.");
+      }
+      const result = await runInstall({ credentials }, {
         platform: process.platform,
         arch: process.arch,
         homeDir: app.getPath("home"),

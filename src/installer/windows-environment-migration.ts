@@ -9,6 +9,8 @@ const WINDOWS_ENVIRONMENT_MIGRATION_SCHEMA_VERSION = 1;
 const LEGACY_INSTALLER_VERSIONS = new Set(["0.2.0", "0.2.1"]);
 const LEGACY_ENVIRONMENT_NAMES = new Set([
   UCSD.apiKeyEnv,
+  UCSD.onPremApiKeyEnv,
+  UCSD.frontierApiKeyEnv,
   UCSD.baseUrlEnv,
   UCSD.tritonAiHomeEnv,
   UCSD.codexHomeEnv,

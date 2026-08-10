@@ -93,6 +93,10 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
         last_error TEXT,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE projection_threads (
+        thread_id TEXT PRIMARY KEY,
+        model_selection_json TEXT NOT NULL
+      );
     `);
 
     const insertRuntime = db.prepare(`
@@ -196,6 +200,18 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
       "unknown provider must not be guessed",
       "2026-07-11T03:00:00.000Z"
     );
+    const insertThread = db.prepare(`
+      INSERT INTO projection_threads (thread_id, model_selection_json)
+      VALUES (?, ?)
+    `);
+    insertThread.run(
+      "thread-codex",
+      JSON.stringify({ instanceId: "codex-work", model: "gpt-5.5" })
+    );
+    insertThread.run(
+      "thread-codex-opus",
+      JSON.stringify({ instanceId: "codex-work", model: "claude-opus-4-8" })
+    );
 
     const currentRuntimeBefore = db.prepare(
       "SELECT * FROM provider_session_runtime WHERE thread_id = 'thread-codex'"
@@ -224,11 +240,21 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     const currentProjectionAfter = patched.prepare(
       "SELECT * FROM projection_thread_sessions WHERE thread_id = 'thread-codex'"
     ).get();
+    const currentThreadSelectionAfter = JSON.parse(
+      patched.prepare(
+        "SELECT model_selection_json FROM projection_threads WHERE thread_id = 'thread-codex'"
+      ).get().model_selection_json
+    );
+    const opusThreadSelectionAfter = JSON.parse(
+      patched.prepare(
+        "SELECT model_selection_json FROM projection_threads WHERE thread_id = 'thread-codex-opus'"
+      ).get().model_selection_json
+    );
     const unknownProjectionAfter = patched.prepare(
       "SELECT * FROM projection_thread_sessions WHERE thread_id = 'thread-unknown-provider'"
     ).get();
     for (const [column, value] of Object.entries(currentRuntimeBefore)) {
-      if (column !== "runtime_payload_json") {
+      if (column !== "runtime_payload_json" && column !== "provider_instance_id") {
         assert.deepStrictEqual(
           currentRuntimeAfter[column],
           value,
@@ -237,16 +263,17 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
       }
     }
     const currentRuntimePayload = JSON.parse(currentRuntimeAfter.runtime_payload_json);
+    assert.strictEqual(currentRuntimeAfter.provider_instance_id, "codex");
     assert.strictEqual(currentRuntimePayload.model, UCSD.restrictedCodexModel);
     assert.deepStrictEqual(currentRuntimePayload.modelSelection, {
-      instanceId: "codex-work",
+      instanceId: "codex",
       model: UCSD.restrictedCodexModel
     });
     assert.strictEqual(currentRuntimePayload.activeTurnId, "active-codex-turn");
     assert.strictEqual(currentRuntimePayload.lastError, "recoverable codex error");
     assert.deepStrictEqual(currentRuntimePayload.customRuntimeField, { keep: true });
     for (const [column, value] of Object.entries(opusRuntimeBefore)) {
-      if (column !== "runtime_payload_json") {
+      if (column !== "runtime_payload_json" && column !== "provider_instance_id") {
         assert.deepStrictEqual(
           opusRuntimeAfter[column],
           value,
@@ -255,14 +282,32 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
       }
     }
     const opusRuntimePayload = JSON.parse(opusRuntimeAfter.runtime_payload_json);
+    assert.strictEqual(opusRuntimeAfter.provider_instance_id, "codex");
     assert.strictEqual(opusRuntimePayload.model, UCSD.restrictedCodexModel);
     assert.deepStrictEqual(opusRuntimePayload.modelSelection, {
-      instanceId: "codex-work",
+      instanceId: "codex",
       model: UCSD.restrictedCodexModel,
       options: [{ id: "reasoningEffort", value: "high" }]
     });
     assert.deepStrictEqual(opusRuntimePayload.customRuntimeField, { keepOpus: true });
-    assert.deepStrictEqual(currentProjectionAfter, currentProjectionBefore);
+    for (const [column, value] of Object.entries(currentProjectionBefore)) {
+      if (column !== "provider_instance_id") {
+        assert.deepStrictEqual(
+          currentProjectionAfter[column],
+          value,
+          `routing a current Codex projection must preserve projection_thread_sessions.${column}`
+        );
+      }
+    }
+    assert.strictEqual(currentProjectionAfter.provider_instance_id, "codex");
+    assert.deepStrictEqual(currentThreadSelectionAfter, {
+      instanceId: "codex",
+      model: UCSD.restrictedCodexModel
+    });
+    assert.deepStrictEqual(opusThreadSelectionAfter, {
+      instanceId: "codex",
+      model: UCSD.restrictedCodexModel
+    });
     assert.deepStrictEqual(
       unknownProjectionAfter,
       unknownProjectionBefore,
@@ -316,6 +361,256 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     );
     repeated.close();
   });
+}
+
+function assertFrontierSessionRouteColumnsStayCoherent() {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    return;
+  }
+
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-frontier-session-route-"));
+  try {
+    const paths = getPaths(tempRoot, process.platform);
+    paths.externalModelsEnabled = true;
+    paths.onPremModelsEnabled = true;
+    writeT3CodeSettings(paths);
+
+    const stateDbPath = path.join(path.dirname(paths.t3Settings), "state.sqlite");
+    const db = new DatabaseSync(stateDbPath);
+    db.exec(`
+      CREATE TABLE provider_session_runtime (
+        thread_id TEXT PRIMARY KEY,
+        provider_name TEXT NOT NULL,
+        provider_instance_id TEXT,
+        adapter_key TEXT NOT NULL,
+        status TEXT NOT NULL,
+        resume_cursor_json TEXT,
+        runtime_payload_json TEXT
+      );
+      CREATE TABLE projection_thread_sessions (
+        thread_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        provider_name TEXT,
+        provider_instance_id TEXT
+      );
+      CREATE TABLE projection_threads (
+        thread_id TEXT PRIMARY KEY,
+        model_selection_json TEXT NOT NULL
+      );
+    `);
+    db.prepare(`
+      INSERT INTO provider_session_runtime (
+        thread_id, provider_name, provider_instance_id, adapter_key,
+        status, resume_cursor_json, runtime_payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "thread-frontier",
+      "codex",
+      "codex",
+      "codex",
+      "running",
+      null,
+      JSON.stringify({
+        model: "gpt-5.6-sol",
+        modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" }
+      })
+    );
+    db.prepare(`
+      INSERT INTO provider_session_runtime (
+        thread_id, provider_name, provider_instance_id, adapter_key,
+        status, resume_cursor_json, runtime_payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "thread-frontier-top-level",
+      "codex",
+      "codex",
+      "codex",
+      "running",
+      null,
+      JSON.stringify({ model: "gpt-5.6-sol" })
+    );
+    db.prepare(`
+      INSERT INTO provider_session_runtime (
+        thread_id, provider_name, provider_instance_id, adapter_key,
+        status, resume_cursor_json, runtime_payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "thread-divergent-route",
+      "codex",
+      "codex",
+      "codex",
+      "running",
+      null,
+      JSON.stringify({
+        model: "api-deepseek-v4-flash",
+        modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" }
+      })
+    );
+    db.prepare(`
+      INSERT INTO projection_thread_sessions (
+        thread_id, status, provider_name, provider_instance_id
+      ) VALUES (?, ?, ?, ?)
+    `).run("thread-frontier", "running", "codex", "codex");
+    db.prepare(`
+      INSERT INTO projection_threads (thread_id, model_selection_json)
+      VALUES (?, ?)
+    `).run(
+      "thread-frontier",
+      JSON.stringify({ instanceId: "codex", model: "gpt-5.6-sol" })
+    );
+    db.close();
+
+    const firstRun = runDefaultsPatcher(paths);
+    assert.strictEqual(firstRun.status, 0, firstRun.stderr);
+
+    const patched = new DatabaseSync(stateDbPath);
+    const runtime = patched.prepare(
+      "SELECT provider_instance_id, runtime_payload_json FROM provider_session_runtime WHERE thread_id = 'thread-frontier'"
+    ).get();
+    const topLevelRuntime = patched.prepare(
+      "SELECT provider_instance_id, runtime_payload_json FROM provider_session_runtime WHERE thread_id = 'thread-frontier-top-level'"
+    ).get();
+    const divergentRuntime = patched.prepare(
+      "SELECT provider_instance_id, runtime_payload_json FROM provider_session_runtime WHERE thread_id = 'thread-divergent-route'"
+    ).get();
+    const projectionSession = patched.prepare(
+      "SELECT provider_instance_id FROM projection_thread_sessions"
+    ).get();
+    const projectionThread = patched.prepare(
+      "SELECT model_selection_json FROM projection_threads"
+    ).get();
+    assert.strictEqual(runtime.provider_instance_id, "codex_frontier");
+    assert.strictEqual(
+      JSON.parse(runtime.runtime_payload_json).modelSelection.instanceId,
+      "codex_frontier"
+    );
+    assert.strictEqual(topLevelRuntime.provider_instance_id, "codex_frontier");
+    assert.strictEqual(
+      JSON.parse(topLevelRuntime.runtime_payload_json).modelSelection.instanceId,
+      "codex_frontier"
+    );
+    assert.strictEqual(
+      JSON.parse(topLevelRuntime.runtime_payload_json).modelSelection.model,
+      "gpt-5.6-sol"
+    );
+    assert.strictEqual(divergentRuntime.provider_instance_id, "codex_frontier");
+    assert.strictEqual(JSON.parse(divergentRuntime.runtime_payload_json).model, "gpt-5.6-sol");
+    assert.strictEqual(projectionSession.provider_instance_id, "codex_frontier");
+    assert.strictEqual(
+      JSON.parse(projectionThread.model_selection_json).instanceId,
+      "codex_frontier"
+    );
+    patched.close();
+
+    const secondRun = runDefaultsPatcher(paths);
+    assert.strictEqual(secondRun.status, 0, secondRun.stderr);
+    const repeated = new DatabaseSync(stateDbPath);
+    assert.strictEqual(
+      repeated.prepare(
+        "SELECT provider_instance_id FROM provider_session_runtime WHERE thread_id = 'thread-frontier'"
+      ).get().provider_instance_id,
+      "codex_frontier"
+    );
+    repeated.close();
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertFrontierOnlyCatalogExcludesOnPremModels() {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    return;
+  }
+
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-frontier-only-catalog-"));
+  try {
+    const paths = getPaths(tempRoot, process.platform);
+    paths.externalModelsEnabled = true;
+    paths.onPremModelsEnabled = false;
+    writeT3CodeSettings(paths);
+
+    const settings = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
+    const customModels = settings.providerInstances.codex.config.customModels;
+    assert(customModels.length > 0, "frontier-only credentials must retain frontier models");
+    assert(
+      customModels.every((model) => UCSD.modelRoute(model) === "frontier"),
+      "frontier-only credentials must not expose on-prem models"
+    );
+    assert(!customModels.includes("api-deepseek-v4-flash"));
+    assert.deepStrictEqual(
+      Object.keys(settings.providers.codex.customModelMetadata).sort(),
+      [...customModels].sort()
+    );
+    assert.strictEqual(settings.textGenerationModelSelection.instanceId, "codex_frontier");
+
+    const stateDbPath = path.join(path.dirname(paths.t3Settings), "state.sqlite");
+    const db = new DatabaseSync(stateDbPath);
+    db.exec(`
+      CREATE TABLE projection_threads (
+        thread_id TEXT PRIMARY KEY,
+        model_selection_json TEXT NOT NULL
+      );
+      CREATE TABLE provider_session_runtime (
+        thread_id TEXT PRIMARY KEY,
+        provider_name TEXT NOT NULL,
+        provider_instance_id TEXT,
+        adapter_key TEXT,
+        status TEXT,
+        resume_cursor_json TEXT,
+        runtime_payload_json TEXT
+      );
+    `);
+    db.prepare(`
+      INSERT INTO projection_threads (thread_id, model_selection_json)
+      VALUES (?, ?)
+    `).run(
+      "thread-on-prem",
+      JSON.stringify({ instanceId: "codex", model: "api-deepseek-v4-flash" })
+    );
+    db.prepare(`
+      INSERT INTO provider_session_runtime (
+        thread_id, provider_name, provider_instance_id, runtime_payload_json
+      ) VALUES (?, ?, ?, ?)
+    `).run(
+      "thread-on-prem",
+      "codex",
+      "codex",
+      JSON.stringify({
+        model: "api-deepseek-v4-flash",
+        modelSelection: settings.textGenerationModelSelection,
+        customRuntimeField: { keep: true }
+      })
+    );
+    db.close();
+
+    const result = runDefaultsPatcher(paths);
+    assert.strictEqual(result.status, 0, result.stderr);
+    const patched = new DatabaseSync(stateDbPath);
+    const selection = JSON.parse(
+      patched.prepare(
+        "SELECT model_selection_json FROM projection_threads WHERE thread_id = 'thread-on-prem'"
+      ).get().model_selection_json
+    );
+    const runtimeRow = patched.prepare(
+      "SELECT provider_instance_id, runtime_payload_json FROM provider_session_runtime WHERE thread_id = 'thread-on-prem'"
+    ).get();
+    const runtimePayload = JSON.parse(runtimeRow.runtime_payload_json);
+    patched.close();
+    assert.strictEqual(selection.instanceId, "codex_frontier");
+    assert(customModels.includes(selection.model));
+    assert.strictEqual(runtimeRow.provider_instance_id, "codex_frontier");
+    assert.strictEqual(runtimePayload.model, selection.model);
+    assert.deepStrictEqual(runtimePayload.modelSelection, selection);
+    assert.deepStrictEqual(runtimePayload.customRuntimeField, { keep: true });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertValidUnknownSettingsSurvive() {
@@ -887,6 +1182,8 @@ function assertWindowsDaclCoversReplacementAndBackup() {
 
 function main() {
   assertSessionMigrationPreservesCurrentCodexRows();
+  assertFrontierSessionRouteColumnsStayCoherent();
+  assertFrontierOnlyCatalogExcludesOnPremModels();
   assertValidUnknownSettingsSurvive();
   assertLiveWriterDiscardsMalformedProviderEnvironment();
   assertDevelopmentSettingsAreNotManaged();

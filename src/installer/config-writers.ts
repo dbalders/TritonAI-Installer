@@ -188,18 +188,20 @@ function buildT3CodeSettings(existing, paths) {
       }
     },
     textGenerationModelSelection: {
-      instanceId: "codex",
+      instanceId: UCSD.modelRoute(codexModel) === "frontier" ? "codex_frontier" : "codex",
       model: codexModel
     }
   };
 }
 
 function writeT3CodeDefaultsPatcher(paths) {
+  const effectiveModel = getEffectiveCodexModel(paths);
   const modelSelection = {
-    instanceId: "codex",
-    model: getEffectiveCodexModel(paths)
+    instanceId: UCSD.modelRoute(effectiveModel) === "frontier" ? "codex_frontier" : "codex",
+    model: effectiveModel
   };
   const customModels = getCodexModelSlugs(paths);
+  const frontierModels = customModels.filter((model) => UCSD.modelRoute(model) === "frontier");
   const modelReplacements = Object.fromEntries(
     Object.entries(LEGACY_CODEX_MODEL_REPLACEMENTS as Record<string, string>)
       .filter(([legacyModel]) => !customModels.includes(legacyModel))
@@ -223,8 +225,9 @@ const stateDbPaths = ${JSON.stringify(stateDbPaths)};
 const managedSettingsPlatform = ${JSON.stringify(paths.platform)};
 const modelSelection = ${JSON.stringify(modelSelection)};
 const customModels = ${JSON.stringify(customModels)};
+const frontierModels = ${JSON.stringify(frontierModels)};
 const modelReplacements = ${JSON.stringify(modelReplacements)};
-const codexInstanceIds = new Set(["codex"]);
+const codexInstanceIds = new Set(["codex", "codex_frontier"]);
 const customModelMetadata = ${JSON.stringify(customModelMetadata)};
 const codexBinaryPath = ${JSON.stringify(getCodexBinaryPath(paths))};
 const codexHomePath = ${JSON.stringify(paths.codexHome)};
@@ -377,6 +380,46 @@ function codexInstancePlaceholders() {
   return Array.from(codexInstanceIds, () => "?").join(", ");
 }
 
+function frontierModelPlaceholders() {
+  return frontierModels.map(() => "?").join(", ");
+}
+
+function routeSelectionColumn(db, table, column, deletedFilter = "") {
+  if (frontierModels.length === 0) {
+    db.prepare(\`
+      UPDATE \${table}
+      SET \${column} = json_set(\${column}, '$.instanceId', 'codex')
+      WHERE json_valid(\${column})
+        AND (
+          COALESCE(json_extract(\${column}, '$.instanceId'), '') IN (\${codexInstancePlaceholders()})
+          OR COALESCE(json_extract(\${column}, '$.provider'), '') = 'codex'
+        )
+        AND json_extract(\${column}, '$.model') IN (\${allowedModelPlaceholders()})
+      \${deletedFilter}
+    \`).run(...codexInstanceIds, ...customModels);
+    return;
+  }
+  db.prepare(\`
+    UPDATE \${table}
+    SET \${column} = json_set(
+      \${column},
+      '$.instanceId',
+      CASE
+        WHEN json_extract(\${column}, '$.model') IN (\${frontierModelPlaceholders()})
+          THEN 'codex_frontier'
+        ELSE 'codex'
+      END
+    )
+    WHERE json_valid(\${column})
+      AND (
+        COALESCE(json_extract(\${column}, '$.instanceId'), '') IN (\${codexInstancePlaceholders()})
+        OR COALESCE(json_extract(\${column}, '$.provider'), '') = 'codex'
+      )
+      AND json_extract(\${column}, '$.model') IN (\${allowedModelPlaceholders()})
+    \${deletedFilter}
+  \`).run(...frontierModels, ...codexInstanceIds, ...customModels);
+}
+
 function patchSelectionColumn(db, table, column) {
   if (!hasTable(db, table) || !hasColumn(db, table, column)) return;
   const deletedFilter = hasColumn(db, table, "deleted_at") ? "AND deleted_at IS NULL" : "";
@@ -406,6 +449,7 @@ function patchSelectionColumn(db, table, column) {
     )
     \${deletedFilter}
   \`).run(JSON.stringify(modelSelection), ...codexInstanceIds, ...customModels);
+  routeSelectionColumn(db, table, column, deletedFilter);
 }
 
 function patchEvents(db, selectionKey) {
@@ -434,13 +478,44 @@ function patchEvents(db, selectionKey) {
         OR json_extract(payload_json, '$.\${selectionKey}.model') NOT IN (\${allowedModelPlaceholders()})
       )
   \`).run(JSON.stringify(modelSelection), ...codexInstanceIds, ...customModels);
+  if (frontierModels.length > 0) {
+    db.prepare(\`
+      UPDATE orchestration_events
+      SET payload_json = json_set(
+        payload_json,
+        '$.\${selectionKey}.instanceId',
+        CASE
+          WHEN json_extract(payload_json, '$.\${selectionKey}.model') IN (\${frontierModelPlaceholders()})
+            THEN 'codex_frontier'
+          ELSE 'codex'
+        END
+      )
+      WHERE json_type(payload_json, '$.\${selectionKey}') IS NOT NULL
+        AND (
+          COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), '') IN (\${codexInstancePlaceholders()})
+          OR COALESCE(json_extract(payload_json, '$.\${selectionKey}.provider'), '') = 'codex'
+        )
+        AND json_extract(payload_json, '$.\${selectionKey}.model') IN (\${allowedModelPlaceholders()})
+    \`).run(...frontierModels, ...codexInstanceIds, ...customModels);
+  } else {
+    db.prepare(\`
+      UPDATE orchestration_events
+      SET payload_json = json_set(payload_json, '$.\${selectionKey}.instanceId', 'codex')
+      WHERE json_type(payload_json, '$.\${selectionKey}') IS NOT NULL
+        AND (
+          COALESCE(json_extract(payload_json, '$.\${selectionKey}.instanceId'), '') IN (\${codexInstancePlaceholders()})
+          OR COALESCE(json_extract(payload_json, '$.\${selectionKey}.provider'), '') = 'codex'
+        )
+        AND json_extract(payload_json, '$.\${selectionKey}.model') IN (\${allowedModelPlaceholders()})
+    \`).run(...codexInstanceIds, ...customModels);
+  }
 }
 
 function patchSessionState(db) {
   if (hasTable(db, "projection_thread_sessions")) {
     const hasProviderInstanceId = hasColumn(db, "projection_thread_sessions", "provider_instance_id");
     const providerInstanceColumn = hasProviderInstanceId
-      ? ", provider_instance_id = 'codex'"
+      ? ", provider_instance_id = ?"
       : "";
     const providerSessionColumn = hasColumn(db, "projection_thread_sessions", "provider_session_id")
       ? ", provider_session_id = NULL"
@@ -466,11 +541,51 @@ function patchSessionState(db) {
             \${activeTurnColumn}
             \${lastErrorColumn}
         WHERE \${legacyPredicate}
-      \`).run();
+      \`).run(...(hasProviderInstanceId ? [modelSelection.instanceId] : []));
+    }
+    if (
+      hasProviderInstanceId
+      && hasTable(db, "projection_threads")
+      && hasColumn(db, "projection_threads", "model_selection_json")
+    ) {
+      if (frontierModels.length > 0) {
+        db.prepare(\`
+          UPDATE projection_thread_sessions
+          SET provider_instance_id = CASE
+            WHEN (
+              SELECT json_extract(model_selection_json, '$.model')
+              FROM projection_threads
+              WHERE projection_threads.thread_id = projection_thread_sessions.thread_id
+            ) IN (\${frontierModelPlaceholders()})
+              THEN 'codex_frontier'
+            ELSE 'codex'
+          END
+          WHERE provider_name = 'codex'
+            AND (
+              SELECT json_extract(model_selection_json, '$.model')
+              FROM projection_threads
+              WHERE projection_threads.thread_id = projection_thread_sessions.thread_id
+                AND json_valid(model_selection_json)
+            ) IN (\${allowedModelPlaceholders()})
+        \`).run(...frontierModels, ...customModels);
+      } else {
+        db.prepare(\`
+          UPDATE projection_thread_sessions
+          SET provider_instance_id = 'codex'
+          WHERE provider_name = 'codex'
+            AND (
+              SELECT json_extract(model_selection_json, '$.model')
+              FROM projection_threads
+              WHERE projection_threads.thread_id = projection_thread_sessions.thread_id
+                AND json_valid(model_selection_json)
+            ) IN (\${allowedModelPlaceholders()})
+        \`).run(...customModels);
+      }
     }
   }
 
   if (hasTable(db, "provider_session_runtime")) {
+    const hasProviderInstanceId = hasColumn(db, "provider_session_runtime", "provider_instance_id");
     for (const [legacyModel, replacementModel] of Object.entries(modelReplacements)) {
       db.prepare(\`
         UPDATE provider_session_runtime
@@ -487,9 +602,133 @@ function patchSessionState(db) {
           AND json_extract(runtime_payload_json, '$.modelSelection.model') = ?
       \`).run(replacementModel, legacyModel);
     }
-    const hasProviderInstanceId = hasColumn(db, "provider_session_runtime", "provider_instance_id");
+    const unavailableProviderInstanceColumn = hasProviderInstanceId
+      ? ", provider_instance_id = ?"
+      : "";
+    db.prepare(\`
+      UPDATE provider_session_runtime
+      SET runtime_payload_json = json_set(
+            runtime_payload_json,
+            '$.model', ?,
+            '$.modelSelection', json(?)
+          )
+          \${unavailableProviderInstanceColumn}
+      WHERE provider_name = 'codex'
+        AND json_valid(runtime_payload_json)
+        AND (
+          (
+            json_extract(runtime_payload_json, '$.modelSelection.model') IS NOT NULL
+            AND json_extract(runtime_payload_json, '$.modelSelection.model')
+              NOT IN (\${allowedModelPlaceholders()})
+          )
+          OR (
+            json_extract(runtime_payload_json, '$.model') IS NOT NULL
+            AND json_extract(runtime_payload_json, '$.model')
+              NOT IN (\${allowedModelPlaceholders()})
+          )
+          OR (
+            json_extract(runtime_payload_json, '$.modelSelection.model') IS NULL
+            AND json_extract(runtime_payload_json, '$.model') IS NULL
+          )
+        )
+    \`).run(
+      modelSelection.model,
+      JSON.stringify(modelSelection),
+      ...(hasProviderInstanceId ? [modelSelection.instanceId] : []),
+      ...customModels,
+      ...customModels
+    );
+    if (frontierModels.length > 0) {
+      db.prepare(\`
+        UPDATE provider_session_runtime
+        SET runtime_payload_json = json_set(
+          runtime_payload_json,
+          '$.model',
+          COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ),
+          '$.modelSelection.model',
+          COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ),
+          '$.modelSelection.instanceId',
+          CASE
+            WHEN COALESCE(
+              json_extract(runtime_payload_json, '$.modelSelection.model'),
+              json_extract(runtime_payload_json, '$.model')
+            ) IN (\${frontierModelPlaceholders()})
+              THEN 'codex_frontier'
+            ELSE 'codex'
+          END
+        )
+        WHERE provider_name = 'codex'
+          AND json_valid(runtime_payload_json)
+          AND COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ) IN (\${allowedModelPlaceholders()})
+      \`).run(...frontierModels, ...customModels);
+      if (hasProviderInstanceId) {
+        db.prepare(\`
+          UPDATE provider_session_runtime
+          SET provider_instance_id = CASE
+            WHEN COALESCE(
+              json_extract(runtime_payload_json, '$.modelSelection.model'),
+              json_extract(runtime_payload_json, '$.model')
+            ) IN (\${frontierModelPlaceholders()})
+              THEN 'codex_frontier'
+            ELSE 'codex'
+          END
+          WHERE provider_name = 'codex'
+            AND json_valid(runtime_payload_json)
+            AND COALESCE(
+              json_extract(runtime_payload_json, '$.modelSelection.model'),
+              json_extract(runtime_payload_json, '$.model')
+            ) IN (\${allowedModelPlaceholders()})
+        \`).run(...frontierModels, ...customModels);
+      }
+    } else {
+      db.prepare(\`
+        UPDATE provider_session_runtime
+        SET runtime_payload_json = json_set(
+          runtime_payload_json,
+          '$.model',
+          COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ),
+          '$.modelSelection.model',
+          COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ),
+          '$.modelSelection.instanceId',
+          'codex'
+        )
+        WHERE provider_name = 'codex'
+          AND json_valid(runtime_payload_json)
+          AND COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ) IN (\${allowedModelPlaceholders()})
+      \`).run(...customModels);
+      if (hasProviderInstanceId) {
+        db.prepare(\`
+          UPDATE provider_session_runtime
+          SET provider_instance_id = 'codex'
+          WHERE provider_name = 'codex'
+            AND json_valid(runtime_payload_json)
+            AND COALESCE(
+              json_extract(runtime_payload_json, '$.modelSelection.model'),
+              json_extract(runtime_payload_json, '$.model')
+            ) IN (\${allowedModelPlaceholders()})
+        \`).run(...customModels);
+      }
+    }
     const providerInstanceColumn = hasProviderInstanceId
-      ? "provider_instance_id = 'codex',"
+      ? "provider_instance_id = ?,"
       : "";
     const legacyPredicate = legacyNonCodexPredicate(db, "provider_session_runtime");
     if (legacyPredicate) {
@@ -512,6 +751,7 @@ function patchSessionState(db) {
             END
         WHERE \${legacyPredicate}
       \`).run(
+        ...(hasProviderInstanceId ? [modelSelection.instanceId] : []),
         modelSelection.model,
         JSON.stringify(modelSelection),
         modelSelection.model,
@@ -1143,24 +1383,28 @@ function getCodexModelMetadata(paths) {
 }
 
 function getEffectiveCodexModel(paths) {
-  return paths.externalModelsEnabled === true
+  const models = getCodexModels(paths);
+  const preferred = paths.externalModelsEnabled === true
     ? UCSD.codexModel
     : UCSD.restrictedCodexModel;
+  if (Object.prototype.hasOwnProperty.call(models, preferred)) return preferred;
+  const fallback = Object.keys(models)[0];
+  if (!fallback) {
+    throw new Error("The verified TritonAI access keys do not expose any managed models.");
+  }
+  return fallback;
 }
 
 function getCodexModels(paths) {
-  if (paths.externalModelsEnabled !== true) {
-    // Key capability is an upper bound: a packaged operator catalog cannot
-    // grant models that the installed key cannot access.
-    return Object.fromEntries(
-      Object.entries(UCSD.codexModels).filter(
-        ([slug, model]) =>
-          slug === UCSD.restrictedCodexModel ||
-          objectValue(model).availableToRestrictedKeys === true
-      )
-    );
-  }
-  return UCSD.codexModels;
+  // Key capability is an upper bound: a packaged operator catalog cannot
+  // grant models that the installed credentials cannot access.
+  return Object.fromEntries(
+    Object.entries(UCSD.codexModels).filter(([slug]) => {
+      const route = UCSD.modelRoute(slug);
+      if (route === "frontier") return paths.externalModelsEnabled === true;
+      return paths.onPremModelsEnabled !== false;
+    })
+  );
 }
 
 function getT3SettingsPaths(paths) {

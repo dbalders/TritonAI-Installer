@@ -1,8 +1,11 @@
 const https = require("https");
 const { UCSD } = require("./constants");
 
+const MAX_JSON_RESPONSE_BYTES = 1024 * 1024;
+
 interface ConnectionResponse {
   statusCode: number;
+  body: unknown;
 }
 
 interface RequestJsonOptions {
@@ -11,6 +14,14 @@ interface RequestJsonOptions {
   apiKey: string;
   timeoutMs: number;
   body?: unknown;
+}
+
+function assertJsonResponseWithinLimit(byteLength: number) {
+  if (byteLength > MAX_JSON_RESPONSE_BYTES) {
+    throw new Error(
+      "TritonAI returned an unexpectedly large response. Try again or check UC San Diego TritonAI status."
+    );
+  }
 }
 
 async function checkTritonAiConnection({ apiKey, baseUrl = UCSD.baseUrl, timeoutMs = 10000 }) {
@@ -25,18 +36,40 @@ async function checkTritonAiConnection({ apiKey, baseUrl = UCSD.baseUrl, timeout
   });
 
   assertConnectionResponse(response);
-
-  const externalModelsEnabled = await canSendExternalModelMessage({
-    apiKey,
-    baseUrl,
-    timeoutMs,
-    model: UCSD.externalModelProbe
-  });
+  let access = classifyModelAccess(response.body);
+  const modelCatalogReported = response.body
+    && typeof response.body === "object"
+    && Array.isArray((response.body as { data?: unknown }).data);
+  if (!modelCatalogReported) {
+    access = await probeFallbackModelAccess({
+      apiKey,
+      baseUrl,
+      timeoutMs
+    });
+  }
 
   return {
     ok: true,
-    externalModelsEnabled
+    access,
+    externalModelsEnabled: access.frontier
   };
+}
+
+function classifyModelAccess(body): { onPrem: boolean; frontier: boolean } {
+  const record = body && typeof body === "object" ? body as { data?: unknown } : {};
+  const data = Array.isArray(record.data) ? record.data : [];
+  const modelIds = new Set<string>(data.flatMap((entry): string[] => {
+    if (typeof entry === "string") return [entry];
+    const model = entry && typeof entry === "object" ? entry as { id?: unknown } : {};
+    if (typeof model.id === "string") return [model.id];
+    return [];
+  }));
+  const access = { onPrem: false, frontier: false };
+  for (const modelId of modelIds) {
+    if (!Object.prototype.hasOwnProperty.call(UCSD.codexModels, modelId)) continue;
+    access[UCSD.modelRoute(modelId) === "on-prem" ? "onPrem" : "frontier"] = true;
+  }
+  return access;
 }
 
 function assertConnectionResponse(response: ConnectionResponse) {
@@ -69,6 +102,27 @@ function chatCompletionsUrlForBase(baseUrl) {
   url.search = "";
   url.hash = "";
   return url;
+}
+
+async function probeFallbackModelAccess(
+  { apiKey, baseUrl, timeoutMs },
+  canSendModelMessage = canSendExternalModelMessage
+) {
+  const [onPrem, frontier] = await Promise.all([
+    canSendModelMessage({
+      apiKey,
+      baseUrl,
+      timeoutMs,
+      model: UCSD.restrictedCodexModel
+    }),
+    canSendModelMessage({
+      apiKey,
+      baseUrl,
+      timeoutMs,
+      model: UCSD.externalModelProbe
+    })
+  ]);
+  return { onPrem, frontier };
 }
 
 async function canSendExternalModelMessage({ apiKey, baseUrl, timeoutMs, model }) {
@@ -110,9 +164,34 @@ function requestJson({ url, method = "GET", apiKey, timeoutMs, body }: RequestJs
         } : {})
       }
     }, (response) => {
-      response.resume();
+      const chunks: Buffer[] = [];
+      let byteLength = 0;
+      let overflowError: Error | null = null;
+      response.on("data", (chunk) => {
+        if (overflowError) return;
+        const bytes = Buffer.from(chunk);
+        byteLength += bytes.length;
+        try {
+          assertJsonResponseWithinLimit(byteLength);
+          chunks.push(bytes);
+        } catch (error) {
+          overflowError = error as Error;
+          response.destroy();
+          reject(overflowError);
+        }
+      });
       response.on("end", () => {
-        resolve({ statusCode: response.statusCode || 0 });
+        if (overflowError) return;
+        const text = Buffer.concat(chunks).toString("utf8").trim();
+        let responseBody: unknown = null;
+        if (text) {
+          try {
+            responseBody = JSON.parse(text);
+          } catch {
+            responseBody = null;
+          }
+        }
+        resolve({ statusCode: response.statusCode || 0, body: responseBody });
       });
     });
 
@@ -129,4 +208,14 @@ function requestJson({ url, method = "GET", apiKey, timeoutMs, body }: RequestJs
   });
 }
 
-module.exports = { checkTritonAiConnection, modelsUrlForBase, chatCompletionsUrlForBase };
+module.exports = {
+  __test: {
+    assertJsonResponseWithinLimit,
+    MAX_JSON_RESPONSE_BYTES,
+    probeFallbackModelAccess
+  },
+  checkTritonAiConnection,
+  classifyModelAccess,
+  modelsUrlForBase,
+  chatCompletionsUrlForBase
+};

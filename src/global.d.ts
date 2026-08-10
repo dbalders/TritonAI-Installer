@@ -1,5 +1,11 @@
 type InstallerEmit = (message: string) => void;
 
+interface TritonAiCredentials {
+  sharedApiKey?: string;
+  onPremApiKey?: string;
+  frontierApiKey?: string;
+}
+
 interface ExistingApiKey {
   apiKey: string;
   source: string;
@@ -23,7 +29,18 @@ interface DiagnosticsInfo {
 }
 
 interface InstallPayload {
-  apiKey: string;
+  credentialHandle: string;
+}
+
+interface CredentialCheckPayload {
+  apiKeys?: string[];
+  existingCredentialHandle?: string;
+}
+
+interface CredentialCheckResponse {
+  credentialHandle: string;
+  access: { onPrem: boolean; frontier: boolean };
+  assignments: { onPremKeyIndex?: number; frontierKeyIndex?: number };
 }
 
 interface InstallResponse {
@@ -51,13 +68,14 @@ interface InstallerPlatformInfo {
   managedConfig: {
     apiDocsUrl: string;
   };
-  existingApiKey: ExistingApiKey | null;
+  existingCredentials: { handle: string; source: string; keyCount: number } | null;
 }
 
 interface InstallerApi {
   getPlatform(): Promise<InstallerPlatformInfo>;
   reportReady(): Promise<void>;
   openDocs(url: string): Promise<void>;
+  checkAccess(payload: CredentialCheckPayload): Promise<CredentialCheckResponse>;
   startInstall(payload: InstallPayload): Promise<InstallResponse>;
   finishInstall(payload: FinishPayload): Promise<void>;
   getSupportInfo(): Promise<DiagnosticsInfo | null>;
