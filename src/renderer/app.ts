@@ -100,9 +100,9 @@ const inlineProgress = document.getElementById("inline-progress");
 const installerVersionLabel = document.getElementById("installer-version-label");
 const apiKeyInput = document.getElementById("api-key") as HTMLInputElement;
 const apiKeyHelp = document.getElementById("api-key-help");
-const apiKeyVisibilityToggle = document.getElementById("api-key-visibility-toggle");
+const apiKeyVisibilityToggle = document.getElementById("api-key-visibility-toggle") as HTMLButtonElement | null;
 const secondaryApiKeyInput = document.getElementById("api-key-secondary") as HTMLInputElement;
-const secondaryApiKeyVisibilityToggle = document.getElementById("api-key-secondary-visibility-toggle");
+const secondaryApiKeyVisibilityToggle = document.getElementById("api-key-secondary-visibility-toggle") as HTMLButtonElement | null;
 const secondaryKeyGroup = document.getElementById("secondary-key-group");
 const multipleKeyToggle = document.getElementById("multiple-key-toggle") as HTMLButtonElement;
 const replaceExistingCredentialsButton = document.getElementById(
@@ -717,10 +717,17 @@ function updateCredentialControls() {
   const isChecking = state.installPhase === "checking";
   const isInstalling = state.installPhase === "running";
   const isComplete = state.installPhase === "complete";
+  const credentialControlsLocked = isChecking || isInstalling || isComplete;
   continueButton.disabled = (!(hasApiKey && hasSecondaryKey) && !hasExistingCredentials)
-    || isChecking
-    || isInstalling
-    || isComplete;
+    || credentialControlsLocked;
+  apiKeyInput.disabled = credentialControlsLocked;
+  secondaryApiKeyInput.disabled = credentialControlsLocked;
+  multipleKeyToggle.disabled = credentialControlsLocked;
+  replaceExistingCredentialsButton.disabled = credentialControlsLocked;
+  if (apiKeyVisibilityToggle) apiKeyVisibilityToggle.disabled = credentialControlsLocked;
+  if (secondaryApiKeyVisibilityToggle) {
+    secondaryApiKeyVisibilityToggle.disabled = credentialControlsLocked;
+  }
   continueButton.setAttribute("aria-busy", String(isChecking || isInstalling));
   continueButton.textContent = isChecking ? "Checking access..." : "Check access & install";
   if (apiKeyHelp) {

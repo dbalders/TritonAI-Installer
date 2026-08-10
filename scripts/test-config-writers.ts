@@ -240,6 +240,16 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     const currentProjectionAfter = patched.prepare(
       "SELECT * FROM projection_thread_sessions WHERE thread_id = 'thread-codex'"
     ).get();
+    const currentThreadSelectionAfter = JSON.parse(
+      patched.prepare(
+        "SELECT model_selection_json FROM projection_threads WHERE thread_id = 'thread-codex'"
+      ).get().model_selection_json
+    );
+    const opusThreadSelectionAfter = JSON.parse(
+      patched.prepare(
+        "SELECT model_selection_json FROM projection_threads WHERE thread_id = 'thread-codex-opus'"
+      ).get().model_selection_json
+    );
     const unknownProjectionAfter = patched.prepare(
       "SELECT * FROM projection_thread_sessions WHERE thread_id = 'thread-unknown-provider'"
     ).get();
@@ -290,6 +300,14 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
       }
     }
     assert.strictEqual(currentProjectionAfter.provider_instance_id, "codex");
+    assert.deepStrictEqual(currentThreadSelectionAfter, {
+      instanceId: "codex",
+      model: UCSD.restrictedCodexModel
+    });
+    assert.deepStrictEqual(opusThreadSelectionAfter, {
+      instanceId: "codex",
+      model: UCSD.restrictedCodexModel
+    });
     assert.deepStrictEqual(
       unknownProjectionAfter,
       unknownProjectionBefore,
