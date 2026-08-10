@@ -4,6 +4,7 @@ const { UCSD } = require("../src/installer/constants");
 const {
   checkAndAssignCredentials,
   credentialEnvironment,
+  mergeCredentialValues,
   normalizeCredentialBundle
 } = require("../src/installer/credentials");
 const { readCredentialsFromEnvText } = require("../src/installer/existing-api-key");
@@ -36,6 +37,22 @@ async function main() {
   assert.deepStrictEqual(credentialEnvironment(split.credentials), {
     [UCSD.onPremApiKeyEnv]: "on-prem-key",
     [UCSD.frontierApiKeyEnv]: "frontier-key"
+  });
+  assert.deepStrictEqual(
+    mergeCredentialValues({ onPremApiKey: "saved-on-prem" }, ["new-frontier"]),
+    ["saved-on-prem", "new-frontier"]
+  );
+  const supplemented = await checkAndAssignCredentials({
+    apiKeys: mergeCredentialValues({ onPremApiKey: "saved-on-prem" }, ["new-frontier"]),
+    checkConnection: async ({ apiKey }) => ({
+      access: apiKey === "saved-on-prem"
+        ? { onPrem: true, frontier: false }
+        : { onPrem: false, frontier: true }
+    })
+  });
+  assert.deepStrictEqual(supplemented.credentials, {
+    onPremApiKey: "saved-on-prem",
+    frontierApiKey: "new-frontier"
   });
   const environmentLines = buildMacEnvironmentLines({
     credentials: split.credentials,

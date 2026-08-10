@@ -735,6 +735,9 @@ function getCredentialHelpText(hasApiKey) {
   if (state.existingCredentialHandle && !hasApiKey) {
     return "Found an existing TritonAI access setup on this computer.";
   }
+  if (state.existingCredentialHandle && hasApiKey) {
+    return "We’ll check this key together with the saved access setup.";
+  }
 
   return state.secondKeyVisible
     ? "We’ll detect which key belongs to on-prem and frontier models."
@@ -775,7 +778,6 @@ function getAccessCheckErrorMessage(error) {
 }
 
 function handleCredentialInput() {
-  state.existingCredentialHandle = "";
   state.credentialHandle = "";
   clearCredentialError();
 }
@@ -833,11 +835,12 @@ function setSecondKeyVisible(isVisible) {
   state.installPhase = "checking";
   updateCredentialControls();
   try {
-    const result = await installerApi.checkAccess(
-      state.existingCredentialHandle
+    const result = await installerApi.checkAccess({
+      ...(state.existingCredentialHandle
         ? { existingCredentialHandle: state.existingCredentialHandle }
-        : { apiKeys }
-    );
+        : {}),
+      apiKeys
+    });
     state.credentialHandle = result.credentialHandle;
     if (apiKeyHelp) apiKeyHelp.textContent = describeModelAccess(result.access);
     apiKeyInput.value = "";
@@ -1059,7 +1062,8 @@ function createPreviewInstallerApi(): InstallerApi {
       if (url) window.open(url, "_blank", "noopener,noreferrer");
     },
     checkAccess: async (payload) => {
-      const count = payload.apiKeys?.filter(Boolean).length || 1;
+      const count = (payload.apiKeys?.filter(Boolean).length || 0)
+        + (payload.existingCredentialHandle ? 1 : 0);
       await new Promise((resolve) => setTimeout(resolve, 350));
       return {
         credentialHandle: "preview-credentials",

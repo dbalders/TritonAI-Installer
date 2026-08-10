@@ -16,7 +16,11 @@ const { getInstallPreview } = require("./installer/tool-manifest");
 const { UCSD } = require("./installer/constants");
 const { findExistingCredentials } = require("./installer/existing-api-key");
 const { checkTritonAiConnection } = require("./installer/tritonai-connection");
-const { checkAndAssignCredentials, credentialValues } = require("./installer/credentials");
+const {
+  checkAndAssignCredentials,
+  credentialValues,
+  mergeCredentialValues
+} = require("./installer/credentials");
 const { readPluginCompositionRequirement } = require("./installer/plugins");
 
 const INSTALLER_DMG_VOLUME_TITLE = "TritonAI Installer";
@@ -152,11 +156,7 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
     if (payload.existingCredentialHandle && !existingCredentials) {
       throw new Error("The saved access-key session expired. Enter the key again to continue.");
     }
-    const apiKeys = existingCredentials
-      ? credentialValues(existingCredentials)
-      : Array.isArray(payload.apiKeys)
-        ? payload.apiKeys
-        : [];
+    const apiKeys = mergeCredentialValues(existingCredentials, payload.apiKeys);
     const result = await checkAndAssignCredentials({
       apiKeys,
       checkConnection: checkTritonAiConnection,
