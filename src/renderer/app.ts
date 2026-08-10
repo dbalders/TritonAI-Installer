@@ -758,10 +758,6 @@ function getCredentialHelpText(hasApiKey) {
 
 function setCredentialError(message) {
   state.credentialError = message;
-  const target = /access key 2|additional access key/i.test(message)
-    ? secondaryApiKeyInput
-    : apiKeyInput;
-  target.setCustomValidity(message);
   updateCredentialControls();
 }
 
