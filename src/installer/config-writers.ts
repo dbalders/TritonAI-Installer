@@ -643,6 +643,11 @@ function patchSessionState(db) {
         UPDATE provider_session_runtime
         SET runtime_payload_json = json_set(
           runtime_payload_json,
+          '$.modelSelection.model',
+          COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ),
           '$.modelSelection.instanceId',
           CASE
             WHEN COALESCE(
@@ -682,7 +687,16 @@ function patchSessionState(db) {
     } else {
       db.prepare(\`
         UPDATE provider_session_runtime
-        SET runtime_payload_json = json_set(runtime_payload_json, '$.modelSelection.instanceId', 'codex')
+        SET runtime_payload_json = json_set(
+          runtime_payload_json,
+          '$.modelSelection.model',
+          COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ),
+          '$.modelSelection.instanceId',
+          'codex'
+        )
         WHERE provider_name = 'codex'
           AND json_valid(runtime_payload_json)
           AND COALESCE(
