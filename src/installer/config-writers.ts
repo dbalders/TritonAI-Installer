@@ -543,9 +543,49 @@ function patchSessionState(db) {
         WHERE \${legacyPredicate}
       \`).run(...(hasProviderInstanceId ? [modelSelection.instanceId] : []));
     }
+    if (
+      hasProviderInstanceId
+      && hasTable(db, "projection_threads")
+      && hasColumn(db, "projection_threads", "model_selection_json")
+    ) {
+      if (frontierModels.length > 0) {
+        db.prepare(\`
+          UPDATE projection_thread_sessions
+          SET provider_instance_id = CASE
+            WHEN (
+              SELECT json_extract(model_selection_json, '$.model')
+              FROM projection_threads
+              WHERE projection_threads.thread_id = projection_thread_sessions.thread_id
+            ) IN (\${frontierModelPlaceholders()})
+              THEN 'codex_frontier'
+            ELSE 'codex'
+          END
+          WHERE provider_name = 'codex'
+            AND (
+              SELECT json_extract(model_selection_json, '$.model')
+              FROM projection_threads
+              WHERE projection_threads.thread_id = projection_thread_sessions.thread_id
+                AND json_valid(model_selection_json)
+            ) IN (\${allowedModelPlaceholders()})
+        \`).run(...frontierModels, ...customModels);
+      } else {
+        db.prepare(\`
+          UPDATE projection_thread_sessions
+          SET provider_instance_id = 'codex'
+          WHERE provider_name = 'codex'
+            AND (
+              SELECT json_extract(model_selection_json, '$.model')
+              FROM projection_threads
+              WHERE projection_threads.thread_id = projection_thread_sessions.thread_id
+                AND json_valid(model_selection_json)
+            ) IN (\${allowedModelPlaceholders()})
+        \`).run(...customModels);
+      }
+    }
   }
 
   if (hasTable(db, "provider_session_runtime")) {
+    const hasProviderInstanceId = hasColumn(db, "provider_session_runtime", "provider_instance_id");
     for (const [legacyModel, replacementModel] of Object.entries(modelReplacements)) {
       db.prepare(\`
         UPDATE provider_session_runtime
@@ -569,25 +609,64 @@ function patchSessionState(db) {
           runtime_payload_json,
           '$.modelSelection.instanceId',
           CASE
-            WHEN json_extract(runtime_payload_json, '$.modelSelection.model') IN (\${frontierModelPlaceholders()})
+            WHEN COALESCE(
+              json_extract(runtime_payload_json, '$.modelSelection.model'),
+              json_extract(runtime_payload_json, '$.model')
+            ) IN (\${frontierModelPlaceholders()})
               THEN 'codex_frontier'
             ELSE 'codex'
           END
         )
         WHERE provider_name = 'codex'
           AND json_valid(runtime_payload_json)
-          AND json_extract(runtime_payload_json, '$.modelSelection.model') IN (\${allowedModelPlaceholders()})
+          AND COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ) IN (\${allowedModelPlaceholders()})
       \`).run(...frontierModels, ...customModels);
+      if (hasProviderInstanceId) {
+        db.prepare(\`
+          UPDATE provider_session_runtime
+          SET provider_instance_id = CASE
+            WHEN COALESCE(
+              json_extract(runtime_payload_json, '$.modelSelection.model'),
+              json_extract(runtime_payload_json, '$.model')
+            ) IN (\${frontierModelPlaceholders()})
+              THEN 'codex_frontier'
+            ELSE 'codex'
+          END
+          WHERE provider_name = 'codex'
+            AND json_valid(runtime_payload_json)
+            AND COALESCE(
+              json_extract(runtime_payload_json, '$.modelSelection.model'),
+              json_extract(runtime_payload_json, '$.model')
+            ) IN (\${allowedModelPlaceholders()})
+        \`).run(...frontierModels, ...customModels);
+      }
     } else {
       db.prepare(\`
         UPDATE provider_session_runtime
         SET runtime_payload_json = json_set(runtime_payload_json, '$.modelSelection.instanceId', 'codex')
         WHERE provider_name = 'codex'
           AND json_valid(runtime_payload_json)
-          AND json_extract(runtime_payload_json, '$.modelSelection.model') IN (\${allowedModelPlaceholders()})
+          AND COALESCE(
+            json_extract(runtime_payload_json, '$.modelSelection.model'),
+            json_extract(runtime_payload_json, '$.model')
+          ) IN (\${allowedModelPlaceholders()})
       \`).run(...customModels);
+      if (hasProviderInstanceId) {
+        db.prepare(\`
+          UPDATE provider_session_runtime
+          SET provider_instance_id = 'codex'
+          WHERE provider_name = 'codex'
+            AND json_valid(runtime_payload_json)
+            AND COALESCE(
+              json_extract(runtime_payload_json, '$.modelSelection.model'),
+              json_extract(runtime_payload_json, '$.model')
+            ) IN (\${allowedModelPlaceholders()})
+        \`).run(...customModels);
+      }
     }
-    const hasProviderInstanceId = hasColumn(db, "provider_session_runtime", "provider_instance_id");
     const providerInstanceColumn = hasProviderInstanceId
       ? "provider_instance_id = ?,"
       : "";

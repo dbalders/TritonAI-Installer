@@ -93,6 +93,10 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
         last_error TEXT,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE projection_threads (
+        thread_id TEXT PRIMARY KEY,
+        model_selection_json TEXT NOT NULL
+      );
     `);
 
     const insertRuntime = db.prepare(`
@@ -196,6 +200,18 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
       "unknown provider must not be guessed",
       "2026-07-11T03:00:00.000Z"
     );
+    const insertThread = db.prepare(`
+      INSERT INTO projection_threads (thread_id, model_selection_json)
+      VALUES (?, ?)
+    `);
+    insertThread.run(
+      "thread-codex",
+      JSON.stringify({ instanceId: "codex-work", model: "gpt-5.5" })
+    );
+    insertThread.run(
+      "thread-codex-opus",
+      JSON.stringify({ instanceId: "codex-work", model: "claude-opus-4-8" })
+    );
 
     const currentRuntimeBefore = db.prepare(
       "SELECT * FROM provider_session_runtime WHERE thread_id = 'thread-codex'"
@@ -228,7 +244,7 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
       "SELECT * FROM projection_thread_sessions WHERE thread_id = 'thread-unknown-provider'"
     ).get();
     for (const [column, value] of Object.entries(currentRuntimeBefore)) {
-      if (column !== "runtime_payload_json") {
+      if (column !== "runtime_payload_json" && column !== "provider_instance_id") {
         assert.deepStrictEqual(
           currentRuntimeAfter[column],
           value,
@@ -237,6 +253,7 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
       }
     }
     const currentRuntimePayload = JSON.parse(currentRuntimeAfter.runtime_payload_json);
+    assert.strictEqual(currentRuntimeAfter.provider_instance_id, "codex");
     assert.strictEqual(currentRuntimePayload.model, UCSD.restrictedCodexModel);
     assert.deepStrictEqual(currentRuntimePayload.modelSelection, {
       instanceId: "codex",
@@ -246,7 +263,7 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     assert.strictEqual(currentRuntimePayload.lastError, "recoverable codex error");
     assert.deepStrictEqual(currentRuntimePayload.customRuntimeField, { keep: true });
     for (const [column, value] of Object.entries(opusRuntimeBefore)) {
-      if (column !== "runtime_payload_json") {
+      if (column !== "runtime_payload_json" && column !== "provider_instance_id") {
         assert.deepStrictEqual(
           opusRuntimeAfter[column],
           value,
@@ -255,6 +272,7 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
       }
     }
     const opusRuntimePayload = JSON.parse(opusRuntimeAfter.runtime_payload_json);
+    assert.strictEqual(opusRuntimeAfter.provider_instance_id, "codex");
     assert.strictEqual(opusRuntimePayload.model, UCSD.restrictedCodexModel);
     assert.deepStrictEqual(opusRuntimePayload.modelSelection, {
       instanceId: "codex",
@@ -262,7 +280,16 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
       options: [{ id: "reasoningEffort", value: "high" }]
     });
     assert.deepStrictEqual(opusRuntimePayload.customRuntimeField, { keepOpus: true });
-    assert.deepStrictEqual(currentProjectionAfter, currentProjectionBefore);
+    for (const [column, value] of Object.entries(currentProjectionBefore)) {
+      if (column !== "provider_instance_id") {
+        assert.deepStrictEqual(
+          currentProjectionAfter[column],
+          value,
+          `routing a current Codex projection must preserve projection_thread_sessions.${column}`
+        );
+      }
+    }
+    assert.strictEqual(currentProjectionAfter.provider_instance_id, "codex");
     assert.deepStrictEqual(
       unknownProjectionAfter,
       unknownProjectionBefore,
@@ -316,6 +343,137 @@ function assertSessionMigrationPreservesCurrentCodexRows() {
     );
     repeated.close();
   });
+}
+
+function assertFrontierSessionRouteColumnsStayCoherent() {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    return;
+  }
+
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-frontier-session-route-"));
+  try {
+    const paths = getPaths(tempRoot, process.platform);
+    paths.externalModelsEnabled = true;
+    paths.onPremModelsEnabled = true;
+    writeT3CodeSettings(paths);
+
+    const stateDbPath = path.join(path.dirname(paths.t3Settings), "state.sqlite");
+    const db = new DatabaseSync(stateDbPath);
+    db.exec(`
+      CREATE TABLE provider_session_runtime (
+        thread_id TEXT PRIMARY KEY,
+        provider_name TEXT NOT NULL,
+        provider_instance_id TEXT,
+        adapter_key TEXT NOT NULL,
+        status TEXT NOT NULL,
+        resume_cursor_json TEXT,
+        runtime_payload_json TEXT
+      );
+      CREATE TABLE projection_thread_sessions (
+        thread_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        provider_name TEXT,
+        provider_instance_id TEXT
+      );
+      CREATE TABLE projection_threads (
+        thread_id TEXT PRIMARY KEY,
+        model_selection_json TEXT NOT NULL
+      );
+    `);
+    db.prepare(`
+      INSERT INTO provider_session_runtime (
+        thread_id, provider_name, provider_instance_id, adapter_key,
+        status, resume_cursor_json, runtime_payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "thread-frontier",
+      "codex",
+      "codex",
+      "codex",
+      "running",
+      null,
+      JSON.stringify({
+        model: "gpt-5.6-sol",
+        modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" }
+      })
+    );
+    db.prepare(`
+      INSERT INTO provider_session_runtime (
+        thread_id, provider_name, provider_instance_id, adapter_key,
+        status, resume_cursor_json, runtime_payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "thread-frontier-top-level",
+      "codex",
+      "codex",
+      "codex",
+      "running",
+      null,
+      JSON.stringify({ model: "gpt-5.6-sol" })
+    );
+    db.prepare(`
+      INSERT INTO projection_thread_sessions (
+        thread_id, status, provider_name, provider_instance_id
+      ) VALUES (?, ?, ?, ?)
+    `).run("thread-frontier", "running", "codex", "codex");
+    db.prepare(`
+      INSERT INTO projection_threads (thread_id, model_selection_json)
+      VALUES (?, ?)
+    `).run(
+      "thread-frontier",
+      JSON.stringify({ instanceId: "codex", model: "gpt-5.6-sol" })
+    );
+    db.close();
+
+    const firstRun = runDefaultsPatcher(paths);
+    assert.strictEqual(firstRun.status, 0, firstRun.stderr);
+
+    const patched = new DatabaseSync(stateDbPath);
+    const runtime = patched.prepare(
+      "SELECT provider_instance_id, runtime_payload_json FROM provider_session_runtime WHERE thread_id = 'thread-frontier'"
+    ).get();
+    const topLevelRuntime = patched.prepare(
+      "SELECT provider_instance_id, runtime_payload_json FROM provider_session_runtime WHERE thread_id = 'thread-frontier-top-level'"
+    ).get();
+    const projectionSession = patched.prepare(
+      "SELECT provider_instance_id FROM projection_thread_sessions"
+    ).get();
+    const projectionThread = patched.prepare(
+      "SELECT model_selection_json FROM projection_threads"
+    ).get();
+    assert.strictEqual(runtime.provider_instance_id, "codex_frontier");
+    assert.strictEqual(
+      JSON.parse(runtime.runtime_payload_json).modelSelection.instanceId,
+      "codex_frontier"
+    );
+    assert.strictEqual(topLevelRuntime.provider_instance_id, "codex_frontier");
+    assert.strictEqual(
+      JSON.parse(topLevelRuntime.runtime_payload_json).modelSelection.instanceId,
+      "codex_frontier"
+    );
+    assert.strictEqual(projectionSession.provider_instance_id, "codex_frontier");
+    assert.strictEqual(
+      JSON.parse(projectionThread.model_selection_json).instanceId,
+      "codex_frontier"
+    );
+    patched.close();
+
+    const secondRun = runDefaultsPatcher(paths);
+    assert.strictEqual(secondRun.status, 0, secondRun.stderr);
+    const repeated = new DatabaseSync(stateDbPath);
+    assert.strictEqual(
+      repeated.prepare(
+        "SELECT provider_instance_id FROM provider_session_runtime WHERE thread_id = 'thread-frontier'"
+      ).get().provider_instance_id,
+      "codex_frontier"
+    );
+    repeated.close();
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertValidUnknownSettingsSurvive() {
@@ -887,6 +1045,7 @@ function assertWindowsDaclCoversReplacementAndBackup() {
 
 function main() {
   assertSessionMigrationPreservesCurrentCodexRows();
+  assertFrontierSessionRouteColumnsStayCoherent();
   assertValidUnknownSettingsSurvive();
   assertLiveWriterDiscardsMalformedProviderEnvironment();
   assertDevelopmentSettingsAreNotManaged();
