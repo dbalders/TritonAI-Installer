@@ -1052,7 +1052,10 @@ async function runDryRun(platform, options) {
     assert.strictEqual(codexVerifyRuns.length, 1, "managed Codex verify should use the resolved binary path");
 
     const t3Settings = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
-    assert.strictEqual(t3Settings.textGenerationModelSelection.instanceId, "codex");
+    assert.strictEqual(
+      t3Settings.textGenerationModelSelection.instanceId,
+      UCSD.modelRoute(expectedModel) === "frontier" ? "codex_frontier" : "codex"
+    );
     assert.strictEqual(t3Settings.textGenerationModelSelection.model, expectedModel);
     assert.strictEqual(t3Settings.providers.codex.enabled, true);
     assert.strictEqual(t3Settings.providers.codex.binaryPath, managedCodex);
