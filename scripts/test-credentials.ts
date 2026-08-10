@@ -7,8 +7,11 @@ const {
   normalizeCredentialBundle
 } = require("../src/installer/credentials");
 const { readCredentialsFromEnvText } = require("../src/installer/existing-api-key");
-const { classifyModelAccess } = require("../src/installer/tritonai-connection");
-const { buildMacEnvironmentLines } = require("../src/installer/profile");
+const {
+  __test: { assertJsonResponseWithinLimit, MAX_JSON_RESPONSE_BYTES },
+  classifyModelAccess
+} = require("../src/installer/tritonai-connection");
+const { buildMacEnvironmentLines, buildWindowsEnvironmentLines } = require("../src/installer/profile");
 const { buildEnv } = require("../src/installer/runner");
 
 async function main() {
@@ -42,6 +45,19 @@ async function main() {
   assert(environmentLines.some((line) => line.includes("TRITONAI_ONPREM_API_KEY='on-prem-key'")));
   assert(environmentLines.some((line) => line.includes("TRITONAI_FRONTIER_API_KEY='frontier-key'")));
   assert(!environmentLines.some((line) => line.includes("TRITONAI_API_KEY=")));
+  assert(environmentLines.includes(
+    "unset TRITONAI_API_KEY TRITONAI_ONPREM_API_KEY TRITONAI_FRONTIER_API_KEY"
+  ));
+  const windowsEnvironmentLines = buildWindowsEnvironmentLines({
+    credentials: split.credentials,
+    pathEntries: ["C:\\managed\\bin"],
+    tritonAiEnvironment: { UCSD_AI_BASE_URL: "https://example.invalid/v1" }
+  });
+  for (const name of [UCSD.apiKeyEnv, UCSD.onPremApiKeyEnv, UCSD.frontierApiKeyEnv]) {
+    assert(windowsEnvironmentLines.includes(
+      `Remove-Item Env:${name} -ErrorAction SilentlyContinue`
+    ));
+  }
 
   const inheritedCredentials = {
     [UCSD.apiKeyEnv]: process.env[UCSD.apiKeyEnv],
@@ -92,6 +108,11 @@ async function main() {
   assert.deepStrictEqual(classifyModelAccess({
     data: [{ id: "api-glm-5.2" }]
   }), { onPrem: true, frontier: false });
+  assert.doesNotThrow(() => assertJsonResponseWithinLimit(MAX_JSON_RESPONSE_BYTES));
+  assert.throws(
+    () => assertJsonResponseWithinLimit(MAX_JSON_RESPONSE_BYTES + 1),
+    /unexpectedly large response/
+  );
 
   console.log("Credential routing tests passed.");
 }

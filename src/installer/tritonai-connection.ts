@@ -1,6 +1,8 @@
 const https = require("https");
 const { UCSD } = require("./constants");
 
+const MAX_JSON_RESPONSE_BYTES = 1024 * 1024;
+
 interface ConnectionResponse {
   statusCode: number;
   body: unknown;
@@ -12,6 +14,14 @@ interface RequestJsonOptions {
   apiKey: string;
   timeoutMs: number;
   body?: unknown;
+}
+
+function assertJsonResponseWithinLimit(byteLength: number) {
+  if (byteLength > MAX_JSON_RESPONSE_BYTES) {
+    throw new Error(
+      "TritonAI returned an unexpectedly large response. Try again or check UC San Diego TritonAI status."
+    );
+  }
 }
 
 async function checkTritonAiConnection({ apiKey, baseUrl = UCSD.baseUrl, timeoutMs = 10000 }) {
@@ -137,12 +147,22 @@ function requestJson({ url, method = "GET", apiKey, timeoutMs, body }: RequestJs
     }, (response) => {
       const chunks: Buffer[] = [];
       let byteLength = 0;
+      let overflowError: Error | null = null;
       response.on("data", (chunk) => {
+        if (overflowError) return;
         const bytes = Buffer.from(chunk);
         byteLength += bytes.length;
-        if (byteLength <= 1024 * 1024) chunks.push(bytes);
+        try {
+          assertJsonResponseWithinLimit(byteLength);
+          chunks.push(bytes);
+        } catch (error) {
+          overflowError = error as Error;
+          response.destroy();
+          reject(overflowError);
+        }
       });
       response.on("end", () => {
+        if (overflowError) return;
         const text = Buffer.concat(chunks).toString("utf8").trim();
         let responseBody: unknown = null;
         if (text) {
@@ -170,6 +190,7 @@ function requestJson({ url, method = "GET", apiKey, timeoutMs, body }: RequestJs
 }
 
 module.exports = {
+  __test: { assertJsonResponseWithinLimit, MAX_JSON_RESPONSE_BYTES },
   checkTritonAiConnection,
   classifyModelAccess,
   modelsUrlForBase,

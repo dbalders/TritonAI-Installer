@@ -6,6 +6,12 @@ const { getTritonAiEnvironment } = require("./codex-environment");
 const { prepareWindowsEnvironmentMigration } = require("./windows-environment-migration");
 const { credentialEnvironment, normalizeCredentialBundle } = require("./credentials");
 
+const MANAGED_CREDENTIAL_NAMES = [
+  UCSD.apiKeyEnv,
+  UCSD.onPremApiKeyEnv,
+  UCSD.frontierApiKeyEnv
+];
+
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -21,6 +27,9 @@ function buildWindowsEnvironmentLines({ apiKey, credentials, pathEntries, triton
   return [
     `$env:PATH = ${powerShellLiteral(`${pathEntries.join(";")};`)} + $env:PATH`,
     ...Object.entries(tritonAiEnvironment).map(([name, value]) => `$env:${name} = ${powerShellLiteral(value)}`),
+    ...MANAGED_CREDENTIAL_NAMES.map(
+      (name) => `Remove-Item Env:${name} -ErrorAction SilentlyContinue`
+    ),
     ...credentialEntries.map(([name, value]) => `$env:${name} = ${powerShellLiteral(value)}`)
   ].filter(Boolean);
 }
@@ -32,6 +41,7 @@ function buildMacEnvironmentLines({ apiKey, credentials, pathEntries, tritonAiEn
   return [
     `export PATH=${shellQuote(pathEntries.join(":"))}:$PATH`,
     ...Object.entries(tritonAiEnvironment).map(([name, value]) => `export ${name}=${shellQuote(value)}`),
+    `unset ${MANAGED_CREDENTIAL_NAMES.join(" ")}`,
     ...credentialEntries.map(([name, value]) => `export ${name}=${shellQuote(value)}`)
   ].filter(Boolean);
 }
