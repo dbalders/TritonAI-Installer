@@ -9,7 +9,11 @@ const {
 } = require("../src/installer/credentials");
 const { readCredentialsFromEnvText } = require("../src/installer/existing-api-key");
 const {
-  __test: { assertJsonResponseWithinLimit, MAX_JSON_RESPONSE_BYTES },
+  __test: {
+    assertJsonResponseWithinLimit,
+    MAX_JSON_RESPONSE_BYTES,
+    probeFallbackModelAccess
+  },
   classifyModelAccess
 } = require("../src/installer/tritonai-connection");
 const { buildMacEnvironmentLines, buildWindowsEnvironmentLines } = require("../src/installer/profile");
@@ -125,6 +129,22 @@ async function main() {
   assert.deepStrictEqual(classifyModelAccess({
     data: [{ id: "api-glm-5.2" }]
   }), { onPrem: true, frontier: false });
+  assert.deepStrictEqual(
+    await probeFallbackModelAccess(
+      { apiKey: "frontier-key", baseUrl: "https://example.invalid/v1", timeoutMs: 1000 },
+      async ({ model }) => model === UCSD.externalModelProbe
+    ),
+    { onPrem: false, frontier: true },
+    "fallback probing must not grant on-prem access to a frontier-only key"
+  );
+  assert.deepStrictEqual(
+    await probeFallbackModelAccess(
+      { apiKey: "on-prem-key", baseUrl: "https://example.invalid/v1", timeoutMs: 1000 },
+      async ({ model }) => model === UCSD.restrictedCodexModel
+    ),
+    { onPrem: true, frontier: false },
+    "fallback probing must classify on-prem-only keys independently"
+  );
   assert.doesNotThrow(() => assertJsonResponseWithinLimit(MAX_JSON_RESPONSE_BYTES));
   assert.throws(
     () => assertJsonResponseWithinLimit(MAX_JSON_RESPONSE_BYTES + 1),

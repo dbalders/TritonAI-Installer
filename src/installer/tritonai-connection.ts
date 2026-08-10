@@ -41,13 +41,11 @@ async function checkTritonAiConnection({ apiKey, baseUrl = UCSD.baseUrl, timeout
     && typeof response.body === "object"
     && Array.isArray((response.body as { data?: unknown }).data);
   if (!modelCatalogReported) {
-    const externalModelsEnabled = await canSendExternalModelMessage({
+    access = await probeFallbackModelAccess({
       apiKey,
       baseUrl,
-      timeoutMs,
-      model: UCSD.externalModelProbe
+      timeoutMs
     });
-    access = { onPrem: true, frontier: externalModelsEnabled };
   }
 
   return {
@@ -104,6 +102,27 @@ function chatCompletionsUrlForBase(baseUrl) {
   url.search = "";
   url.hash = "";
   return url;
+}
+
+async function probeFallbackModelAccess(
+  { apiKey, baseUrl, timeoutMs },
+  canSendModelMessage = canSendExternalModelMessage
+) {
+  const [onPrem, frontier] = await Promise.all([
+    canSendModelMessage({
+      apiKey,
+      baseUrl,
+      timeoutMs,
+      model: UCSD.restrictedCodexModel
+    }),
+    canSendModelMessage({
+      apiKey,
+      baseUrl,
+      timeoutMs,
+      model: UCSD.externalModelProbe
+    })
+  ]);
+  return { onPrem, frontier };
 }
 
 async function canSendExternalModelMessage({ apiKey, baseUrl, timeoutMs, model }) {
@@ -190,7 +209,11 @@ function requestJson({ url, method = "GET", apiKey, timeoutMs, body }: RequestJs
 }
 
 module.exports = {
-  __test: { assertJsonResponseWithinLimit, MAX_JSON_RESPONSE_BYTES },
+  __test: {
+    assertJsonResponseWithinLimit,
+    MAX_JSON_RESPONSE_BYTES,
+    probeFallbackModelAccess
+  },
   checkTritonAiConnection,
   classifyModelAccess,
   modelsUrlForBase,
