@@ -34,7 +34,6 @@ interface InstallPayload {
 
 interface CredentialCheckPayload {
   apiKeys?: string[];
-  existingCredentialHandle?: string;
 }
 
 interface CredentialCheckResponse {
@@ -68,7 +67,7 @@ interface InstallerPlatformInfo {
   managedConfig: {
     apiDocsUrl: string;
   };
-  existingCredentials: { handle: string; source: string; keyCount: number } | null;
+  existingCredentials: { apiKeys: string[]; source: string } | null;
 }
 
 interface InstallerApi {

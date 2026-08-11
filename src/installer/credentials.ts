@@ -44,16 +44,6 @@ function credentialValues(credentials: TritonAiCredentials): string[] {
   return [...new Set(Object.values(credentialEnvironment(credentials)))];
 }
 
-function mergeCredentialValues(
-  existingCredentials: TritonAiCredentials | undefined,
-  apiKeys: unknown
-): unknown[] {
-  return [
-    ...credentialValues(existingCredentials || {}),
-    ...(Array.isArray(apiKeys) ? apiKeys : [])
-  ];
-}
-
 function primaryApiKey(credentials: TritonAiCredentials): string {
   const normalized = normalizeCredentialBundle(credentials);
   return normalized.sharedApiKey || normalized.onPremApiKey || normalized.frontierApiKey || "";
@@ -143,7 +133,6 @@ module.exports = {
   checkAndAssignCredentials,
   credentialEnvironment,
   credentialValues,
-  mergeCredentialValues,
   normalizeCredentialBundle,
   primaryApiKey
 };

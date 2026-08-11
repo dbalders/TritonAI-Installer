@@ -18,8 +18,7 @@ const { findExistingCredentials } = require("./installer/existing-api-key");
 const { checkTritonAiConnection } = require("./installer/tritonai-connection");
 const {
   checkAndAssignCredentials,
-  credentialValues,
-  mergeCredentialValues
+  credentialValues
 } = require("./installer/credentials");
 const { readPluginCompositionRequirement } = require("./installer/plugins");
 
@@ -128,9 +127,8 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
       },
       existingCredentials: existing
         ? {
-            handle: storeCredentialSession(existing.credentials),
             source: existing.source,
-            keyCount: credentialValues(existing.credentials).length
+            apiKeys: credentialValues(existing.credentials)
           }
         : null
     };
@@ -150,15 +148,8 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
   });
 
   ipcMain.handle("installer:check-access", async (_event, payload: CredentialCheckPayload = {}) => {
-    const existingCredentials = payload.existingCredentialHandle
-      ? credentialSessions.get(payload.existingCredentialHandle)
-      : undefined;
-    if (payload.existingCredentialHandle && !existingCredentials) {
-      throw new Error("The saved access-key session expired. Enter the key again to continue.");
-    }
-    const apiKeys = mergeCredentialValues(existingCredentials, payload.apiKeys);
     const result = await checkAndAssignCredentials({
-      apiKeys,
+      apiKeys: payload.apiKeys || [],
       checkConnection: checkTritonAiConnection,
       baseUrl: UCSD.baseUrl,
       timeoutMs: 10_000

@@ -1497,10 +1497,6 @@ input:focus {
   flex-wrap: wrap;
 }
 
-.replace-existing-credentials[hidden] {
-  display: none;
-}
-
 .form .actions,
 .actions {
   display: flex;

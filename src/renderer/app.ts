@@ -10,9 +10,8 @@ interface RendererState {
   detailProgress: Record<string, number>;
   progressValue: number;
   credentialError: string | null;
-  existingCredentialHandle: string;
   credentialHandle: string;
-  replacingExistingCredentials: boolean;
+  prefilledCredentialCount: number;
   secondKeyVisible: boolean;
   supportInfo: DiagnosticsInfo | null;
 }
@@ -27,9 +26,8 @@ const state: RendererState = {
   detailProgress: {},
   progressValue: 0,
   credentialError: null,
-  existingCredentialHandle: "",
   credentialHandle: "",
-  replacingExistingCredentials: false,
+  prefilledCredentialCount: 0,
   secondKeyVisible: false,
   supportInfo: null
 };
@@ -105,9 +103,6 @@ const secondaryApiKeyInput = document.getElementById("api-key-secondary") as HTM
 const secondaryApiKeyVisibilityToggle = document.getElementById("api-key-secondary-visibility-toggle") as HTMLButtonElement | null;
 const secondaryKeyGroup = document.getElementById("secondary-key-group");
 const multipleKeyToggle = document.getElementById("multiple-key-toggle") as HTMLButtonElement;
-const replaceExistingCredentialsButton = document.getElementById(
-  "replace-existing-credentials"
-) as HTMLButtonElement;
 const continueButton = document.getElementById("continue-button") as HTMLButtonElement;
 
 function show(panelName) {
@@ -226,12 +221,18 @@ function updateDocsControls() {
 }
 
 function useExistingCredentials(existingCredentials) {
-  const handle = existingCredentials && typeof existingCredentials.handle === "string"
-    ? existingCredentials.handle
-    : "";
-  if (!handle || apiKeyInput.value.trim()) return;
-  state.existingCredentialHandle = handle;
-  state.replacingExistingCredentials = false;
+  const apiKeys = existingCredentials && Array.isArray(existingCredentials.apiKeys)
+    ? existingCredentials.apiKeys
+        .filter((value) => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .slice(0, 2)
+    : [];
+  if (apiKeys.length === 0 || apiKeyInput.value.trim()) return;
+  apiKeyInput.value = apiKeys[0];
+  secondaryApiKeyInput.value = apiKeys[1] || "";
+  state.prefilledCredentialCount = apiKeys.length;
+  setSecondKeyVisible(apiKeys.length > 1);
   updateCredentialControls();
 }
 
@@ -712,18 +713,15 @@ function brandCopy(value) {
 
 function updateCredentialControls() {
   const hasApiKey = Boolean(apiKeyInput.value.trim());
-  const hasExistingCredentials = Boolean(state.existingCredentialHandle);
   const hasSecondaryKey = !state.secondKeyVisible || Boolean(secondaryApiKeyInput.value.trim());
   const isChecking = state.installPhase === "checking";
   const isInstalling = state.installPhase === "running";
   const isComplete = state.installPhase === "complete";
   const credentialControlsLocked = isChecking || isInstalling || isComplete;
-  continueButton.disabled = (!(hasApiKey && hasSecondaryKey) && !hasExistingCredentials)
-    || credentialControlsLocked;
+  continueButton.disabled = !(hasApiKey && hasSecondaryKey) || credentialControlsLocked;
   apiKeyInput.disabled = credentialControlsLocked;
   secondaryApiKeyInput.disabled = credentialControlsLocked;
   multipleKeyToggle.disabled = credentialControlsLocked;
-  replaceExistingCredentialsButton.disabled = credentialControlsLocked;
   if (apiKeyVisibilityToggle) apiKeyVisibilityToggle.disabled = credentialControlsLocked;
   if (secondaryApiKeyVisibilityToggle) {
     secondaryApiKeyVisibilityToggle.disabled = credentialControlsLocked;
@@ -732,7 +730,7 @@ function updateCredentialControls() {
   continueButton.textContent = isChecking ? "Checking access..." : "Check access & install";
   if (apiKeyHelp) {
     apiKeyHelp.classList.toggle("is-error", Boolean(state.credentialError));
-    apiKeyHelp.classList.toggle("is-ready", (hasApiKey || hasExistingCredentials) && !state.credentialError);
+    apiKeyHelp.classList.toggle("is-ready", hasApiKey && !state.credentialError);
   }
   apiKeyInput.setAttribute("aria-invalid", state.credentialError ? "true" : "false");
   const inputWrap = apiKeyInput.closest(".input-wrap");
@@ -742,20 +740,12 @@ function updateCredentialControls() {
   if (apiKeyHelp) {
     apiKeyHelp.textContent = state.credentialError || getCredentialHelpText(hasApiKey);
   }
-  if (replaceExistingCredentialsButton) {
-    replaceExistingCredentialsButton.hidden = !hasExistingCredentials;
-  }
 }
 
-function getCredentialHelpText(hasApiKey) {
-  if (state.replacingExistingCredentials) {
-    return "Enter the replacement access key setup for this computer.";
-  }
-  if (state.existingCredentialHandle && !hasApiKey) {
-    return "Found a saved TritonAI access setup. Add a key only if you need another model route.";
-  }
-  if (state.existingCredentialHandle && hasApiKey) {
-    return "We’ll check this key together with the saved access setup.";
+function getCredentialHelpText(_hasApiKey) {
+  if (state.prefilledCredentialCount > 0) {
+    const noun = state.prefilledCredentialCount === 1 ? "key" : "keys";
+    return `Found ${state.prefilledCredentialCount} saved access ${noun}. Leave ${state.prefilledCredentialCount === 1 ? "it" : "them"} as-is or edit the fields to replace ${state.prefilledCredentialCount === 1 ? "it" : "them"}.`;
   }
 
   return state.secondKeyVisible
@@ -794,6 +784,7 @@ function getAccessCheckErrorMessage(error) {
 
 function handleCredentialInput() {
   state.credentialHandle = "";
+  state.prefilledCredentialCount = 0;
   clearCredentialError();
 }
 
@@ -831,7 +822,7 @@ function setSecondKeyVisible(isVisible) {
     apiKeyInput.value.trim(),
     ...(state.secondKeyVisible ? [secondaryApiKeyInput.value.trim()] : [])
   ].filter(Boolean);
-  if (apiKeys.length === 0 && !state.existingCredentialHandle) {
+  if (apiKeys.length === 0) {
     apiKeyInput.setCustomValidity("Enter your TritonAI access key to continue.");
     apiKeyInput.reportValidity();
     updateCredentialControls();
@@ -840,7 +831,6 @@ function setSecondKeyVisible(isVisible) {
   if (
     state.secondKeyVisible
     && !secondaryApiKeyInput.value.trim()
-    && !state.existingCredentialHandle
   ) {
     secondaryApiKeyInput.setCustomValidity("Enter the additional access key or choose Use one key.");
     secondaryApiKeyInput.reportValidity();
@@ -851,15 +841,10 @@ function setSecondKeyVisible(isVisible) {
   updateCredentialControls();
   try {
     const result = await installerApi.checkAccess({
-      ...(state.existingCredentialHandle
-        ? { existingCredentialHandle: state.existingCredentialHandle }
-        : {}),
       apiKeys
     });
     state.credentialHandle = result.credentialHandle;
     if (apiKeyHelp) apiKeyHelp.textContent = describeModelAccess(result.access);
-    apiKeyInput.value = "";
-    secondaryApiKeyInput.value = "";
     await startInstallFlow();
   } catch (error) {
     state.installPhase = "idle";
@@ -898,15 +883,6 @@ secondaryApiKeyVisibilityToggle?.addEventListener("click", () => {
 multipleKeyToggle?.addEventListener("click", () => {
   setSecondKeyVisible(!state.secondKeyVisible);
   (state.secondKeyVisible ? secondaryApiKeyInput : apiKeyInput).focus();
-});
-
-replaceExistingCredentialsButton?.addEventListener("click", () => {
-  state.existingCredentialHandle = "";
-  state.replacingExistingCredentials = true;
-  state.credentialHandle = "";
-  clearCredentialError();
-  updateCredentialControls();
-  apiKeyInput.focus();
 });
 
 document.getElementById("open-docs")?.addEventListener("click", () => {
@@ -1086,8 +1062,7 @@ function createPreviewInstallerApi(): InstallerApi {
       if (url) window.open(url, "_blank", "noopener,noreferrer");
     },
     checkAccess: async (payload) => {
-      const count = (payload.apiKeys?.filter(Boolean).length || 0)
-        + (payload.existingCredentialHandle ? 1 : 0);
+      const count = payload.apiKeys?.filter(Boolean).length || 0;
       await new Promise((resolve) => setTimeout(resolve, 350));
       return {
         credentialHandle: "preview-credentials",
