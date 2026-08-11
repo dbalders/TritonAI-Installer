@@ -115,6 +115,7 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), 
 const windowsPackageScript = packageJson.scripts?.["package:win-installer"] || "";
 const signedWindowsPackageScript = packageJson.scripts?.["package:win-installer:signed"] || "";
 const nativeWindowsVerificationScript = packageJson.scripts?.["verify:win-installer:native"] || "";
+const explicitPluginPrepareScript = packageJson.scripts?.["prepare:plugins-vendor"] || "";
 for (const [name, script, ending] of [
   ["package:win-installer", windowsPackageScript, "node dist/scripts/package-windows-unsigned.js"],
   ["package:win-installer:signed", signedWindowsPackageScript, "node dist/scripts/windows-signing.js"]
@@ -135,6 +136,9 @@ if (!signedWindowsPackageScript.includes("prepare:t3code-desktop-vendor:win:comp
 }
 if (nativeWindowsVerificationScript !== "npm run build && node dist/scripts/verify-windows-unsigned-release.js") {
   throw new Error("Unsigned Windows native verification must run the exact-candidate verifier.");
+}
+if (explicitPluginPrepareScript !== "npm run build && npm run prepare:plugins-vendor:compiled --") {
+  throw new Error("Explicit plugin preparation must forward release selectors such as --production.");
 }
 
 for (const scriptName of [
