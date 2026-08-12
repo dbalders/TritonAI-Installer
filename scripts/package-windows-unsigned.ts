@@ -53,6 +53,42 @@ function unsignedWindowsReleaseArtifacts(repositoryRoot, version) {
   ];
 }
 
+function writeWindowsUpdateManifest({
+  repositoryRoot = root,
+  version,
+  releaseDate = new Date().toISOString()
+}) {
+  if (!/^\d+\.\d+\.\d+$/.test(String(version || ""))) {
+    throw new Error(`Windows update manifest requires a stable semantic version; found ${version}.`);
+  }
+  if (!Number.isFinite(Date.parse(releaseDate))) {
+    throw new Error(`Windows update manifest requires a valid release date; found ${releaseDate}.`);
+  }
+  const output = path.join(repositoryRoot, "artifacts", "windows-installer");
+  const fileName = `TritonAI-Installer-Setup-${version}-x64.exe`;
+  const setupPath = path.join(output, fileName);
+  if (!fs.existsSync(setupPath) || !fs.lstatSync(setupPath).isFile()) {
+    throw new Error(`Windows update manifest is missing its Setup executable: ${setupPath}`);
+  }
+  const size = fs.statSync(setupPath).size;
+  const digest = crypto.createHash("sha512").update(fs.readFileSync(setupPath)).digest("base64");
+  const manifestPath = path.join(output, "latest.yml");
+  const temporaryPath = `${manifestPath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, [
+    `version: ${version}`,
+    "files:",
+    `  - url: ${fileName}`,
+    `    sha512: ${digest}`,
+    `    size: ${size}`,
+    `path: ${fileName}`,
+    `sha512: ${digest}`,
+    `releaseDate: '${new Date(releaseDate).toISOString()}'`,
+    ""
+  ].join("\n"), "utf8");
+  fs.renameSync(temporaryPath, manifestPath);
+  return manifestPath;
+}
+
 function writeUnsignedWindowsReleaseProof({ repositoryRoot = root, version }) {
   if (!/^\d+\.\d+\.\d+$/.test(String(version || ""))) {
     throw new Error(`Unsigned Windows release proof requires a stable semantic version; found ${version}.`);
@@ -199,6 +235,7 @@ async function main() {
     if (previousAutoDiscovery === undefined) delete process.env.CSC_IDENTITY_AUTO_DISCOVERY;
     else process.env.CSC_IDENTITY_AUTO_DISCOVERY = previousAutoDiscovery;
   }
+  writeWindowsUpdateManifest({ version: pkg.version });
   const proof = writeUnsignedWindowsReleaseProof({ version: pkg.version });
   console.log(`Unsigned Windows release hashes written to ${path.relative(root, proof.proofPath)}`);
   console.log(`Unsigned Windows checksums written to ${path.relative(root, proof.checksumPath)}`);
@@ -225,5 +262,6 @@ module.exports = {
   proofRelativePath,
   unsignedWindowsReleaseArtifacts,
   verifyUnsignedWindowsReleaseProof,
+  writeWindowsUpdateManifest,
   writeUnsignedWindowsReleaseProof
 };
