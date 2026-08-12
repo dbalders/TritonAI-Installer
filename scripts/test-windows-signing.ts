@@ -21,6 +21,7 @@ const {
   createUnsignedWindowsBuilderConfiguration,
   unsignedWindowsReleaseArtifacts,
   verifyUnsignedWindowsReleaseProof,
+  writeWindowsUpdateManifest,
   writeUnsignedWindowsReleaseProof
 } = require("./package-windows-unsigned");
 const {
@@ -235,9 +236,29 @@ function assertUnsignedReleaseContract() {
     const artifactPaths = unsignedWindowsReleaseArtifacts(tempRoot, version);
     for (const [index, artifactPath] of artifactPaths.entries()) {
       fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+      if (index === 3) continue;
       if (index === 0 || index === 2) writePeFixture(artifactPath);
       else fs.writeFileSync(artifactPath, `fixture:${path.basename(artifactPath)}`);
     }
+    const releaseDate = "2026-08-12T07:30:00.000Z";
+    assert.strictEqual(writeWindowsUpdateManifest({
+      repositoryRoot: tempRoot,
+      version,
+      releaseDate
+    }), artifactPaths[3]);
+    const setupBytes = fs.readFileSync(artifactPaths[0]);
+    const setupSha512 = require("crypto").createHash("sha512").update(setupBytes).digest("base64");
+    assert.strictEqual(fs.readFileSync(artifactPaths[3], "utf8"), [
+      `version: ${version}`,
+      "files:",
+      `  - url: ${path.basename(artifactPaths[0])}`,
+      `    sha512: ${setupSha512}`,
+      `    size: ${setupBytes.length}`,
+      `path: ${path.basename(artifactPaths[0])}`,
+      `sha512: ${setupSha512}`,
+      `releaseDate: '${releaseDate}'`,
+      ""
+    ].join("\n"));
     const result = writeUnsignedWindowsReleaseProof({ repositoryRoot: tempRoot, version });
     assert.strictEqual(result.proof.trustMode, "unsigned");
     assert.strictEqual(result.proof.artifacts.length, 4);
