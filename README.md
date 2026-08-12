@@ -51,7 +51,7 @@ Packaged builds use the canonical `edu.ucsd.tritonai.installer` application iden
 
 Managed plugins have a separate, fail-closed source contract. Stable macOS and Windows release
 packaging resolves the highest canonical `vMAJOR.MINOR.PATCH` Plugins tag at the start of the run,
-freezes its exact commit, and selects the production `github`, `google-workspace`, and `microsoft-365`
+freezes its exact commit, and selects the production `github`, `google-workspace`, `microsoft-365`, and `n8n`
 packages. Every Harness release must publish an artifact-bound composition proof for that exact
 selection. A moving branch such as `main` and nearby `TritonAI-Plugins` checkouts are never used
 automatically.
@@ -64,7 +64,7 @@ pins override automatic latest-release selection:
 ```sh
 export TRITONAI_PLUGINS_REF="refs/tags/v0.1.0"
 export TRITONAI_PLUGINS_COMMIT="<full 40-character commit SHA>"
-export TRITONAI_PLUGIN_IDS="github,google-workspace,microsoft-365"
+export TRITONAI_PLUGIN_IDS="github,google-workspace,microsoft-365,n8n"
 ```
 
 `TRITONAI_PLUGINS_REPO` may select another transport URL only when Git resolves it to canonical

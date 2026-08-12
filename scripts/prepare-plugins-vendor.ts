@@ -21,7 +21,7 @@ const TOOL_NAME = /^[a-z][a-z0-9_.-]*$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 // Production inclusion is an explicit reviewed allowlist, independent of packages present in a release tag.
-const DEFAULT_RELEASE_PLUGIN_IDS = ["github", "google-workspace", "microsoft-365"];
+const DEFAULT_RELEASE_PLUGIN_IDS = ["github", "google-workspace", "microsoft-365", "n8n"];
 
 function main(env = process.env, args = process.argv.slice(2)) {
   const options = parseArguments(args);
