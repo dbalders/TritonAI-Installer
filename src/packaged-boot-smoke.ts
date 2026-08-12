@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const SMOKE_MARKER_ARGUMENT = "--tritonai-installer-smoke-marker=";
+const SMOKE_MARKER_ENVIRONMENT = "TRITONAI_INSTALLER_SMOKE_MARKER";
 const SMOKE_MARKER_NAME = /^tritonai-installer-smoke-[a-zA-Z0-9._-]+\.json$/;
 
 interface PackagedBootSmokeRequest {
@@ -22,11 +23,15 @@ interface PackagedBootSmokeMarker {
 
 function readPackagedBootSmokeRequest(
   args: string[],
-  temporaryDirectory: string
+  temporaryDirectory: string,
+  environment: NodeJS.ProcessEnv = process.env
 ): PackagedBootSmokeRequest | null {
   const values = args
     .filter((argument) => argument.startsWith(SMOKE_MARKER_ARGUMENT))
     .map((argument) => argument.slice(SMOKE_MARKER_ARGUMENT.length));
+  if (environment[SMOKE_MARKER_ENVIRONMENT]) {
+    values.push(environment[SMOKE_MARKER_ENVIRONMENT]);
+  }
   if (values.length === 0) return null;
   if (values.length !== 1 || !values[0]) {
     throw new Error("Packaged boot smoke testing requires exactly one marker path.");

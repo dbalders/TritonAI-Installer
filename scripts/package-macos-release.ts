@@ -269,9 +269,14 @@ function runPackagedBootSmoke(mountedApp) {
   const markerPath = path.join(os.tmpdir(), `tritonai-installer-smoke-macos-${process.pid}-${Date.now()}.json`);
   const userDataPath = `${markerPath}.userdata`;
   const executable = path.join(mountedApp, "Contents", "MacOS", "TritonAI Installer");
+  const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...nativeEnvironment } = process.env;
   try {
-    const result = spawnSync(executable, [`--tritonai-installer-smoke-marker=${markerPath}`], {
+    const result = spawnSync(executable, [], {
       cwd: root,
+      env: {
+        ...nativeEnvironment,
+        TRITONAI_INSTALLER_SMOKE_MARKER: markerPath
+      },
       encoding: "utf8",
       timeout: 30_000,
       stdio: ["ignore", "pipe", "pipe"]
