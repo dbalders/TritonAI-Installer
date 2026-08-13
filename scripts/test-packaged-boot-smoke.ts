@@ -11,7 +11,7 @@ const {
 function main() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-smoke-contract-"));
   try {
-    assert.strictEqual(readPackagedBootSmokeRequest([], tempRoot), null);
+    assert.strictEqual(readPackagedBootSmokeRequest([], tempRoot, {}), null);
     assert.throws(
       () => readPackagedBootSmokeRequest([
         `--tritonai-installer-smoke-marker=${path.join(tempRoot, "wrong-name.json")}`
@@ -31,6 +31,21 @@ function main() {
     ], tempRoot);
     assert.strictEqual(request.markerPath, markerPath);
     assert.strictEqual(request.userDataPath, `${markerPath}.userdata`);
+    const environmentRequest = readPackagedBootSmokeRequest([], tempRoot, {
+      TRITONAI_INSTALLER_SMOKE_MARKER: path.join(tempRoot, "tritonai-installer-smoke-environment.json")
+    });
+    assert.strictEqual(
+      environmentRequest.markerPath,
+      path.join(tempRoot, "tritonai-installer-smoke-environment.json")
+    );
+    assert.throws(
+      () => readPackagedBootSmokeRequest([
+        `--tritonai-installer-smoke-marker=${path.join(tempRoot, "tritonai-installer-smoke-argument.json")}`
+      ], tempRoot, {
+        TRITONAI_INSTALLER_SMOKE_MARKER: path.join(tempRoot, "tritonai-installer-smoke-environment.json")
+      }),
+      /exactly one marker path/
+    );
     assert.throws(() => assertInstallMutationAllowed(request), /cannot start installation or mutate/);
     assert.doesNotThrow(() => assertInstallMutationAllowed(null));
     writePackagedBootSmokeMarker(request, {
