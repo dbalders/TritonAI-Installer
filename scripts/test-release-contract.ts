@@ -188,6 +188,8 @@ function main() {
     assert.strictEqual(winConfig.portable.artifactName, "TritonAI-Installer-${version}-${arch}-portable.${ext}");
     assert.strictEqual(macConfig.appId, "edu.ucsd.tritonai.installer");
     assert.strictEqual(winConfig.appId, "edu.ucsd.tritonai.installer");
+    assert(macConfig.files.includes("LICENSE"), "macOS application packaging must carry the Installer MIT license");
+    assert(winConfig.files.includes("LICENSE"), "Windows application packaging must carry the Installer MIT license");
     const macHarnessResource = macConfig.extraResources.find((resource) => resource.to === "vendor/t3code-desktop/mac-arm64");
     assert(macHarnessResource.filter.includes("tritonai-plugin-composition.json"));
     assert.strictEqual(winConfig.asar, true, "Windows application code must be packed into ASAR");
@@ -205,6 +207,7 @@ function main() {
     assert(macConfig.extraResources.some((resource) => resource.to === "managed-plugin-composition.json"));
     assert(winConfig.extraResources.some((resource) => resource.to === "managed-plugin-composition.json"));
     const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+    assert.strictEqual(packageJson.license, "MIT");
     assert(
       packageJson.scripts["package:win-installer"].endsWith("node dist/scripts/package-windows-unsigned.js"),
       "Current Windows packaging must end at the explicit unsigned artifact proof"

@@ -71,7 +71,7 @@
     "agents"
   ],
   "author": "UC San Diego",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true,
   "overrides": {
     "@xmldom/xmldom": "0.8.13",
