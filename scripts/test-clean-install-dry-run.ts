@@ -645,7 +645,6 @@ function assertSkillsVendorStaging() {
     const vendorDir = path.join(tempRoot, "vendor", "skills");
     writeSkill(path.join(sourceRoot, "secure-review"), "secure-review");
     writeSkill(path.join(sourceRoot, "ucsd-dsmlp-deploy"), "ucsd-dsmlp-deploy");
-    fs.writeFileSync(path.join(sourceRoot, "LICENSE"), "MIT fixture license\n");
     fs.mkdirSync(path.join(sourceRoot, "docs"), { recursive: true });
 
     const result = stageSkillsFromSource({
@@ -660,7 +659,6 @@ function assertSkillsVendorStaging() {
     ]);
     assertFile(path.join(vendorDir, "secure-review", "SKILL.md"));
     assertFile(path.join(vendorDir, "ucsd-dsmlp-deploy", "SKILL.md"));
-    assertFile(path.join(vendorDir, "LICENSE"));
     assert(!fs.existsSync(path.join(vendorDir, "docs")), "non-skill support folders should not be packaged");
 
     const manifest = JSON.parse(fs.readFileSync(path.join(vendorDir, "manifest.json"), "utf8"));
@@ -673,7 +671,6 @@ function assertSkillsVendorStaging() {
     const overrideRoot = path.join(overrideSourceRoot, "fixtures");
     const overrideVendorDir = path.join(tempRoot, "vendor", "override-skills");
     writeSkill(path.join(overrideRoot, "secure-override"), "secure-override");
-    fs.writeFileSync(path.join(overrideSourceRoot, "LICENSE"), "MIT fixture license\n");
     assert.strictEqual(findSkillsSourceDir(overrideSourceRoot, "fixtures"), overrideRoot);
     const overrideResult = stageSkillsFromSource({
       sourceRoot: overrideSourceRoot,
@@ -683,7 +680,6 @@ function assertSkillsVendorStaging() {
     });
     assert.deepStrictEqual(overrideResult.skills, ["secure-override"]);
     assertFile(path.join(overrideVendorDir, "secure-override", "SKILL.md"));
-    assertFile(path.join(overrideVendorDir, "LICENSE"));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

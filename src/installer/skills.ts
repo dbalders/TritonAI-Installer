@@ -22,7 +22,6 @@ interface InstallBundledSkillsOptions extends SkillsBundleOptions {
 
 const MANAGED_SKILLS_MANIFEST_FILE = ".tritonai-managed-skills.json";
 const VENDOR_SKILLS_MANIFEST_FILE = "manifest.json";
-const VENDOR_SKILLS_LICENSE_FILE = "LICENSE";
 const LEGACY_SKILLS_MANIFEST_FILE = "manifest.json";
 const SKILLS_TRANSACTION_JOURNAL_FILE = ".tritonai-secure-skills-transaction.json";
 const SKILLS_TRANSACTION_SCHEMA_VERSION = 1;
@@ -97,7 +96,6 @@ function installBundledSkills(options: InstallBundledSkillsOptions) {
 }
 
 function readBundledManifest(source) {
-  assertBundledSkillsLicense(source);
   const manifestPath = path.join(source, VENDOR_SKILLS_MANIFEST_FILE);
   const manifest = readJsonManifest(manifestPath, "Bundled secure skills manifest");
   validateBundledSkillsProvenance(manifest);
@@ -107,17 +105,6 @@ function readBundledManifest(source) {
     throw new Error(`Bundled secure skills manifest does not match its skill directories (manifest: ${validated.skills.join(", ") || "none"}; directories: ${packagedSkills.join(", ") || "none"}).`);
   }
   return validated;
-}
-
-function assertBundledSkillsLicense(source) {
-  const licensePath = path.join(source, VENDOR_SKILLS_LICENSE_FILE);
-  if (!fs.existsSync(licensePath)) {
-    throw new Error(`Bundled secure skills license is missing: ${licensePath}`);
-  }
-  const stat = fs.lstatSync(licensePath);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error(`Bundled secure skills license must be a regular file: ${licensePath}`);
-  }
 }
 
 function validateBundledSkillsProvenance(manifest) {
@@ -579,7 +566,6 @@ module.exports = {
   MANAGED_SKILLS_MANIFEST_FILE,
   SKILLS_TRANSACTION_JOURNAL_FILE,
   VENDOR_SKILLS_MANIFEST_FILE,
-  VENDOR_SKILLS_LICENSE_FILE,
   findBundledSkillsDir,
   installBundledSkills,
   listSkillDirs,

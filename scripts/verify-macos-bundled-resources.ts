@@ -143,14 +143,6 @@ function verifyBundledSkills(skillsDir) {
   if (skills.length === 0) {
     throw new Error(`Bundled secure skills directory has no skill folders: ${skillsDir}`);
   }
-  const licensePath = path.join(skillsDir, "LICENSE");
-  if (!fs.existsSync(licensePath)) {
-    throw new Error(`Bundled secure skills license is missing: ${licensePath}`);
-  }
-  const licenseStat = fs.lstatSync(licensePath);
-  if (!licenseStat.isFile() || licenseStat.isSymbolicLink()) {
-    throw new Error(`Bundled secure skills license must be a regular file: ${licensePath}`);
-  }
   for (const name of skills) {
     const skillFile = path.join(skillsDir, name, "SKILL.md");
     if (!fs.existsSync(skillFile) || !fs.statSync(skillFile).isFile()) {
