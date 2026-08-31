@@ -127,7 +127,7 @@ async function main() {
     data: [{ id: "api-deepseek-v4-flash" }, { id: "gpt-5.6-sol" }]
   }), { onPrem: true, frontier: true });
   assert.deepStrictEqual(classifyModelAccess({
-    data: [{ id: "api-glm-5.2" }]
+    data: [{ id: "api-glm-5.3" }]
   }), { onPrem: true, frontier: false });
   assert.deepStrictEqual(
     await probeFallbackModelAccess(
