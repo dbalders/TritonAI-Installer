@@ -20,7 +20,7 @@ The first-pass guardrails are config-level and file-level:
 - Route model traffic through UCSD/TritonAI rather than arbitrary default providers.
 - Pin packaged tools to explicit reviewed versions.
 - Use npm's `--before` cutoff while staging tool payloads so transitive dependency resolution excludes packages published after the policy date.
-- Keep the cutoff synchronized in `.npmrc` and `npm-policy.ts`. The 2026-07-31 advancement admits the pinned `fast-uri` 3.1.5 security fix while the lockfile, registry signatures, and zero-high `npm audit` remain release gates.
+- Keep the cutoff synchronized in `.npmrc` and `npm-policy.ts`. The 2026-08-30 advancement admits the pinned Codex CLI 0.151.0 release and its platform payloads while the lockfile, registry signatures, and zero-high `npm audit` remain release gates.
 - Pin the TypeScript toolchain exactly, verify registry signatures and attestations after dependency changes, and advance the cutoff only after reviewing newly admitted packages.
 - Keep shared instructions in `~/.agents/ucsd/AGENTS.md`.
 - Create `~/.agents/ucsd/logs/` as the stable local log destination.
