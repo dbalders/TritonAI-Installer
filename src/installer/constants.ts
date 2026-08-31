@@ -4,9 +4,10 @@ const { defaultAppRoot } = require("./app-root");
 
 const MANAGED_CONFIG_FILE = "managed-config.json";
 const DEFAULT_BASE_URL = "https://example.invalid/v1";
-const DEFAULT_RESTRICTED_CODEX_MODEL = "api-glm-5.2";
+const DEFAULT_RESTRICTED_CODEX_MODEL = "api-glm-5.3";
 const DEFAULT_CODEX_MODEL = DEFAULT_RESTRICTED_CODEX_MODEL;
 const LEGACY_CODEX_MODEL_REPLACEMENTS = {
+  "api-glm-5.2": "api-glm-5.3",
   "gpt-5.5": "gpt-5.6-sol",
   "claude-opus-4-8": "claude-opus-5"
 };
@@ -50,9 +51,9 @@ const DEFAULT_CODEX_MODELS = {
     capabilities: withInputModalities(["text"]),
     availableToRestrictedKeys: true
   },
-  "api-glm-5.2": {
-    id: "api-glm-5.2",
-    name: "GLM 5.2",
+  "api-glm-5.3": {
+    id: "api-glm-5.3",
+    name: "GLM 5.3",
     shortName: "GLM",
     capabilities: GLM_CODEX_MODEL_CAPABILITIES,
     availableToRestrictedKeys: true

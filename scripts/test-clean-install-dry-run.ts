@@ -83,7 +83,7 @@ const {
 const EXPECTED_CODEX_MODELS = Object.keys(UCSD.codexModels);
 const EXPECTED_RESTRICTED_CODEX_MODELS = [
   "api-deepseek-v4-flash",
-  "api-glm-5.2",
+  "api-glm-5.3",
   "api-gemma-4-31b"
 ];
 
@@ -185,8 +185,8 @@ function assertManagedConfigIncludesAccessRequestUrl() {
     UCSD_AI_BASE_URL: "https://packaged.example.invalid/v1"
   });
   assert.strictEqual(defaultConfig.apiDocsUrl, DEFAULT_API_DOCS_URL);
-  assert.strictEqual(defaultConfig.codexModel, "api-glm-5.2");
-  assert.strictEqual(defaultConfig.restrictedCodexModel, "api-glm-5.2");
+  assert.strictEqual(defaultConfig.codexModel, "api-glm-5.3");
+  assert.strictEqual(defaultConfig.restrictedCodexModel, "api-glm-5.3");
 
   const overrideConfig = createManagedConfig({
     UCSD_AI_BASE_URL: "https://packaged.example.invalid/v1",
@@ -288,20 +288,20 @@ async function assertEnvironmentIsHarnessScoped() {
 
 function assertManagedModelDefaultsUseApiGlm() {
   resetManagedConfigForTests();
-  assert.strictEqual(UCSD.codexModel, "api-glm-5.2");
-  assert.strictEqual(UCSD.restrictedCodexModel, "api-glm-5.2");
+  assert.strictEqual(UCSD.codexModel, "api-glm-5.3");
+  assert.strictEqual(UCSD.restrictedCodexModel, "api-glm-5.3");
   assert.strictEqual(UCSD.codexModels["api-deepseek-v4-flash"].name, "DeepSeek v4 Flash");
   assert.strictEqual(UCSD.codexModels["api-deepseek-v4-flash"].shortName, "DeepSeek");
   assert.strictEqual(
     UCSD.codexModels["api-deepseek-v4-flash"].availableToRestrictedKeys,
     true
   );
-  assert.strictEqual(UCSD.codexModels["api-glm-5.2"].name, "GLM 5.2");
-  assert.strictEqual(UCSD.codexModels["api-glm-5.2"].shortName, "GLM");
-  assert.strictEqual(UCSD.codexModels["api-glm-5.2"].availableToRestrictedKeys, true);
+  assert.strictEqual(UCSD.codexModels["api-glm-5.3"].name, "GLM 5.3");
+  assert.strictEqual(UCSD.codexModels["api-glm-5.3"].shortName, "GLM");
+  assert.strictEqual(UCSD.codexModels["api-glm-5.3"].availableToRestrictedKeys, true);
   assert.deepStrictEqual(UCSD.codexModels[UCSD.codexModel].capabilities.inputModalities, ["text"]);
-  assert.deepStrictEqual(UCSD.codexModels["api-glm-5.2"].capabilities.inputModalities, ["text"]);
-  assert.deepStrictEqual(UCSD.codexModels["api-glm-5.2"].capabilities.optionDescriptors, [
+  assert.deepStrictEqual(UCSD.codexModels["api-glm-5.3"].capabilities.inputModalities, ["text"]);
+  assert.deepStrictEqual(UCSD.codexModels["api-glm-5.3"].capabilities.optionDescriptors, [
     {
       id: "reasoningEffort",
       label: "Reasoning",
@@ -363,13 +363,13 @@ function assertManagedConfigPrefersPackagedEndpoint() {
     resetManagedConfigForTests();
     assert.throws(
       () => UCSD.codexModels,
-      /codexModels must include the configured default model: api-glm-5.2/
+      /codexModels must include the configured default model: api-glm-5.3/
     );
 
     fs.writeFileSync(configPath, JSON.stringify({
       baseUrl: "https://packaged.example.invalid/v1",
       codexModel: "gpt-5.6-sol",
-      restrictedCodexModel: "api-glm-5.2",
+      restrictedCodexModel: "api-glm-5.3",
       codexModels: {
         "gpt-5.6-sol": { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" }
       }
@@ -377,7 +377,7 @@ function assertManagedConfigPrefersPackagedEndpoint() {
     resetManagedConfigForTests();
     assert.throws(
       () => UCSD.codexModels,
-      /codexModels must include the configured restricted fallback model: api-glm-5.2/
+      /codexModels must include the configured restricted fallback model: api-glm-5.3/
     );
 
     fs.writeFileSync(configPath, JSON.stringify({
@@ -1402,6 +1402,11 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
         model: "api-deepseek-v4-flash",
         options: [{ id: "reasoningEffort", value: "high" }]
       };
+      const legacyGlmSelection = {
+        instanceId: "codex-work",
+        model: "api-glm-5.2",
+        options: [{ id: "reasoningEffort", value: "high" }]
+      };
       db.prepare("INSERT INTO projection_threads (thread_id, model_selection_json) VALUES (?, ?)").run(
         "thread-legacy",
         JSON.stringify(legacySelection)
@@ -1413,6 +1418,10 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       db.prepare("INSERT INTO projection_threads (thread_id, model_selection_json) VALUES (?, ?)").run(
         "thread-deepseek",
         JSON.stringify(deepSeekSelection)
+      );
+      db.prepare("INSERT INTO projection_threads (thread_id, model_selection_json) VALUES (?, ?)").run(
+        "thread-glm-5-2",
+        JSON.stringify(legacyGlmSelection)
       );
       db.close();
 
@@ -1434,6 +1443,11 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
           "SELECT model_selection_json FROM projection_threads WHERE thread_id = ?"
         ).get("thread-deepseek").model_selection_json
       );
+      const migratedGlmSelection = JSON.parse(
+        patched.prepare(
+          "SELECT model_selection_json FROM projection_threads WHERE thread_id = ?"
+        ).get("thread-glm-5-2").model_selection_json
+      );
       patched.close();
       assert.deepStrictEqual(selection, {
         ...legacySelection,
@@ -1449,6 +1463,11 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
         preservedDeepSeekSelection,
         { ...deepSeekSelection, instanceId: "codex" },
         "upgrades must preserve an explicit DeepSeek model while routing it on premises"
+      );
+      assert.deepStrictEqual(
+        migratedGlmSelection,
+        { ...legacyGlmSelection, instanceId: "codex", model: "api-glm-5.3" },
+        "upgrades must migrate an explicit GLM 5.2 selection to GLM 5.3"
       );
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1492,7 +1511,7 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
     assert.deepStrictEqual(customModels, EXPECTED_CODEX_MODELS);
     assert.deepStrictEqual(customModels, [
       "api-deepseek-v4-flash",
-      "api-glm-5.2",
+      "api-glm-5.3",
       "api-gemma-4-31b",
       "gpt-5.6-luna",
       "gpt-5.6-sol",
