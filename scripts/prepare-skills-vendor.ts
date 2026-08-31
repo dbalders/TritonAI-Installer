@@ -18,6 +18,7 @@ const repo = process.env.UCSD_SKILLS_REPO || "https://github.com/dbalders/UCSD-S
 const ref = process.env.UCSD_SKILLS_REF || "main";
 const sourceSubdir = process.env.UCSD_SKILLS_SUBDIR || "";
 const vendorDir = path.join(root, "vendor", "skills");
+const secureSkillsLicenseFile = "LICENSE";
 const localSourceCandidates = localSourceOverride
   ? [localSourceOverride]
   : [
@@ -123,6 +124,8 @@ function stageSkillsFromSource({ sourceRoot, sourceSubdir = "", vendorDir, sourc
       });
     }
 
+    copySecureRepositoryLicense(sourceRoot, stagingDir);
+
     const manifest = {
       ...createManagedSkillsManifest(skillNames),
       ...(sourceInfo ? { source: sanitizeSourceInfo(sourceInfo) } : {})
@@ -135,6 +138,22 @@ function stageSkillsFromSource({ sourceRoot, sourceSubdir = "", vendorDir, sourc
   }
 
   return { source: sanitizeSourceInfo(sourceInfo), skills: skillNames };
+}
+
+function copySecureRepositoryLicense(sourceRoot, stagingDir) {
+  const sourceLicense = path.join(sourceRoot, secureSkillsLicenseFile);
+  if (!fs.existsSync(sourceLicense)) {
+    throw new Error(`Secure skills source is missing its root ${secureSkillsLicenseFile} file: ${sourceLicense}`);
+  }
+  const stat = fs.lstatSync(sourceLicense);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`Secure skills source root ${secureSkillsLicenseFile} must be a regular file: ${sourceLicense}`);
+  }
+  fs.copyFileSync(
+    sourceLicense,
+    path.join(stagingDir, secureSkillsLicenseFile),
+    fs.constants.COPYFILE_EXCL
+  );
 }
 
 function assertCanonicalLocalSecureSkillsSource(sourceRoot) {

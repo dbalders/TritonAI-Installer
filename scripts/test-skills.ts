@@ -251,6 +251,7 @@ function assertVendorActivationFailureRestoresPreviousBundle() {
     const sourceRoot = path.join(tempRoot, "source");
     const vendorDir = path.join(tempRoot, "vendor", "skills");
     writeSkill(path.join(sourceRoot, "secure-new"), "secure-new", "new-v1");
+    fs.writeFileSync(path.join(sourceRoot, "LICENSE"), "MIT fixture license\n");
     writeVendor(vendorDir, { "secure-existing": "existing-v1" });
     const manifestBefore = fs.readFileSync(path.join(vendorDir, "manifest.json"), "utf8");
     const originalRenameSync = fs.renameSync;
@@ -300,6 +301,7 @@ function assertRootSecureRepositoryStaging() {
     const vendorDir = path.join(tempRoot, "vendor", "skills");
     writeSkill(path.join(sourceRoot, "secure-review"), "secure-review", "v1");
     writeSkill(path.join(sourceRoot, "ucsd-dsmlp-deploy"), "ucsd-dsmlp-deploy", "v1");
+    fs.writeFileSync(path.join(sourceRoot, "LICENSE"), "MIT fixture license\n");
     fs.mkdirSync(path.join(sourceRoot, "docs"), { recursive: true });
     fs.mkdirSync(path.join(sourceRoot, "scripts"), { recursive: true });
 
@@ -317,6 +319,7 @@ function assertRootSecureRepositoryStaging() {
 
     assert.deepStrictEqual(result.skills, ["secure-review", "ucsd-dsmlp-deploy"]);
     assertFile(path.join(vendorDir, "secure-review", "SKILL.md"));
+    assert.strictEqual(fs.readFileSync(path.join(vendorDir, "LICENSE"), "utf8"), "MIT fixture license\n");
     assert(!fs.existsSync(path.join(vendorDir, "docs")), "support folders must not be bundled as skills");
     const manifest = readJson(path.join(vendorDir, "manifest.json"));
     assert.deepStrictEqual(
@@ -329,6 +332,16 @@ function assertRootSecureRepositoryStaging() {
       dirty: false
     });
     assert(!JSON.stringify(manifest).includes("private/path"), "vendor manifest must not expose local checkout paths");
+
+    const missingLicenseRoot = path.join(tempRoot, "missing-license-source");
+    writeSkill(path.join(missingLicenseRoot, "secure-review"), "secure-review", "v1");
+    assert.throws(
+      () => stageSkillsFromSource({
+        sourceRoot: missingLicenseRoot,
+        vendorDir: path.join(tempRoot, "missing-license-vendor")
+      }),
+      /missing its root LICENSE/
+    );
 
     const wrapperRoot = path.join(tempRoot, "wrapper");
     writeSkill(path.join(wrapperRoot, "fixtures", "secure-override"), "secure-override", "v1");
@@ -521,6 +534,7 @@ function assertTransactionFailureRestoresPreviousInstallAndCleansBackup() {
 function assertRejectsInvalidBundles() {
   withInstallFixture((fixture) => {
     fs.mkdirSync(path.join(fixture.vendorDir, "secure-review"), { recursive: true });
+    fs.writeFileSync(path.join(fixture.vendorDir, "LICENSE"), "MIT fixture license\n");
     fs.writeFileSync(
       path.join(fixture.vendorDir, "manifest.json"),
       `${JSON.stringify({
@@ -529,6 +543,11 @@ function assertRejectsInvalidBundles() {
       }, null, 2)}\n`
     );
     assert.throws(() => installFixture(fixture), /missing SKILL.md/);
+    assert.deepStrictEqual(fs.readdirSync(fixture.skillsDir), []);
+
+    writeVendor(fixture.vendorDir, { "secure-review": "secure-v1" });
+    fs.rmSync(path.join(fixture.vendorDir, "LICENSE"));
+    assert.throws(() => installFixture(fixture), /secure skills license is missing/);
     assert.deepStrictEqual(fs.readdirSync(fixture.skillsDir), []);
 
     writeVendor(fixture.vendorDir, { "secure-review": "secure-v1" });
@@ -599,6 +618,7 @@ function writeVendor(vendorDir, skills) {
   for (const name of names) {
     writeSkill(path.join(vendorDir, name), name, skills[name]);
   }
+  fs.writeFileSync(path.join(vendorDir, "LICENSE"), "MIT fixture license\n");
   fs.writeFileSync(
     path.join(vendorDir, "manifest.json"),
     `${JSON.stringify({
