@@ -3,6 +3,7 @@ const path = require("path");
 
 const root = path.resolve(__dirname, "..", "..");
 const required = [
+  "LICENSE",
   "runner.ts",
   "test-electron3.ts",
   "src/main.ts",
@@ -112,6 +113,9 @@ if (commonJsRendererPatterns.some((pattern) => pattern.test(rendererOutput))) {
 }
 
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+if (packageJson.license !== "MIT") {
+  throw new Error("package.json must declare the Installer's MIT license.");
+}
 const windowsPackageScript = packageJson.scripts?.["package:win-installer"] || "";
 const signedWindowsPackageScript = packageJson.scripts?.["package:win-installer:signed"] || "";
 const nativeWindowsVerificationScript = packageJson.scripts?.["verify:win-installer:native"] || "";
