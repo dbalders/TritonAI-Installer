@@ -60,6 +60,7 @@ function main() {
   assertSdkArtifactStaging();
   assertRejectsUnsafePackages();
   assertAtomicVendorRollback();
+  assertAtomicRequirementRollback();
   assertCompositionContract();
   assertPlatformSpecificProofContract();
   assertSafeCompositionPaths();
@@ -189,6 +190,15 @@ function assertReviewedPluginCatalog() {
   assert.throws(
     () => validateManagedPluginCatalog({
       ...catalog,
+      packages: catalog.packages.map((plugin, index) => index === 0
+        ? { ...plugin, required: true }
+        : plugin)
+    }),
+    /unsupported fields/
+  );
+  assert.throws(
+    () => validateManagedPluginCatalog({
+      ...catalog,
       packages: [...catalog.packages].reverse()
     }),
     /sorted stable ids/
@@ -205,11 +215,7 @@ function assertReviewedPluginCatalog() {
 
   const sdkPackage = {
     pluginId: "sdk-reader",
-    publisher: "University of California San Diego",
     version: "1.0.0",
-    required: false,
-    channel: "stable",
-    retirementPolicy: "retain-state",
     digest: "d".repeat(64),
     manifestDigest: "e".repeat(64),
     artifactDescriptorDigest: "f".repeat(64)
@@ -355,17 +361,20 @@ function assertCatalogValidationPrecedesActivation() {
   withTempRoot("tritonai-plugin-catalog-transaction-", (tempRoot) => {
     const sourceRoot = path.join(tempRoot, "source");
     const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    const compositionRequirementPath = path.join(tempRoot, "build", "managed-plugin-composition.json");
     writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.0");
     stagePluginsFromSource({
       sourceRoot,
       vendorDir,
       selectedIds: ["alpha-reader"],
-      source: sourceIdentity()
+      source: sourceIdentity(),
+      compositionRequirementPath
     });
     const previousManifest = fs.readFileSync(path.join(vendorDir, "manifest.json"));
     const previousSkill = fs.readFileSync(
       path.join(vendorDir, "packages", "alpha-reader", "skills", "alpha-reader", "SKILL.md")
     );
+    const previousRequirement = fs.readFileSync(compositionRequirementPath);
 
     assert.throws(
       () => stagePluginsFromSource({
@@ -373,6 +382,7 @@ function assertCatalogValidationPrecedesActivation() {
         vendorDir,
         selectedIds: ["alpha-reader"],
         source: sourceIdentity(),
+        compositionRequirementPath,
         assertComposition: () => {
           throw new Error("simulated catalog mismatch");
         }
@@ -390,6 +400,11 @@ function assertCatalogValidationPrecedesActivation() {
       ),
       previousSkill,
       "catalog rejection must preserve the previous vendor payloads"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(compositionRequirementPath),
+      previousRequirement,
+      "catalog rejection must preserve the previous composition requirement"
     );
   });
 }
@@ -613,7 +628,7 @@ function assertAtomicVendorRollback() {
         activationFailed = true;
         throw new Error("simulated plugin vendor activation failure");
       }
-      if (activationFailed && target === vendorDir && path.basename(source) === "previous") {
+      if (activationFailed && target === vendorDir && path.basename(source) === "previous-vendor") {
         throw new Error("simulated plugin vendor rollback failure");
       }
       return originalRenameForRollbackFailure(source, target);
@@ -621,7 +636,7 @@ function assertAtomicVendorRollback() {
     try {
       assert.throws(
         () => stagePluginsFromSource({ sourceRoot, vendorDir, selectedIds: ["alpha-reader"], source: sourceIdentity() }),
-        /rollback failed: simulated plugin vendor rollback failure; previous vendor kept at .*\.managed-plugins-vendor-backup-.*previous/
+        /rollback failed: simulated plugin vendor rollback failure; previous release state kept at .*\.managed-plugins-vendor-backup-/
       );
     } finally {
       fs.renameSync = originalRenameForRollbackFailure;
@@ -630,8 +645,63 @@ function assertAtomicVendorRollback() {
       .find((name) => name.startsWith(".managed-plugins-vendor-backup-"));
     assert(preservedBackup, "a rollback failure must preserve the previous plugin vendor for recovery");
     fs.renameSync(
-      path.join(path.dirname(vendorDir), preservedBackup, "previous"),
+      path.join(path.dirname(vendorDir), preservedBackup, "previous-vendor"),
       vendorDir
+    );
+  });
+}
+
+function assertAtomicRequirementRollback() {
+  withTempRoot("tritonai-plugin-requirement-rollback-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    const compositionRequirementPath = path.join(tempRoot, "build", "managed-plugin-composition.json");
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.0");
+    stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["alpha-reader"],
+      source: sourceIdentity(),
+      compositionRequirementPath
+    });
+    const previousManifest = fs.readFileSync(path.join(vendorDir, "manifest.json"));
+    const previousRequirement = fs.readFileSync(compositionRequirementPath);
+
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.1");
+    const originalRename = fs.renameSync;
+    let previousRequirementMoved = false;
+    let failed = false;
+    fs.renameSync = (source, target) => {
+      if (source === compositionRequirementPath) previousRequirementMoved = true;
+      if (previousRequirementMoved && !failed && target === compositionRequirementPath) {
+        failed = true;
+        throw new Error("simulated composition requirement activation failure");
+      }
+      return originalRename(source, target);
+    };
+    try {
+      assert.throws(
+        () => stagePluginsFromSource({
+          sourceRoot,
+          vendorDir,
+          selectedIds: ["alpha-reader"],
+          source: sourceIdentity(),
+          compositionRequirementPath
+        }),
+        /simulated composition requirement activation failure/
+      );
+    } finally {
+      fs.renameSync = originalRename;
+    }
+    assert.deepStrictEqual(
+      fs.readFileSync(path.join(vendorDir, "manifest.json")),
+      previousManifest,
+      "requirement activation failure must restore the previous plugin vendor"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(compositionRequirementPath),
+      previousRequirement,
+      "requirement activation failure must restore the previous requirement marker"
     );
   });
 }

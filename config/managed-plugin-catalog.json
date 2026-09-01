@@ -9,33 +9,21 @@
   "packages": [
     {
       "pluginId": "github",
-      "publisher": "University of California San Diego",
       "version": "1.0.0",
-      "required": true,
-      "channel": "stable",
-      "retirementPolicy": "retain-state",
       "digest": "a4fbb7d2bd9dcca9ab3c0460e70a5384365d4319e7c5fb37deec97fef3bedb3f",
       "manifestDigest": "774b940854dded25bd5ad117d57e9376b59719d879410d6d505e98fa0ffbd8ad",
       "artifactDescriptorDigest": null
     },
     {
       "pluginId": "google-workspace",
-      "publisher": "University of California San Diego",
       "version": "1.0.0",
-      "required": true,
-      "channel": "stable",
-      "retirementPolicy": "retain-state",
       "digest": "fd537b17cb46908b3fe22c202237bdbe0386ada50368d3a113937726d03f4c51",
       "manifestDigest": "0a2f5fc9341e5382f64461958c020f53967681a9365e7a8dbf7a3ab121bd90c3",
       "artifactDescriptorDigest": null
     },
     {
       "pluginId": "microsoft-365",
-      "publisher": "University of California San Diego",
       "version": "1.1.0",
-      "required": true,
-      "channel": "stable",
-      "retirementPolicy": "retain-state",
       "digest": "d48eafc4e6735179972931f0e0be5586f074b813cacd757ca40c726231630526",
       "manifestDigest": "7f80a2c6d646ff86770766b889013b081d06660d88e195a304bb73612354062e",
       "artifactDescriptorDigest": null

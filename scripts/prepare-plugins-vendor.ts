@@ -42,8 +42,7 @@ function main(env = process.env, args = process.argv.slice(2)) {
   );
   const configured = Boolean(input.ref || input.commit || input.selectedIds.length || input.localSource);
   if (!configured) {
-    fs.rmSync(vendorDir, { recursive: true, force: true });
-    writePluginCompositionRequirement(false);
+    stageEmptyPluginComposition(vendorDir, requirementPath);
     console.log("Managed Harness plugin composition is not selected for this Installer build.");
     return null;
   }
@@ -64,9 +63,9 @@ function main(env = process.env, args = process.argv.slice(2)) {
       },
       assertComposition: options.production
         ? (composition) => assertCatalogComposition(catalog, composition)
-        : undefined
+        : undefined,
+      compositionRequirementPath: requirementPath
     });
-    writePluginCompositionRequirement(true);
     console.log(
       `Prepared ${result.packages.length} managed Harness plugin package${result.packages.length === 1 ? "" : "s"} `
       + `from ${CANONICAL_PLUGIN_REPOSITORY_URL}#${input.ref} (${input.commit}).`
@@ -193,9 +192,26 @@ function compareStableVersions(left, right) {
   return 0;
 }
 
-function writePluginCompositionRequirement(required) {
-  fs.mkdirSync(path.dirname(requirementPath), { recursive: true });
-  fs.writeFileSync(requirementPath, `${JSON.stringify({ version: 1, required }, null, 2)}\n`);
+function writePluginCompositionRequirement(required, file = requirementPath) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify({ version: 1, required }, null, 2)}\n`);
+}
+
+function stageEmptyPluginComposition(targetDir, compositionRequirementPath) {
+  const requirementStagingRoot = createSiblingTempDir(
+    compositionRequirementPath,
+    ".managed-plugin-requirement-"
+  );
+  const stagedRequirementPath = path.join(requirementStagingRoot, "requirement.json");
+  try {
+    writePluginCompositionRequirement(false, stagedRequirementPath);
+    activateStagedVendor(undefined, targetDir, {
+      stagedPath: stagedRequirementPath,
+      targetPath: compositionRequirementPath
+    });
+  } finally {
+    fs.rmSync(requirementStagingRoot, { recursive: true, force: true });
+  }
 }
 
 function readPluginSourceEnvironment(env: Record<string, string | undefined> = {}) {
@@ -382,7 +398,8 @@ function stagePluginsFromSource({
   vendorDir,
   selectedIds,
   source,
-  assertComposition
+  assertComposition,
+  compositionRequirementPath
 }) {
   assertCanonicalPluginRepository(source.repository, "Managed plugin source");
   const pluginsRoot = path.join(sourceRoot, "plugins");
@@ -399,7 +416,28 @@ function stagePluginsFromSource({
       }
       assertComposition(manifest);
     }
-    activateStagedVendor(stagingDir, vendorDir);
+    let requirementStagingRoot;
+    let stagedRequirementPath;
+    if (compositionRequirementPath !== undefined) {
+      if (typeof compositionRequirementPath !== "string" || !path.isAbsolute(compositionRequirementPath)) {
+        throw new Error("Managed plugin composition requirement path must be absolute.");
+      }
+      requirementStagingRoot = createSiblingTempDir(
+        compositionRequirementPath,
+        ".managed-plugin-requirement-"
+      );
+      stagedRequirementPath = path.join(requirementStagingRoot, "requirement.json");
+      writePluginCompositionRequirement(true, stagedRequirementPath);
+    }
+    try {
+      activateStagedVendor(stagingDir, vendorDir, stagedRequirementPath
+        ? { stagedPath: stagedRequirementPath, targetPath: compositionRequirementPath }
+        : undefined);
+    } finally {
+      if (requirementStagingRoot) {
+        fs.rmSync(requirementStagingRoot, { recursive: true, force: true });
+      }
+    }
     return manifest;
   } finally {
     fs.rmSync(stagingDir, { recursive: true, force: true });
@@ -1063,33 +1101,65 @@ function validateStagedVendor(stagingDir, manifest) {
   }
 }
 
-function activateStagedVendor(stagingDir, targetDir) {
+function activateStagedVendor(stagingDir, targetDir, requirement) {
   const backupRoot = createSiblingTempDir(targetDir, ".managed-plugins-vendor-backup-");
-  const previous = path.join(backupRoot, "previous");
-  let previousMoved = false;
+  const previousVendor = path.join(backupRoot, "previous-vendor");
+  const previousRequirement = path.join(backupRoot, "previous-requirement.json");
+  let previousVendorMoved = false;
+  let previousRequirementMoved = false;
+  let vendorActivated = false;
+  let requirementActivated = false;
   try {
     if (fs.existsSync(targetDir)) {
-      fs.renameSync(targetDir, previous);
-      previousMoved = true;
+      fs.renameSync(targetDir, previousVendor);
+      previousVendorMoved = true;
     }
-    fs.renameSync(stagingDir, targetDir);
+    if (requirement && fs.existsSync(requirement.targetPath)) {
+      fs.renameSync(requirement.targetPath, previousRequirement);
+      previousRequirementMoved = true;
+    }
+    if (stagingDir) {
+      fs.renameSync(stagingDir, targetDir);
+      vendorActivated = true;
+    }
+    if (requirement) {
+      fs.renameSync(requirement.stagedPath, requirement.targetPath);
+      requirementActivated = true;
+    }
   } catch (error) {
     const rollbackErrors = [];
-    if (previousMoved && fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true });
-    if (previousMoved) {
+    if (requirementActivated && fs.existsSync(requirement.targetPath)) {
+      fs.rmSync(requirement.targetPath, { force: true });
+      requirementActivated = false;
+    }
+    if (vendorActivated && fs.existsSync(targetDir)) {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+      vendorActivated = false;
+    }
+    if (previousRequirementMoved) {
       try {
-        fs.renameSync(previous, targetDir);
-        previousMoved = false;
+        fs.renameSync(previousRequirement, requirement.targetPath);
+        previousRequirementMoved = false;
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError.message);
+      }
+    }
+    if (previousVendorMoved) {
+      try {
+        fs.renameSync(previousVendor, targetDir);
+        previousVendorMoved = false;
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError.message);
       }
     }
     const rollbackFailure = rollbackErrors.length
-      ? `; rollback failed: ${rollbackErrors.join("; ")}; previous vendor kept at ${previous}`
+      ? `; rollback failed: ${rollbackErrors.join("; ")}; previous release state kept at ${backupRoot}`
       : "";
-    throw new Error(`Could not atomically activate managed plugin vendor: ${error.message}${rollbackFailure}`);
+    throw new Error(`Could not atomically activate managed plugin release state: ${error.message}${rollbackFailure}`);
   } finally {
-    if (!previousMoved) fs.rmSync(backupRoot, { recursive: true, force: true });
+    if (!previousVendorMoved && !previousRequirementMoved) {
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
   }
   fs.rmSync(backupRoot, { recursive: true, force: true });
 }

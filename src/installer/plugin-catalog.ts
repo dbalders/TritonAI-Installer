@@ -9,7 +9,6 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SAFE_REF = /^refs\/(?:heads|tags)\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/;
-const PUBLISHER = "University of California San Diego";
 
 function readManagedPluginCatalog(file: string) {
   let value;
@@ -46,11 +45,7 @@ function validateManagedPluginCatalog(value) {
       plugin,
       [
         "pluginId",
-        "publisher",
         "version",
-        "required",
-        "channel",
-        "retirementPolicy",
         "digest",
         "manifestDigest",
         "artifactDescriptorDigest"
@@ -63,9 +58,6 @@ function validateManagedPluginCatalog(value) {
       throw new Error("Managed plugin catalog packages must have unique, sorted stable ids.");
     }
     previousId = plugin.pluginId;
-    if (plugin.publisher !== PUBLISHER) {
-      throw new Error(`Managed plugin catalog package ${plugin.pluginId} has an invalid publisher.`);
-    }
     if (typeof plugin.version !== "string" || !STABLE_SEMVER.test(plugin.version)) {
       throw new Error(`Managed plugin catalog package ${plugin.pluginId} has an invalid version.`);
     }
@@ -73,11 +65,6 @@ function validateManagedPluginCatalog(value) {
       if (typeof plugin[field] !== "string" || !SHA256.test(plugin[field])) {
         throw new Error(`Managed plugin catalog package ${plugin.pluginId} has an invalid ${field}.`);
       }
-    }
-    if (typeof plugin.required !== "boolean"
-      || plugin.channel !== "stable"
-      || plugin.retirementPolicy !== "retain-state") {
-      throw new Error(`Managed plugin catalog package ${plugin.pluginId} has invalid release policy.`);
     }
     if (plugin.artifactDescriptorDigest !== null
       && (typeof plugin.artifactDescriptorDigest !== "string"
