@@ -51,14 +51,13 @@ and either one `TRITONAI_HARNESS_RELEASE_BASE` or both canonical platform-specif
 The vendoring command does not infer a version or use a moving latest-release URL.
 Packaged builds use the canonical `edu.ucsd.tritonai.installer` application identifier; legacy Installer product identifiers are not migration inputs for this new product.
 
-Managed plugins have a separate, fail-closed source contract. Stable macOS and Windows release
-packaging resolves the highest canonical `vMAJOR.MINOR.PATCH` Plugins tag at the start of the run,
-freezes its exact commit, and selects the production `github`, `google-workspace`, and `microsoft-365`
-packages. Every Harness release must publish an artifact-bound composition proof for that exact
-selection. A moving branch such as `main` and nearby `TritonAI-Plugins` checkouts are never used
-automatically.
-Production package inclusion remains an explicit reviewed Installer allowlist, so publishing an
-experimental package does not silently add it to desktop releases.
+Managed plugins have a separate, fail-closed source contract. Stable macOS and Windows packaging
+uses the reviewed `config/managed-plugin-catalog.json`, which pins the exact Plugins ref, commit,
+package versions, package digests, and manifest digests. Production
+selection is stable and required as one composition; unenforced per-package policy metadata is
+intentionally rejected. Every Harness release must publish an
+artifact-bound composition proof for those exact bytes. Publishing a package or placing it in the
+source tree never approves it for production.
 
 For an exact rebuild or a preselected composition, set all three values below. Complete explicit
 pins override automatic latest-release selection:
@@ -75,17 +74,18 @@ override and is accepted only for a clean Git checkout with that canonical origi
 and a ref resolving to the same commit. Dirty local validation work is rejected.
 
 `npm run prepare:plugins-vendor` retains the explicit/manual behavior above; without pins it disables
-managed plugins for a development build. Stable packaging invokes the same tool with `--latest`.
-Release orchestration that has already frozen the plugin ref and commit uses `--production` to
-select this Installer commit's reviewed production allowlist without duplicating package IDs in
-Harness.
-It validates and atomically stages only selected release package
-contents under ignored `vendor/plugins/`. It rejects symlinks, special files, unsafe paths,
+managed plugins for a development build. `--latest` is a candidate-build convenience that keeps the
+catalog's package selection while resolving a newer stable source tag. Stable packaging uses
+`--production`, rejects source overrides, and verifies the staged bytes against the reviewed catalog.
+It validates and atomically stages only selected release package contents under ignored
+`vendor/plugins/`. Harness v2 packages keep their legacy allowlisted layout. SDK v1 packages are
+copied byte-for-byte from `artifacts/<plugin-id>/`; the Installer does not compile, import, or
+semantically validate provider code. It rejects symlinks, special files, unsafe paths,
 source/tests in package allowlists or provider output, malformed manifests, package/manifest drift,
 and skill/manifest drift. The staged packages are a Harness build input, not an Installer runtime
 payload. Provider packages expose their exact manifest and synchronous
 `createIntegrationProvider({ secrets, configuration })` factory from `dist/index.js`; the Installer
-does not import factories or interpret their package-owned configuration.
+does not import factories or interpret package-owned configuration.
 
 The Harness build must compose those exact packages into its immutable catalog. After all
 signing, notarization, and stapling, it publishes `tritonai-plugin-composition-mac-arm64.json` and

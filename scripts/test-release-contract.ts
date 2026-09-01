@@ -222,9 +222,9 @@ function main() {
       "Future signed Windows packaging must end at the fail-closed signing and Authenticode gate"
     );
     assert(
-      packageJson.scripts["package:win-installer"].indexOf("prepare:plugins-vendor:latest:compiled")
+      packageJson.scripts["package:win-installer"].indexOf("prepare:plugins-vendor:production:compiled")
         < packageJson.scripts["package:win-installer"].indexOf("prepare:t3code-desktop-vendor:win:unsigned:compiled"),
-      "Windows packaging must resolve the latest stable plugins before accepting a composed Harness release"
+      "Windows packaging must use the reviewed production plugins before accepting a composed Harness release"
     );
     assert(
       packageJson.scripts["package:win-installer"].includes("prepare:node-runtime:win:compiled"),
@@ -235,6 +235,10 @@ function main() {
     assert.strictEqual(
       packageJson.scripts["prepare:plugins-vendor:latest:compiled"],
       "node dist/scripts/prepare-plugins-vendor.js --latest"
+    );
+    assert.strictEqual(
+      packageJson.scripts["prepare:plugins-vendor:production:compiled"],
+      "node dist/scripts/prepare-plugins-vendor.js --production"
     );
     assert.strictEqual(
       packageJson.scripts["prepare:plugins-vendor"],
@@ -251,8 +255,8 @@ function main() {
     assert(!macReleaseSource.includes('"osascript"'));
     testNativeMacDmgCreation(tempRoot);
     assert(
-      macReleaseSource.includes('"prepare-plugins-vendor.js"), "--latest"'),
-      "macOS release packaging must resolve the latest stable plugins"
+      macReleaseSource.includes('"--production"'),
+      "macOS release packaging must use the reviewed production plugins"
     );
     assert(
       macReleaseSource.includes('"prepare-node-runtime-vendor.js"), "mac-arm64"'),

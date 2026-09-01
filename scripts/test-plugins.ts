@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 const {
   assertCanonicalPluginRepository,
   CANONICAL_PLUGIN_REPOSITORY_URL
@@ -19,6 +20,11 @@ const {
   readPluginCompositionRequirement
 } = require("../src/installer/plugins");
 const {
+  assertCatalogComposition,
+  readManagedPluginCatalog,
+  validateManagedPluginCatalog
+} = require("../src/installer/plugin-catalog");
+const {
   compareStableVersions,
   parseArguments,
   parseLatestStablePluginRelease,
@@ -26,6 +32,7 @@ const {
   readPluginSourceEnvironment,
   selectPluginSourceInput,
   stagePluginsFromSource,
+  materializeSelectedPluginTrees,
   validatePluginManifest,
   validateSourceInput
 } = require("./prepare-plugins-vendor");
@@ -36,15 +43,28 @@ const {
 } = require("./prepare-t3code-desktop-vendor");
 
 const COMMIT = "a".repeat(40);
+const managedPluginCatalogPath = path.join(
+  __dirname,
+  "..",
+  "..",
+  "config",
+  "managed-plugin-catalog.json"
+);
 
 function main() {
   assertCanonicalProvenance();
+  assertReviewedPluginCatalog();
   assertLatestStableReleaseSelection();
   assertExplicitSourceContract();
+  assertPinnedGitMaterializationIncludesSdkArtifact();
   assertDeterministicSelectionAndStaging();
+  assertCatalogValidationPrecedesActivation();
   assertProviderPackageStaging();
+  assertSdkArtifactPassThrough();
   assertRejectsUnsafePackages();
   assertAtomicVendorRollback();
+  assertAtomicRequirementRollback();
+  assertRollbackQuarantineFailurePreservesOneGeneration();
   assertCompositionContract();
   assertPlatformSpecificProofContract();
   assertSafeCompositionPaths();
@@ -53,6 +73,8 @@ function main() {
 }
 
 function assertLatestStableReleaseSelection() {
+  const catalog = syntheticCatalog();
+  const catalogIds = catalog.packages.map((plugin) => plugin.pluginId);
   assert.deepStrictEqual(parseArguments([]), { latest: false, production: false });
   assert.deepStrictEqual(parseArguments(["--latest"]), { latest: true, production: false });
   assert.deepStrictEqual(parseArguments(["--production"]), { latest: false, production: true });
@@ -99,16 +121,16 @@ function assertLatestStableReleaseSelection() {
     resolverCalls += 1;
     assert.strictEqual(repository, CANONICAL_PLUGIN_REPOSITORY_URL);
     return { repository, ref: "refs/tags/v1.2.3", commit: "c".repeat(40) };
-  });
+  }, catalog);
   assert.strictEqual(resolverCalls, 1);
   assert.strictEqual(automatic.ref, "refs/tags/v1.2.3");
   assert.strictEqual(automatic.commit, "c".repeat(40));
-  assert.deepStrictEqual(automatic.selectedIds, ["github", "google-workspace", "microsoft-365"]);
+  assert.deepStrictEqual(automatic.selectedIds, catalogIds);
 
   const explicit = readPluginSourceEnvironment({
     TRITONAI_PLUGINS_REF: "refs/tags/v1.2.3",
     TRITONAI_PLUGINS_COMMIT: "d".repeat(40),
-    TRITONAI_PLUGIN_IDS: "microsoft-365"
+    TRITONAI_PLUGIN_IDS: "zeta-reader"
   });
   assert.strictEqual(
     selectPluginSourceInput(explicit, { latest: true }, () => { throw new Error("must not resolve latest"); }),
@@ -120,13 +142,76 @@ function assertLatestStableReleaseSelection() {
   );
 
   const production = selectPluginSourceInput(
-    { ...explicit, selectedIds: [] },
-    { latest: false, production: true }
+    emptyInput,
+    { latest: false, production: true },
+    undefined,
+    catalog
   );
-  assert.deepStrictEqual(production.selectedIds, ["github", "google-workspace", "microsoft-365"]);
+  assert.deepStrictEqual(production.selectedIds, catalogIds);
   assert.throws(
     () => selectPluginSourceInput(explicit, { latest: false, production: true }),
-    /TRITONAI_PLUGIN_IDS must be unset/
+    /source overrides must be unset/
+  );
+}
+
+function assertReviewedPluginCatalog() {
+  const catalog = readManagedPluginCatalog(managedPluginCatalogPath);
+  assert.strictEqual(validateManagedPluginCatalog(catalog), catalog);
+
+  const composition = {
+    version: 1,
+    kind: "tritonai-harness-plugin-composition",
+    source: { ...catalog.source },
+    packages: catalog.packages.map((plugin) => ({
+      id: plugin.pluginId,
+      name: `@tritonai/plugin-${plugin.pluginId}`,
+      version: plugin.version,
+      digest: plugin.digest,
+      files: [{
+        path: ".tritonai-plugin/plugin.json",
+        sha256: plugin.manifestDigest,
+        size: 1
+      }]
+    }))
+  };
+  assert.strictEqual(assertCatalogComposition(catalog, composition), composition);
+  assert.throws(
+    () => assertCatalogComposition(catalog, {
+      ...composition,
+      packages: composition.packages.map((plugin, index) => index === 0
+        ? { ...plugin, digest: "f".repeat(64) }
+        : plugin)
+    }),
+    /catalog digests/
+  );
+  assert.throws(
+    () => validateManagedPluginCatalog({ ...catalog, unexpected: true }),
+    /unsupported fields/
+  );
+  assert.throws(
+    () => validateManagedPluginCatalog({
+      ...catalog,
+      packages: catalog.packages.map((plugin, index) => index === 0
+        ? { ...plugin, required: true }
+        : plugin)
+    }),
+    /unsupported fields/
+  );
+  assert.throws(
+    () => validateManagedPluginCatalog({
+      ...catalog,
+      packages: catalog.packages.map((plugin, index) => index === 0
+        ? { ...plugin, artifactDescriptorDigest: "a".repeat(64) }
+        : plugin)
+    }),
+    /unsupported fields/
+  );
+  assert.throws(
+    () => validateManagedPluginCatalog({
+      ...catalog,
+      packages: [...catalog.packages].reverse()
+    }),
+    /sorted stable ids/
   );
 }
 
@@ -196,6 +281,33 @@ function assertExplicitSourceContract() {
   );
 }
 
+function assertPinnedGitMaterializationIncludesSdkArtifact() {
+  withTempRoot("tritonai-sdk-plugin-git-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const targetRoot = path.join(tempRoot, "target");
+    const expected = writeSdkPluginArtifact(sourceRoot, "sdk-reader", "1.0.0");
+    execFileSync("git", ["init", "-q"], { cwd: sourceRoot });
+    execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: sourceRoot });
+    execFileSync("git", ["config", "user.name", "Installer Test"], { cwd: sourceRoot });
+    execFileSync("git", ["add", "plugins", "artifacts"], { cwd: sourceRoot });
+    execFileSync("git", ["commit", "-qm", "fixture"], { cwd: sourceRoot });
+    const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: sourceRoot,
+      encoding: "utf8"
+    }).trim();
+    execFileSync("git", ["clone", "-q", "--no-checkout", sourceRoot, targetRoot]);
+
+    materializeSelectedPluginTrees(targetRoot, commit, ["sdk-reader"]);
+    for (const [relative, contents] of expected) {
+      assert.deepStrictEqual(
+        fs.readFileSync(path.join(targetRoot, "artifacts", "sdk-reader", relative)),
+        contents
+      );
+    }
+    assert(fs.existsSync(path.join(targetRoot, "plugins", "sdk-reader", "package.json")));
+  });
+}
+
 function assertDeterministicSelectionAndStaging() {
   withTempRoot("tritonai-plugin-stage-", (tempRoot) => {
     const sourceRoot = path.join(tempRoot, "source");
@@ -229,6 +341,58 @@ function assertDeterministicSelectionAndStaging() {
     });
     assert.deepStrictEqual(second, first);
     assert.strictEqual(fs.readFileSync(path.join(vendorDir, "manifest.json"), "utf8"), firstBytes);
+  });
+}
+
+function assertCatalogValidationPrecedesActivation() {
+  withTempRoot("tritonai-plugin-catalog-transaction-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    const compositionRequirementPath = path.join(tempRoot, "build", "managed-plugin-composition.json");
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.0");
+    stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["alpha-reader"],
+      source: sourceIdentity(),
+      compositionRequirementPath
+    });
+    const previousManifest = fs.readFileSync(path.join(vendorDir, "manifest.json"));
+    const previousSkill = fs.readFileSync(
+      path.join(vendorDir, "packages", "alpha-reader", "skills", "alpha-reader", "SKILL.md")
+    );
+    const previousRequirement = fs.readFileSync(compositionRequirementPath);
+
+    assert.throws(
+      () => stagePluginsFromSource({
+        sourceRoot,
+        vendorDir,
+        selectedIds: ["alpha-reader"],
+        source: sourceIdentity(),
+        compositionRequirementPath,
+        assertComposition: () => {
+          throw new Error("simulated catalog mismatch");
+        }
+      }),
+      /simulated catalog mismatch/
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(path.join(vendorDir, "manifest.json")),
+      previousManifest,
+      "catalog rejection must preserve the previous vendor manifest"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(
+        path.join(vendorDir, "packages", "alpha-reader", "skills", "alpha-reader", "SKILL.md")
+      ),
+      previousSkill,
+      "catalog rejection must preserve the previous vendor payloads"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(compositionRequirementPath),
+      previousRequirement,
+      "catalog rejection must preserve the previous composition requirement"
+    );
   });
 }
 
@@ -275,6 +439,42 @@ function assertProviderPackageStaging() {
         source: sourceIdentity()
       }),
       /composed package is missing dist\/index\.d\.ts/
+    );
+  });
+}
+
+function assertSdkArtifactPassThrough() {
+  withTempRoot("tritonai-sdk-plugin-stage-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    const expected = writeSdkPluginArtifact(sourceRoot, "sdk-reader", "1.0.0");
+
+    const composition = stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["sdk-reader"],
+      source: sourceIdentity()
+    });
+    const stagedRoot = path.join(vendorDir, "packages", "sdk-reader");
+    assert.deepStrictEqual(
+      composition.packages[0].files.map(({ path: relative }) => relative),
+      [...expected.keys()].sort()
+    );
+    for (const [relative, contents] of expected) {
+      assert.deepStrictEqual(fs.readFileSync(path.join(stagedRoot, relative)), contents);
+    }
+    assert(!fs.existsSync(path.join(stagedRoot, "package.json")));
+    assert(!fs.existsSync(path.join(stagedRoot, "README.md")));
+
+    fs.rmSync(path.join(sourceRoot, "artifacts", "sdk-reader", "plugin.mjs"));
+    assert.throws(
+      () => stagePluginsFromSource({
+        sourceRoot,
+        vendorDir,
+        selectedIds: ["sdk-reader"],
+        source: sourceIdentity()
+      }),
+      /sealed SDK artifact is missing plugin\.mjs/
     );
   });
 }
@@ -406,7 +606,7 @@ function assertAtomicVendorRollback() {
         activationFailed = true;
         throw new Error("simulated plugin vendor activation failure");
       }
-      if (activationFailed && target === vendorDir && path.basename(source) === "previous") {
+      if (activationFailed && target === vendorDir && path.basename(source) === "previous-vendor") {
         throw new Error("simulated plugin vendor rollback failure");
       }
       return originalRenameForRollbackFailure(source, target);
@@ -414,7 +614,7 @@ function assertAtomicVendorRollback() {
     try {
       assert.throws(
         () => stagePluginsFromSource({ sourceRoot, vendorDir, selectedIds: ["alpha-reader"], source: sourceIdentity() }),
-        /rollback failed: simulated plugin vendor rollback failure; previous vendor kept at .*\.managed-plugins-vendor-backup-.*previous/
+        /rollback failed: simulated plugin vendor rollback failure; previous release state kept at .*\.managed-plugins-vendor-backup-/
       );
     } finally {
       fs.renameSync = originalRenameForRollbackFailure;
@@ -423,9 +623,124 @@ function assertAtomicVendorRollback() {
       .find((name) => name.startsWith(".managed-plugins-vendor-backup-"));
     assert(preservedBackup, "a rollback failure must preserve the previous plugin vendor for recovery");
     fs.renameSync(
-      path.join(path.dirname(vendorDir), preservedBackup, "previous"),
+      path.join(path.dirname(vendorDir), preservedBackup, "previous-vendor"),
       vendorDir
     );
+  });
+}
+
+function assertAtomicRequirementRollback() {
+  withTempRoot("tritonai-plugin-requirement-rollback-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    const compositionRequirementPath = path.join(tempRoot, "build", "managed-plugin-composition.json");
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.0");
+    stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["alpha-reader"],
+      source: sourceIdentity(),
+      compositionRequirementPath
+    });
+    const previousManifest = fs.readFileSync(path.join(vendorDir, "manifest.json"));
+    const previousRequirement = fs.readFileSync(compositionRequirementPath);
+
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.1");
+    const originalRename = fs.renameSync;
+    const originalRemove = fs.rmSync;
+    let previousRequirementMoved = false;
+    let failed = false;
+    fs.renameSync = (source, target) => {
+      if (source === compositionRequirementPath) previousRequirementMoved = true;
+      if (previousRequirementMoved && !failed && target === compositionRequirementPath) {
+        failed = true;
+        throw new Error("simulated composition requirement activation failure");
+      }
+      return originalRename(source, target);
+    };
+    fs.rmSync = (target, options) => {
+      if (target === vendorDir || target === compositionRequirementPath) {
+        throw new Error("rollback must not destructively remove live release state");
+      }
+      return originalRemove(target, options);
+    };
+    try {
+      assert.throws(
+        () => stagePluginsFromSource({
+          sourceRoot,
+          vendorDir,
+          selectedIds: ["alpha-reader"],
+          source: sourceIdentity(),
+          compositionRequirementPath
+        }),
+        /simulated composition requirement activation failure/
+      );
+    } finally {
+      fs.renameSync = originalRename;
+      fs.rmSync = originalRemove;
+    }
+    assert.deepStrictEqual(
+      fs.readFileSync(path.join(vendorDir, "manifest.json")),
+      previousManifest,
+      "requirement activation failure must restore the previous plugin vendor"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(compositionRequirementPath),
+      previousRequirement,
+      "requirement activation failure must restore the previous requirement marker"
+    );
+  });
+}
+
+function assertRollbackQuarantineFailurePreservesOneGeneration() {
+  withTempRoot("tritonai-plugin-quarantine-rollback-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    const requirementPath = path.join(tempRoot, "build", "managed-plugin-composition.json");
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.0");
+    stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["alpha-reader"],
+      source: sourceIdentity(),
+      compositionRequirementPath: requirementPath
+    });
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.1");
+
+    const originalRename = fs.renameSync;
+    let previousRequirementMoved = false;
+    fs.renameSync = (source, target) => {
+      if (source === requirementPath) previousRequirementMoved = true;
+      if (previousRequirementMoved && target === requirementPath) {
+        throw new Error("simulated requirement activation failure");
+      }
+      if (source === vendorDir && path.basename(target) === "failed-vendor") {
+        throw new Error("simulated vendor quarantine failure");
+      }
+      return originalRename(source, target);
+    };
+    try {
+      assert.throws(
+        () => stagePluginsFromSource({
+          sourceRoot,
+          vendorDir,
+          selectedIds: ["alpha-reader"],
+          source: sourceIdentity(),
+          compositionRequirementPath: requirementPath
+        }),
+        /rollback failed: simulated vendor quarantine failure/
+      );
+    } finally {
+      fs.renameSync = originalRename;
+    }
+
+    assert.strictEqual(fs.existsSync(requirementPath), false, "failed rollback must stay fail closed");
+    const backup = fs.readdirSync(path.dirname(vendorDir))
+      .find((name) => name.startsWith(".managed-plugins-vendor-backup-"));
+    assert(backup, "failed rollback must preserve its complete previous generation");
+    const backupRoot = path.join(path.dirname(vendorDir), backup);
+    assert(fs.existsSync(path.join(backupRoot, "previous-vendor", "manifest.json")));
+    assert(fs.existsSync(path.join(backupRoot, "previous-requirement.json")));
   });
 }
 
@@ -665,6 +980,57 @@ function writeProviderPlugin(sourceRoot, id, version) {
     path.join(distributionRoot, "index.d.ts"),
     "export declare const manifest: unknown; export declare function createIntegrationProvider(input: unknown): unknown;\n"
   );
+}
+
+function writeSdkPluginArtifact(sourceRoot, id, version) {
+  const packageRoot = path.join(sourceRoot, "plugins", id);
+  fs.mkdirSync(packageRoot, { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, "README.md"), "Source documentation is not staged.\n");
+  fs.writeFileSync(
+    path.join(packageRoot, "package.json"),
+    `${JSON.stringify({ name: `@tritonai/plugin-${id}`, version, private: true }, null, 2)}\n`
+  );
+
+  const artifactRoot = path.join(sourceRoot, "artifacts", id);
+  const files = new Map([
+    ["artifact.json", Buffer.from('{"artifactVersion":1,"format":"tritonai.plugin-artifact/v1"}\n')],
+    [
+      ".tritonai-plugin/plugin.json",
+      Buffer.from(`{"apiVersion":"tritonai.plugin/v1","id":"${id}","version":"${version}"}\n`)
+    ],
+    [
+      "plugin.mjs",
+      Buffer.from('throw new Error("Installer must not import sealed plugin code");\n')
+    ],
+    [
+      `skills/${id}/SKILL.md`,
+      Buffer.from(`---\nname: ${id}\ndescription: Read sealed fixture data.\n---\n`)
+    ]
+  ]);
+  for (const [relative, contents] of files) {
+    const target = path.join(artifactRoot, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, contents);
+  }
+  return files;
+}
+
+function syntheticCatalog() {
+  return validateManagedPluginCatalog({
+    version: 1,
+    kind: "tritonai-managed-plugin-catalog",
+    source: {
+      repository: CANONICAL_PLUGIN_REPOSITORY_URL,
+      ref: "refs/tags/v1.2.3",
+      commit: "e".repeat(40)
+    },
+    packages: ["alpha-reader", "zeta-reader"].map((pluginId) => ({
+      pluginId,
+      version: "1.0.0",
+      digest: "a".repeat(64),
+      manifestDigest: "b".repeat(64)
+    }))
+  });
 }
 
 function pluginManifest(id, version) {

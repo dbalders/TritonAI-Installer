@@ -11,25 +11,33 @@ const {
 const {
   createManagedPluginBundleManifest
 } = require("../src/installer/plugin-bundle-manifest");
+const {
+  assertCatalogComposition,
+  readManagedPluginCatalog
+} = require("../src/installer/plugin-catalog");
 
 const root = path.resolve(__dirname, "..", "..");
 const vendorDir = path.join(root, "vendor", "plugins");
 const requirementPath = path.join(root, "build", "managed-plugin-composition.generated.json");
+const managedPluginCatalogPath = path.join(root, "config", "managed-plugin-catalog.json");
 const PLUGIN_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const CONTRACT_ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 const TOOL_NAME = /^[a-z][a-z0-9_.-]*$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-// Production inclusion is an explicit reviewed allowlist, independent of packages present in a release tag.
-const DEFAULT_RELEASE_PLUGIN_IDS = ["github", "google-workspace", "microsoft-365"];
 
 function main(env = process.env, args = process.argv.slice(2)) {
   const options = parseArguments(args);
-  const input = selectPluginSourceInput(readPluginSourceEnvironment(env), options);
+  const catalog = readManagedPluginCatalog(managedPluginCatalogPath);
+  const input = selectPluginSourceInput(
+    readPluginSourceEnvironment(env),
+    options,
+    undefined,
+    catalog
+  );
   const configured = Boolean(input.ref || input.commit || input.selectedIds.length || input.localSource);
   if (!configured) {
-    fs.rmSync(vendorDir, { recursive: true, force: true });
-    writePluginCompositionRequirement(false);
+    stageEmptyPluginComposition(vendorDir, requirementPath);
     console.log("Managed Harness plugin composition is not selected for this Installer build.");
     return null;
   }
@@ -47,9 +55,12 @@ function main(env = process.env, args = process.argv.slice(2)) {
         repository: CANONICAL_PLUGIN_REPOSITORY_URL,
         ref: input.ref,
         commit: input.commit
-      }
+      },
+      assertComposition: options.production
+        ? (composition) => assertCatalogComposition(catalog, composition)
+        : undefined,
+      compositionRequirementPath: requirementPath
     });
-    writePluginCompositionRequirement(true);
     console.log(
       `Prepared ${result.packages.length} managed Harness plugin package${result.packages.length === 1 ? "" : "s"} `
       + `from ${CANONICAL_PLUGIN_REPOSITORY_URL}#${input.ref} (${input.commit}).`
@@ -81,14 +92,26 @@ function parseArguments(args) {
   return { latest, production };
 }
 
-function selectPluginSourceInput(input, options, resolveLatest = resolveLatestStablePluginRelease) {
+function selectPluginSourceInput(
+  input,
+  options,
+  resolveLatest = resolveLatestStablePluginRelease,
+  catalog = null
+) {
   if (options.production) {
-    if (input.selectedIds.length > 0) {
+    if (input.ref || input.commit || input.selectedIds.length > 0 || input.localSource) {
       throw new Error(
-        "--production selects the reviewed Installer allowlist; TRITONAI_PLUGIN_IDS must be unset."
+        "--production selects the reviewed Installer catalog; explicit plugin source overrides must be unset."
       );
     }
-    return { ...input, selectedIds: DEFAULT_RELEASE_PLUGIN_IDS };
+    if (!catalog) throw new Error("--production requires the reviewed Installer plugin catalog.");
+    return {
+      ...input,
+      repository: catalog.source.repository,
+      ref: catalog.source.ref,
+      commit: catalog.source.commit,
+      selectedIds: catalog.packages.map((plugin) => plugin.pluginId)
+    };
   }
   const configured = Boolean(input.ref || input.commit || input.selectedIds.length || input.localSource);
   if (!options.latest) return input;
@@ -100,10 +123,11 @@ function selectPluginSourceInput(input, options, resolveLatest = resolveLatestSt
     }
     return input;
   }
+  if (!catalog) throw new Error("--latest requires the reviewed Installer plugin catalog.");
   return {
     ...input,
     ...resolveLatest(input.repository),
-    selectedIds: DEFAULT_RELEASE_PLUGIN_IDS
+    selectedIds: catalog.packages.map((plugin) => plugin.pluginId)
   };
 }
 
@@ -163,9 +187,26 @@ function compareStableVersions(left, right) {
   return 0;
 }
 
-function writePluginCompositionRequirement(required) {
-  fs.mkdirSync(path.dirname(requirementPath), { recursive: true });
-  fs.writeFileSync(requirementPath, `${JSON.stringify({ version: 1, required }, null, 2)}\n`);
+function writePluginCompositionRequirement(required, file = requirementPath) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify({ version: 1, required }, null, 2)}\n`);
+}
+
+function stageEmptyPluginComposition(targetDir, compositionRequirementPath) {
+  const requirementStagingRoot = createSiblingTempDir(
+    compositionRequirementPath,
+    ".managed-plugin-requirement-"
+  );
+  const stagedRequirementPath = path.join(requirementStagingRoot, "requirement.json");
+  try {
+    writePluginCompositionRequirement(false, stagedRequirementPath);
+    activateStagedVendor(undefined, targetDir, {
+      stagedPath: stagedRequirementPath,
+      targetPath: compositionRequirementPath
+    });
+  } finally {
+    fs.rmSync(requirementStagingRoot, { recursive: true, force: true });
+  }
 }
 
 function readPluginSourceEnvironment(env: Record<string, string | undefined> = {}) {
@@ -265,7 +306,7 @@ function clonePinnedSource(input, target) {
 }
 
 function materializeSelectedPluginTrees(repositoryRoot, commit, selectedIds) {
-  const selectedPaths = selectedIds.map((id) => `plugins/${id}`);
+  const selectedPaths = selectedIds.flatMap((id) => [`plugins/${id}`, `artifacts/${id}`]);
   let output;
   try {
     output = execFileSync(
@@ -281,11 +322,13 @@ function materializeSelectedPluginTrees(repositoryRoot, commit, selectedIds) {
     const match = record.match(/^(\d+) ([^ ]+) ([a-f0-9]{40,64})\t(.+)$/);
     if (!match) throw new Error("Pinned managed plugin tree contains an unsupported Git entry.");
     const [, mode, type, objectId, relative] = match;
-    const selectedId = selectedIds.find((id) => relative.startsWith(`plugins/${id}/`));
+    const selectedId = selectedIds.find(
+      (id) => relative.startsWith(`plugins/${id}/`) || relative.startsWith(`artifacts/${id}/`)
+    );
     if (!selectedId || type !== "blob" || !["100644", "100755"].includes(mode) || !isSafeGitObjectPath(relative)) {
       throw new Error(`Pinned managed plugin tree contains an unsafe entry: ${relative}.`);
     }
-    found.add(selectedId);
+    if (relative.startsWith(`plugins/${selectedId}/`)) found.add(selectedId);
     const target = path.join(repositoryRoot, ...relative.split("/"));
     fs.mkdirSync(path.dirname(target), { recursive: true });
     let contents;
@@ -308,7 +351,7 @@ function materializeSelectedPluginTrees(repositoryRoot, commit, selectedIds) {
 }
 
 function isSafeGitObjectPath(value) {
-  if (!value.startsWith("plugins/") || value.includes("\\") || value.includes("\0")) return false;
+  if (!/^(?:plugins|artifacts)\//.test(value) || value.includes("\\") || value.includes("\0")) return false;
   return value.split("/").every((segment) => segment && segment !== "." && segment !== "..");
 }
 
@@ -347,17 +390,54 @@ function assertRefResolvesToCommit(sourceRoot, ref, commit) {
   }
 }
 
-function stagePluginsFromSource({ sourceRoot, vendorDir, selectedIds, source }) {
+function stagePluginsFromSource({
+  sourceRoot,
+  vendorDir,
+  selectedIds,
+  source,
+  assertComposition,
+  compositionRequirementPath
+}) {
   assertCanonicalPluginRepository(source.repository, "Managed plugin source");
   const pluginsRoot = path.join(sourceRoot, "plugins");
+  const artifactsRoot = path.join(sourceRoot, "artifacts");
   validatePluginsRoot(pluginsRoot);
   const stagingDir = createSiblingTempDir(vendorDir, ".managed-plugins-vendor-");
   try {
-    const packages = selectedIds.map((id) => stagePluginPackage(pluginsRoot, stagingDir, id));
+    const packages = selectedIds.map((id) =>
+      stagePluginPackage(pluginsRoot, artifactsRoot, stagingDir, id)
+    );
     const manifest = createManagedPluginBundleManifest({ source, packages });
     fs.writeFileSync(path.join(stagingDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     validateStagedVendor(stagingDir, manifest);
-    activateStagedVendor(stagingDir, vendorDir);
+    if (assertComposition !== undefined) {
+      if (typeof assertComposition !== "function") {
+        throw new Error("Managed plugin composition assertion must be a function.");
+      }
+      assertComposition(manifest);
+    }
+    let requirementStagingRoot;
+    let stagedRequirementPath;
+    if (compositionRequirementPath !== undefined) {
+      if (typeof compositionRequirementPath !== "string" || !path.isAbsolute(compositionRequirementPath)) {
+        throw new Error("Managed plugin composition requirement path must be absolute.");
+      }
+      requirementStagingRoot = createSiblingTempDir(
+        compositionRequirementPath,
+        ".managed-plugin-requirement-"
+      );
+      stagedRequirementPath = path.join(requirementStagingRoot, "requirement.json");
+      writePluginCompositionRequirement(true, stagedRequirementPath);
+    }
+    try {
+      activateStagedVendor(stagingDir, vendorDir, stagedRequirementPath
+        ? { stagedPath: stagedRequirementPath, targetPath: compositionRequirementPath }
+        : undefined);
+    } finally {
+      if (requirementStagingRoot) {
+        fs.rmSync(requirementStagingRoot, { recursive: true, force: true });
+      }
+    }
     return manifest;
   } finally {
     fs.rmSync(stagingDir, { recursive: true, force: true });
@@ -376,7 +456,7 @@ function validatePluginsRoot(pluginsRoot) {
   }
 }
 
-function stagePluginPackage(pluginsRoot, stagingDir, id) {
+function stagePluginPackage(pluginsRoot, artifactsRoot, stagingDir, id) {
   const packageRoot = path.join(pluginsRoot, id);
   const packageStat = safeLstat(packageRoot, `Selected plugin ${id}`);
   if (!packageStat.isDirectory() || packageStat.isSymbolicLink()) {
@@ -384,10 +464,15 @@ function stagePluginPackage(pluginsRoot, stagingDir, id) {
   }
   validateRegularTree(packageRoot, `Selected plugin ${id} source`, { skipNodeModules: true });
   const packageJson = readJson(path.join(packageRoot, "package.json"), `${id} package.json`);
-  const pluginManifest = validatePluginManifest(
-    readJson(path.join(packageRoot, ".tritonai-plugin", "plugin.json"), `${id} plugin manifest`),
-    id
+  const artifactRoot = path.join(artifactsRoot, id);
+  if (fs.existsSync(artifactRoot)) {
+    return stageSdkPluginArtifact(packageJson, artifactRoot, stagingDir, id);
+  }
+  const pluginManifest = readJson(
+    path.join(packageRoot, ".tritonai-plugin", "plugin.json"),
+    `${id} plugin manifest`
   );
+  validatePluginManifest(pluginManifest, id);
   validatePackageMetadata(packageJson, pluginManifest, id);
   validatePluginMetadataDirectory(packageRoot, id);
   validateDeclaredSkillDirectories(packageRoot, pluginManifest, id);
@@ -416,6 +501,41 @@ function stagePluginPackage(pluginsRoot, stagingDir, id) {
     name: packageJson.name,
     version: packageJson.version,
     digest,
+    files
+  };
+}
+
+function stageSdkPluginArtifact(packageJson, artifactRoot, stagingDir, id) {
+  const artifactStat = safeLstat(artifactRoot, `Selected plugin ${id} sealed artifact`);
+  if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink()) {
+    throw new Error(`Selected plugin ${id} sealed artifact must be a real directory.`);
+  }
+  validateRegularTree(artifactRoot, `Selected plugin ${id} sealed artifact`);
+  if (packageJson.name !== `@tritonai/plugin-${id}`) throw new Error(`${id}: package name drift.`);
+  if (typeof packageJson.version !== "string" || !STABLE_SEMVER.test(packageJson.version)) {
+    throw new Error(`${id}: package version must use stable semantic versioning.`);
+  }
+
+  const targetRoot = path.join(stagingDir, "packages", id);
+  fs.cpSync(artifactRoot, targetRoot, {
+    recursive: true,
+    force: false,
+    errorOnExist: true
+  });
+  const files = describeFiles(targetRoot);
+  for (const required of ["artifact.json", ".tritonai-plugin/plugin.json", "plugin.mjs"]) {
+    if (!files.some(({ path: relative }) => relative === required)) {
+      throw new Error(`${id}: sealed SDK artifact is missing ${required}.`);
+    }
+  }
+  if (files.some(({ path: relative }) => relative.split("/").includes("node_modules"))) {
+    throw new Error(`${id}: sealed SDK artifact cannot contain node_modules content.`);
+  }
+  return {
+    id,
+    name: packageJson.name,
+    version: packageJson.version,
+    digest: digestFileSet(targetRoot, files),
     files
   };
 }
@@ -686,33 +806,84 @@ function validateStagedVendor(stagingDir, manifest) {
   }
 }
 
-function activateStagedVendor(stagingDir, targetDir) {
+function activateStagedVendor(stagingDir, targetDir, requirement) {
   const backupRoot = createSiblingTempDir(targetDir, ".managed-plugins-vendor-backup-");
-  const previous = path.join(backupRoot, "previous");
-  let previousMoved = false;
+  const previousVendor = path.join(backupRoot, "previous-vendor");
+  const previousRequirement = path.join(backupRoot, "previous-requirement.json");
+  const failedVendor = path.join(backupRoot, "failed-vendor");
+  const failedRequirement = path.join(backupRoot, "failed-requirement.json");
+  let previousVendorMoved = false;
+  let previousRequirementMoved = false;
+  let vendorActivated = false;
+  let requirementActivated = false;
   try {
     if (fs.existsSync(targetDir)) {
-      fs.renameSync(targetDir, previous);
-      previousMoved = true;
+      fs.renameSync(targetDir, previousVendor);
+      previousVendorMoved = true;
     }
-    fs.renameSync(stagingDir, targetDir);
+    if (requirement && fs.existsSync(requirement.targetPath)) {
+      fs.renameSync(requirement.targetPath, previousRequirement);
+      previousRequirementMoved = true;
+    }
+    if (stagingDir) {
+      fs.renameSync(stagingDir, targetDir);
+      vendorActivated = true;
+    }
+    if (requirement) {
+      fs.renameSync(requirement.stagedPath, requirement.targetPath);
+      requirementActivated = true;
+    }
   } catch (error) {
     const rollbackErrors = [];
-    if (previousMoved && fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true });
-    if (previousMoved) {
+    let quarantineFailed = false;
+    if (requirementActivated && fs.existsSync(requirement.targetPath)) {
       try {
-        fs.renameSync(previous, targetDir);
-        previousMoved = false;
+        fs.renameSync(requirement.targetPath, failedRequirement);
+        requirementActivated = false;
+      } catch (rollbackError) {
+        quarantineFailed = true;
+        rollbackErrors.push(rollbackError.message);
+      }
+    }
+    if (vendorActivated && fs.existsSync(targetDir)) {
+      try {
+        fs.renameSync(targetDir, failedVendor);
+        vendorActivated = false;
+      } catch (rollbackError) {
+        quarantineFailed = true;
+        rollbackErrors.push(rollbackError.message);
+      }
+    }
+    let restoreFailed = quarantineFailed;
+    if (!restoreFailed && previousVendorMoved) {
+      try {
+        if (fs.existsSync(targetDir)) throw new Error("plugin vendor restore target is occupied");
+        fs.renameSync(previousVendor, targetDir);
+        previousVendorMoved = false;
+      } catch (rollbackError) {
+        restoreFailed = true;
+        rollbackErrors.push(rollbackError.message);
+      }
+    }
+    if (!restoreFailed && previousRequirementMoved) {
+      try {
+        if (fs.existsSync(requirement.targetPath)) {
+          throw new Error("composition requirement restore target is occupied");
+        }
+        fs.renameSync(previousRequirement, requirement.targetPath);
+        previousRequirementMoved = false;
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError.message);
       }
     }
     const rollbackFailure = rollbackErrors.length
-      ? `; rollback failed: ${rollbackErrors.join("; ")}; previous vendor kept at ${previous}`
+      ? `; rollback failed: ${rollbackErrors.join("; ")}; previous release state kept at ${backupRoot}`
       : "";
-    throw new Error(`Could not atomically activate managed plugin vendor: ${error.message}${rollbackFailure}`);
+    throw new Error(`Could not atomically activate managed plugin release state: ${error.message}${rollbackFailure}`);
   } finally {
-    if (!previousMoved) fs.rmSync(backupRoot, { recursive: true, force: true });
+    if (!previousVendorMoved && !previousRequirementMoved) {
+      fs.rmSync(backupRoot, { recursive: true, force: true });
+    }
   }
   fs.rmSync(backupRoot, { recursive: true, force: true });
 }
