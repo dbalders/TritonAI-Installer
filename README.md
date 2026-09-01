@@ -53,7 +53,7 @@ Packaged builds use the canonical `edu.ucsd.tritonai.installer` application iden
 
 Managed plugins have a separate, fail-closed source contract. Stable macOS and Windows packaging
 uses the reviewed `config/managed-plugin-catalog.json`, which pins the exact Plugins ref, commit,
-package versions, package and manifest digests, and SDK artifact descriptor digest. Production
+package versions, package digests, and manifest digests. Production
 selection is stable and required as one composition; unenforced per-package policy metadata is
 intentionally rejected. Every Harness release must publish an
 artifact-bound composition proof for those exact bytes. Publishing a package or placing it in the
