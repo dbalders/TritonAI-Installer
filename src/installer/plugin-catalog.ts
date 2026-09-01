@@ -47,8 +47,7 @@ function validateManagedPluginCatalog(value) {
         "pluginId",
         "version",
         "digest",
-        "manifestDigest",
-        "artifactDescriptorDigest"
+        "manifestDigest"
       ],
       "Managed plugin catalog package"
     );
@@ -65,13 +64,6 @@ function validateManagedPluginCatalog(value) {
       if (typeof plugin[field] !== "string" || !SHA256.test(plugin[field])) {
         throw new Error(`Managed plugin catalog package ${plugin.pluginId} has an invalid ${field}.`);
       }
-    }
-    if (plugin.artifactDescriptorDigest !== null
-      && (typeof plugin.artifactDescriptorDigest !== "string"
-        || !SHA256.test(plugin.artifactDescriptorDigest))) {
-      throw new Error(
-        `Managed plugin catalog package ${plugin.pluginId} has an invalid artifact descriptor digest.`
-      );
     }
   }
   return value;
@@ -91,13 +83,11 @@ function assertCatalogComposition(catalog, composition) {
     const expected = approved.packages[index];
     const actual = composition.packages[index];
     const manifest = actual?.files?.find((file) => file.path === ".tritonai-plugin/plugin.json");
-    const descriptor = actual?.files?.find((file) => file.path === "artifact.json");
     if (!actual
       || actual.id !== expected.pluginId
       || actual.version !== expected.version
       || actual.digest !== expected.digest
-      || manifest?.sha256 !== expected.manifestDigest
-      || (descriptor?.sha256 || null) !== expected.artifactDescriptorDigest) {
+      || manifest?.sha256 !== expected.manifestDigest) {
       throw new Error(
         `Prepared managed plugin ${expected.pluginId} does not match the approved catalog digests.`
       );

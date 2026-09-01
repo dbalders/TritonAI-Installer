@@ -3,7 +3,6 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { initSync, parse: parseModule } = require("es-module-lexer");
 const {
   CANONICAL_PLUGIN_REPOSITORY_URL,
   assertCanonicalPluginRepository,
@@ -26,10 +25,6 @@ const CONTRACT_ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 const TOOL_NAME = /^[a-z][a-z0-9_.-]*$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const SDK_API_VERSION = "tritonai.plugin/v1";
-const SDK_ARTIFACT_FORMAT = "tritonai.plugin-artifact/v1";
-const SDK_MANIFEST_PATH = ".tritonai-plugin/plugin.json";
-const SDK_ENTRY_PATH = "plugin.mjs";
 
 function main(env = process.env, args = process.argv.slice(2)) {
   const options = parseArguments(args);
@@ -465,18 +460,9 @@ function stagePluginPackage(pluginsRoot, stagingDir, id) {
   validateRegularTree(packageRoot, `Selected plugin ${id} source`, { skipNodeModules: true });
   const packageJson = readJson(path.join(packageRoot, "package.json"), `${id} package.json`);
   const pluginManifest = readJson(
-    path.join(packageRoot, SDK_MANIFEST_PATH),
+    path.join(packageRoot, ".tritonai-plugin", "plugin.json"),
     `${id} plugin manifest`
   );
-  if (pluginManifest.apiVersion === SDK_API_VERSION) {
-    return stageSdkPluginPackage({
-      packageRoot,
-      stagingDir,
-      id,
-      packageJson,
-      pluginManifest: validateSdkPluginManifest(pluginManifest, id)
-    });
-  }
   validatePluginManifest(pluginManifest, id);
   validatePackageMetadata(packageJson, pluginManifest, id);
   validatePluginMetadataDirectory(packageRoot, id);
@@ -508,327 +494,6 @@ function stagePluginPackage(pluginsRoot, stagingDir, id) {
     digest,
     files
   };
-}
-
-function stageSdkPluginPackage({ packageRoot, stagingDir, id, packageJson, pluginManifest }) {
-  validateSdkPackageMetadata(packageJson, pluginManifest, id);
-  validatePluginMetadataDirectory(packageRoot, id);
-  validateDeclaredSkillDirectories(packageRoot, pluginManifest, id);
-
-  const manifestFile = path.join(packageRoot, SDK_MANIFEST_PATH);
-  const manifestBytes = fs.readFileSync(manifestFile);
-  if (!manifestBytes.equals(Buffer.from(`${canonicalJson(pluginManifest)}\n`, "utf8"))) {
-    throw new Error(`${id}: SDK manifest must use canonical JSON with one trailing newline.`);
-  }
-  const entryFile = path.join(packageRoot, pluginManifest.entry);
-  const entryStat = safeLstat(entryFile, `${id} SDK entry`);
-  if (!entryStat.isFile() || entryStat.isSymbolicLink() || entryStat.size > 512 * 1024) {
-    throw new Error(`${id}: SDK entry must be a regular file no larger than 512 KiB.`);
-  }
-  const entryBytes = fs.readFileSync(entryFile);
-  const entrySource = entryBytes.toString("utf8");
-  if (!Buffer.from(entrySource, "utf8").equals(entryBytes)) {
-    throw new Error(`${id}: SDK entry must be valid UTF-8.`);
-  }
-  const { nodeBuiltins, exports } = inspectSdkModule(entrySource, id);
-  if (JSON.stringify(exports) !== JSON.stringify(["createIntegrationProvider"])) {
-    throw new Error(`${id}: SDK entry must export only createIntegrationProvider.`);
-  }
-
-  const targetRoot = path.join(stagingDir, "packages", id);
-  fs.mkdirSync(targetRoot, { recursive: true });
-  copyRequiredFile(packageRoot, targetRoot, SDK_MANIFEST_PATH);
-  fs.copyFileSync(entryFile, path.join(targetRoot, SDK_ENTRY_PATH));
-  for (const skill of pluginManifest.skills) {
-    const relative = path.join("skills", skill.name);
-    copySafeTree(packageRoot, targetRoot, relative, `Plugin ${id} skill ${skill.name}`);
-    validateSkillFrontmatter(path.join(targetRoot, relative, "SKILL.md"), skill, id);
-  }
-  validateSdkPackagedPaths(
-    describeFiles(targetRoot).map((file) => file.path),
-    pluginManifest,
-    id
-  );
-  const descriptor = createSdkArtifactDescriptor(targetRoot, pluginManifest, nodeBuiltins);
-  fs.writeFileSync(
-    path.join(targetRoot, "artifact.json"),
-    `${canonicalJson(descriptor)}\n`,
-    { flag: "wx" }
-  );
-  const descriptorBytes = fs.readFileSync(path.join(targetRoot, "artifact.json"));
-  const decoded = JSON.parse(descriptorBytes.toString("utf8"));
-  if (!descriptorBytes.equals(Buffer.from(`${canonicalJson(decoded)}\n`, "utf8"))) {
-    throw new Error(`${id}: SDK artifact descriptor is not canonical.`);
-  }
-  validateSdkArtifactDescriptor(decoded, targetRoot, pluginManifest, nodeBuiltins);
-
-  const files = describeFiles(targetRoot);
-  return {
-    id,
-    name: packageJson.name,
-    version: packageJson.version,
-    digest: digestFileSet(targetRoot, files),
-    files
-  };
-}
-
-function validateSdkPackageMetadata(packageJson, manifest, id) {
-  if (packageJson.name !== `@tritonai/plugin-${id}`
-    || packageJson.version !== manifest.version) {
-    throw new Error(`${id}: SDK package identity drift.`);
-  }
-  const requiredFiles = [".tritonai-plugin", "dist", "skills", "README.md", "SECURITY.md"];
-  const supportedFiles = new Set([...requiredFiles, "LICENSE"]);
-  if (!Array.isArray(packageJson.files)
-    || new Set(packageJson.files).size !== packageJson.files.length
-    || !requiredFiles.every((entry) => packageJson.files.includes(entry))
-    || packageJson.files.some((entry) => typeof entry !== "string" || !supportedFiles.has(entry))) {
-    throw new Error(`${id}: SDK package files must be explicit and complete.`);
-  }
-  for (const field of [
-    "dependencies",
-    "optionalDependencies",
-    "peerDependencies",
-    "bundledDependencies",
-    "bundleDependencies"
-  ]) {
-    const value = packageJson[field];
-    if (value !== undefined
-      && (!value || typeof value !== "object" || Object.keys(value).length > 0)) {
-      throw new Error(`${id}: SDK package must be self-contained; ${field} is not allowed.`);
-    }
-  }
-  const scripts = packageJson.scripts || {};
-  if (!scripts || typeof scripts !== "object" || Array.isArray(scripts)) {
-    throw new Error(`${id}: SDK package scripts must be an object.`);
-  }
-  for (const name of [
-    "preinstall",
-    "install",
-    "postinstall",
-    "prepare",
-    "prepublish",
-    "prepublishOnly"
-  ]) {
-    if (Object.hasOwn(scripts, name)) {
-      throw new Error(`${id}: SDK package lifecycle script is forbidden: ${name}.`);
-    }
-  }
-  if (packageJson.gypfile === true || packageJson.binary !== undefined) {
-    throw new Error(`${id}: SDK package native addon metadata is forbidden.`);
-  }
-}
-
-function validateSdkPluginManifest(value, expectedId) {
-  assertRecord(value, `${expectedId} SDK plugin manifest`);
-  assertOnlyKeys(
-    value,
-    new Set([
-      "apiVersion",
-      "kind",
-      "manifestVersion",
-      "id",
-      "name",
-      "description",
-      "version",
-      "sdk",
-      "entry",
-      "provider",
-      "configurationSchema",
-      "capabilities",
-      "tools",
-      "skills"
-    ]),
-    `${expectedId} SDK plugin manifest`
-  );
-  if (value.apiVersion !== SDK_API_VERSION
-    || value.kind !== "IntegrationPlugin"
-    || value.manifestVersion !== 1
-    || value.id !== expectedId
-    || !PLUGIN_ID.test(value.id)
-    || !STABLE_SEMVER.test(value.version)
-    || typeof value.entry !== "string"
-    || !/^dist\/[A-Za-z0-9][A-Za-z0-9._-]*\.mjs$/.test(value.entry)
-    || typeof value.provider !== "string"
-    || !CONTRACT_ID.test(value.provider)) {
-    throw new Error(`${expectedId}: unsupported SDK plugin manifest identity or entry.`);
-  }
-  assertRecord(value.sdk, `${expectedId} SDK compatibility`);
-  assertOnlyKeys(
-    value.sdk,
-    new Set(["apiMajor", "requiredHostContractLevel"]),
-    `${expectedId} SDK compatibility`
-  );
-  if (value.sdk.apiMajor !== 1 || value.sdk.requiredHostContractLevel !== 1) {
-    throw new Error(`${expectedId}: unsupported SDK compatibility.`);
-  }
-  validateSdkSchema(value.configurationSchema, `${expectedId} configuration schema`);
-  if (!Array.isArray(value.tools)) throw new Error(`${expectedId}: SDK tools must be an array.`);
-  for (const tool of value.tools) {
-    assertRecord(tool, `${expectedId} SDK tool`);
-    assertOnlyKeys(
-      tool,
-      new Set([
-        "name",
-        "displayName",
-        "description",
-        "capabilities",
-        "effect",
-        "destructive",
-        "idempotent",
-        "openWorld",
-        "inputSchema"
-      ]),
-      `${expectedId} SDK tool`
-    );
-    for (const field of ["destructive", "idempotent", "openWorld"]) {
-      if (typeof tool[field] !== "boolean") {
-        throw new Error(`${expectedId}: SDK tool ${field} annotation is required.`);
-      }
-    }
-    validateSdkSchema(tool.inputSchema, `${expectedId} tool ${tool.name} schema`);
-  }
-  validatePluginManifest({
-    apiVersion: "tritonai.harness/v2",
-    kind: "IntegrationPlugin",
-    manifestVersion: 2,
-    id: value.id,
-    name: value.name,
-    description: value.description,
-    version: value.version,
-    provider: value.provider,
-    capabilities: value.capabilities,
-    tools: value.tools.map(({
-      inputSchema: _inputSchema,
-      destructive: _destructive,
-      idempotent: _idempotent,
-      openWorld: _openWorld,
-      ...tool
-    }) => tool),
-    skills: value.skills
-  }, expectedId);
-  return value;
-}
-
-function validateSdkSchema(value, label) {
-  assertRecord(value, label);
-  if (value.$schema !== "https://json-schema.org/draft/2020-12/schema"
-    || value.type !== "object"
-    || value.additionalProperties !== false
-    || !value.properties
-    || typeof value.properties !== "object"
-    || Array.isArray(value.properties)) {
-    throw new Error(`${label} must be a closed draft 2020-12 object schema.`);
-  }
-}
-
-function inspectSdkModule(source, id) {
-  initSync();
-  const [imports, exports] = parseModule(source);
-  const nodeBuiltins = [];
-  for (const request of imports) {
-    if (request.d === -2
-      || request.n === undefined
-      || request.d !== -1
-      || !request.n.startsWith("node:")) {
-      throw new Error(`${id}: SDK entry has an unresolved or dynamic dependency.`);
-    }
-    nodeBuiltins.push(request.n);
-  }
-  if (/(?:\brequire\s*\(|\bmodule\s*\.\s*require\s*\(|\bcreateRequire\b)/.test(source)) {
-    throw new Error(`${id}: SDK entry cannot load CommonJS modules.`);
-  }
-  return {
-    nodeBuiltins: [...new Set(nodeBuiltins)].sort(),
-    exports: exports.map(({ n }) => n).sort()
-  };
-}
-
-function createSdkArtifactDescriptor(targetRoot, manifest, nodeBuiltins) {
-  const files = describeFiles(targetRoot).filter((file) => file.path !== "artifact.json");
-  return {
-    artifactVersion: 1,
-    format: SDK_ARTIFACT_FORMAT,
-    plugin: { id: manifest.id, version: manifest.version },
-    sdk: {
-      apiMajor: manifest.sdk.apiMajor,
-      requiredHostContractLevel: manifest.sdk.requiredHostContractLevel
-    },
-    target: {
-      architecture: "any",
-      environments: ["electron-main", "server"],
-      module: "esm",
-      node: ">=24.13.1 <25",
-      nodeBuiltins,
-      platform: "any",
-      runtime: "node"
-    },
-    entry: SDK_ENTRY_PATH,
-    manifest: SDK_MANIFEST_PATH,
-    configurationSchema: sha256Bytes(
-      Buffer.from(canonicalJson(manifest.configurationSchema), "utf8")
-    ),
-    schemas: manifest.tools
-      .map((tool) => ({
-        tool: tool.name,
-        sha256: sha256Bytes(Buffer.from(canonicalJson(tool.inputSchema), "utf8"))
-      }))
-      .sort((left, right) => left.tool < right.tool ? -1 : left.tool > right.tool ? 1 : 0),
-    files
-  };
-}
-
-function validateSdkArtifactDescriptor(value, targetRoot, manifest, nodeBuiltins) {
-  assertRecord(value, `${manifest.id} SDK artifact descriptor`);
-  assertOnlyKeys(
-    value,
-    new Set([
-      "artifactVersion",
-      "format",
-      "plugin",
-      "sdk",
-      "target",
-      "entry",
-      "manifest",
-      "configurationSchema",
-      "schemas",
-      "files"
-    ]),
-    `${manifest.id} SDK artifact descriptor`
-  );
-  const expected = createSdkArtifactDescriptor(targetRoot, manifest, nodeBuiltins);
-  if (canonicalJson(value) !== canonicalJson(expected)) {
-    throw new Error(`${manifest.id}: SDK artifact descriptor does not match its exact payloads.`);
-  }
-}
-
-function validateSdkPackagedPaths(paths, manifest, id) {
-  const skills = new Set(manifest.skills.map((skill) => skill.name));
-  for (const relative of paths) {
-    if (relative === SDK_MANIFEST_PATH || relative === SDK_ENTRY_PATH) continue;
-    if (relative.startsWith("skills/") && skills.has(relative.split("/")[1])) continue;
-    throw new Error(`${id}: SDK artifact contains an undeclared payload: ${relative}.`);
-  }
-  for (const skill of skills) {
-    if (!paths.includes(`skills/${skill}/SKILL.md`)) {
-      throw new Error(`${id}: SDK artifact skill entrypoint is missing: ${skill}.`);
-    }
-  }
-}
-
-function canonicalJson(value) {
-  const normalize = (current) => {
-    if (Array.isArray(current)) return current.map(normalize);
-    if (current && typeof current === "object") {
-      return Object.fromEntries(
-        Object.keys(current)
-          .sort()
-          .map((key) => [key, normalize(current[key])])
-      );
-    }
-    return current;
-  };
-  return JSON.stringify(normalize(value));
 }
 
 function validatePackageMetadata(packageJson, manifest, id) {
@@ -1083,10 +748,6 @@ function sha256(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
-function sha256Bytes(contents) {
-  return crypto.createHash("sha256").update(contents).digest("hex");
-}
-
 function validateStagedVendor(stagingDir, manifest) {
   const entries = fs.readdirSync(stagingDir).sort();
   if (JSON.stringify(entries) !== JSON.stringify(["manifest.json", "packages"])) {
@@ -1241,7 +902,6 @@ module.exports = {
   selectPluginSourceInput,
   stagePluginsFromSource,
   validatePluginManifest,
-  validateSdkPluginManifest,
   validateSourceInput,
   writePluginCompositionRequirement
 };
