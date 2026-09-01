@@ -138,6 +138,14 @@ if (!windowsPackageScript.includes("prepare:t3code-desktop-vendor:win:unsigned:c
 if (!signedWindowsPackageScript.includes("prepare:t3code-desktop-vendor:win:compiled")) {
   throw new Error("Signed Windows release packaging must explicitly bind the Authenticode Harness trust policy.");
 }
+for (const [name, script] of [
+  ["package:win-installer", windowsPackageScript],
+  ["package:win-installer:signed", signedWindowsPackageScript]
+]) {
+  if (!script.includes("prepare:plugins-vendor:production:compiled")) {
+    throw new Error(`${name} must use the reviewed production plugin catalog.`);
+  }
+}
 if (nativeWindowsVerificationScript !== "npm run build && node dist/scripts/verify-windows-unsigned-release.js") {
   throw new Error("Unsigned Windows native verification must run the exact-candidate verifier.");
 }
@@ -154,7 +162,8 @@ for (const scriptName of [
   "prepare:node-runtime:win:compiled",
   "prepare:skills-vendor:compiled",
   "prepare:plugins-vendor:compiled",
-  "prepare:plugins-vendor:latest:compiled"
+  "prepare:plugins-vendor:latest:compiled",
+  "prepare:plugins-vendor:production:compiled"
 ]) {
   const script = packageJson.scripts?.[scriptName] || "";
   if (!script || script.includes("npm run build")) {

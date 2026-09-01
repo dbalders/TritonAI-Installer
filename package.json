@@ -36,6 +36,7 @@
     "prepare:plugins-vendor": "npm run build && npm run prepare:plugins-vendor:compiled --",
     "prepare:plugins-vendor:compiled": "node dist/scripts/prepare-plugins-vendor.js",
     "prepare:plugins-vendor:latest:compiled": "node dist/scripts/prepare-plugins-vendor.js --latest",
+    "prepare:plugins-vendor:production:compiled": "node dist/scripts/prepare-plugins-vendor.js --production",
     "prepare:codex-cli-vendor": "npm run build && node dist/scripts/prepare-codex-cli-vendor.js",
     "prepare:codex-cli-vendor:win": "npm run build && npm run prepare:codex-cli-vendor:win:compiled",
     "prepare:codex-cli-vendor:win:compiled": "node dist/scripts/prepare-codex-cli-vendor.js win-x64",
@@ -57,9 +58,9 @@
     "release:github": "npm run build && node dist/scripts/publish-github-release.js",
     "release:contract": "npm run build && node dist/scripts/release-contract.js",
     "clean:release-output:compiled": "node dist/scripts/clean-release-output.js",
-    "package:win-installer": "npm run build && node dist/scripts/package-windows-unsigned.js --preflight && npm run clean:release-output:compiled -- win && npm run prepare:managed-config:compiled && npm run prepare:plugins-vendor:latest:compiled && npm run prepare:t3code-desktop-vendor:win:unsigned:compiled && npm run prepare:codex-cli-vendor:win:compiled && npm run prepare:node-runtime:win:compiled && node dist/scripts/prepare-skills-vendor.js --require-clean && node dist/scripts/package-windows-unsigned.js",
+    "package:win-installer": "npm run build && node dist/scripts/package-windows-unsigned.js --preflight && npm run clean:release-output:compiled -- win && npm run prepare:managed-config:compiled && npm run prepare:plugins-vendor:production:compiled && npm run prepare:t3code-desktop-vendor:win:unsigned:compiled && npm run prepare:codex-cli-vendor:win:compiled && npm run prepare:node-runtime:win:compiled && node dist/scripts/prepare-skills-vendor.js --require-clean && node dist/scripts/package-windows-unsigned.js",
     "verify:win-installer:native": "npm run build && node dist/scripts/verify-windows-unsigned-release.js",
-    "package:win-installer:signed": "npm run build && npm run clean:release-output:compiled -- win && npm run prepare:managed-config:compiled && npm run prepare:plugins-vendor:latest:compiled && npm run prepare:t3code-desktop-vendor:win:compiled && npm run prepare:codex-cli-vendor:win:compiled && npm run prepare:node-runtime:win:compiled && node dist/scripts/prepare-skills-vendor.js --require-clean && node dist/scripts/windows-signing.js",
+    "package:win-installer:signed": "npm run build && npm run clean:release-output:compiled -- win && npm run prepare:managed-config:compiled && npm run prepare:plugins-vendor:production:compiled && npm run prepare:t3code-desktop-vendor:win:compiled && npm run prepare:codex-cli-vendor:win:compiled && npm run prepare:node-runtime:win:compiled && node dist/scripts/prepare-skills-vendor.js --require-clean && node dist/scripts/windows-signing.js",
     "package:win-portable:unsigned-dev": "npm run build && node dist/scripts/package-windows-portable.js",
     "mac:trust-dev": "npm run build && node dist/scripts/trust-macos-dev-artifacts.js",
     "mac:open-dev": "npm run build && node dist/scripts/trust-macos-dev-artifacts.js --open"
@@ -87,6 +88,7 @@
     "@types/node": "22.20.1",
     "electron": "42.8.0",
     "electron-builder": "26.15.7",
+    "es-module-lexer": "2.3.1",
     "typescript": "7.0.2"
   }
 }

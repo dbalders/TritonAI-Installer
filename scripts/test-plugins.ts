@@ -19,6 +19,11 @@ const {
   readPluginCompositionRequirement
 } = require("../src/installer/plugins");
 const {
+  assertCatalogComposition,
+  readManagedPluginCatalog,
+  validateManagedPluginCatalog
+} = require("../src/installer/plugin-catalog");
+const {
   compareStableVersions,
   parseArguments,
   parseLatestStablePluginRelease,
@@ -36,13 +41,22 @@ const {
 } = require("./prepare-t3code-desktop-vendor");
 
 const COMMIT = "a".repeat(40);
+const managedPluginCatalogPath = path.join(
+  __dirname,
+  "..",
+  "..",
+  "config",
+  "managed-plugin-catalog.json"
+);
 
 function main() {
   assertCanonicalProvenance();
+  assertReviewedPluginCatalog();
   assertLatestStableReleaseSelection();
   assertExplicitSourceContract();
   assertDeterministicSelectionAndStaging();
   assertProviderPackageStaging();
+  assertSdkArtifactStaging();
   assertRejectsUnsafePackages();
   assertAtomicVendorRollback();
   assertCompositionContract();
@@ -53,6 +67,7 @@ function main() {
 }
 
 function assertLatestStableReleaseSelection() {
+  const catalog = readManagedPluginCatalog(managedPluginCatalogPath);
   assert.deepStrictEqual(parseArguments([]), { latest: false, production: false });
   assert.deepStrictEqual(parseArguments(["--latest"]), { latest: true, production: false });
   assert.deepStrictEqual(parseArguments(["--production"]), { latest: false, production: true });
@@ -99,7 +114,7 @@ function assertLatestStableReleaseSelection() {
     resolverCalls += 1;
     assert.strictEqual(repository, CANONICAL_PLUGIN_REPOSITORY_URL);
     return { repository, ref: "refs/tags/v1.2.3", commit: "c".repeat(40) };
-  });
+  }, catalog);
   assert.strictEqual(resolverCalls, 1);
   assert.strictEqual(automatic.ref, "refs/tags/v1.2.3");
   assert.strictEqual(automatic.commit, "c".repeat(40));
@@ -120,13 +135,116 @@ function assertLatestStableReleaseSelection() {
   );
 
   const production = selectPluginSourceInput(
-    { ...explicit, selectedIds: [] },
-    { latest: false, production: true }
+    emptyInput,
+    { latest: false, production: true },
+    undefined,
+    catalog
   );
   assert.deepStrictEqual(production.selectedIds, ["github", "google-workspace", "microsoft-365"]);
   assert.throws(
     () => selectPluginSourceInput(explicit, { latest: false, production: true }),
-    /TRITONAI_PLUGIN_IDS must be unset/
+    /source overrides must be unset/
+  );
+}
+
+function assertReviewedPluginCatalog() {
+  const catalog = readManagedPluginCatalog(managedPluginCatalogPath);
+  assert.deepStrictEqual(
+    catalog.packages.map((plugin) => plugin.pluginId),
+    ["github", "google-workspace", "microsoft-365"]
+  );
+  assert.strictEqual(validateManagedPluginCatalog(catalog), catalog);
+
+  const composition = {
+    version: 1,
+    kind: "tritonai-harness-plugin-composition",
+    source: { ...catalog.source },
+    packages: catalog.packages.map((plugin) => ({
+      id: plugin.pluginId,
+      name: `@tritonai/plugin-${plugin.pluginId}`,
+      version: plugin.version,
+      digest: plugin.digest,
+      files: [{
+        path: ".tritonai-plugin/plugin.json",
+        sha256: plugin.manifestDigest,
+        size: 1
+      }]
+    }))
+  };
+  assert.strictEqual(assertCatalogComposition(catalog, composition), composition);
+  assert.throws(
+    () => assertCatalogComposition(catalog, {
+      ...composition,
+      packages: composition.packages.map((plugin, index) => index === 0
+        ? { ...plugin, digest: "f".repeat(64) }
+        : plugin)
+    }),
+    /catalog digests/
+  );
+  assert.throws(
+    () => validateManagedPluginCatalog({ ...catalog, unexpected: true }),
+    /unsupported fields/
+  );
+  assert.throws(
+    () => validateManagedPluginCatalog({
+      ...catalog,
+      packages: [...catalog.packages].reverse()
+    }),
+    /sorted stable ids/
+  );
+  assert.throws(
+    () => validateManagedPluginCatalog({
+      ...catalog,
+      packages: catalog.packages.map((plugin, index) => index === 0
+        ? { ...plugin, artifactDescriptorDigest: "not-a-digest" }
+        : plugin)
+    }),
+    /artifact descriptor digest/
+  );
+
+  const sdkPackage = {
+    pluginId: "sdk-reader",
+    publisher: "University of California San Diego",
+    version: "1.0.0",
+    required: false,
+    channel: "stable",
+    retirementPolicy: "retain-state",
+    digest: "d".repeat(64),
+    manifestDigest: "e".repeat(64),
+    artifactDescriptorDigest: "f".repeat(64)
+  };
+  const sdkCatalog = { ...catalog, packages: [sdkPackage] };
+  const sdkComposition = {
+    ...composition,
+    packages: [{
+      id: "sdk-reader",
+      name: "@tritonai/plugin-sdk-reader",
+      version: "1.0.0",
+      digest: sdkPackage.digest,
+      files: [
+        {
+          path: ".tritonai-plugin/plugin.json",
+          sha256: sdkPackage.manifestDigest,
+          size: 1
+        },
+        {
+          path: "artifact.json",
+          sha256: sdkPackage.artifactDescriptorDigest,
+          size: 1
+        }
+      ]
+    }]
+  };
+  assert.strictEqual(assertCatalogComposition(sdkCatalog, sdkComposition), sdkComposition);
+  assert.throws(
+    () => assertCatalogComposition(sdkCatalog, {
+      ...sdkComposition,
+      packages: sdkComposition.packages.map((plugin) => ({
+        ...plugin,
+        files: plugin.files.filter((file) => file.path !== "artifact.json")
+      }))
+    }),
+    /catalog digests/
   );
 }
 
@@ -275,6 +393,51 @@ function assertProviderPackageStaging() {
         source: sourceIdentity()
       }),
       /composed package is missing dist\/index\.d\.ts/
+    );
+  });
+}
+
+function assertSdkArtifactStaging() {
+  withTempRoot("tritonai-sdk-plugin-stage-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    writeSdkPlugin(sourceRoot, "sdk-reader", "1.0.0");
+
+    const composition = stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["sdk-reader"],
+      source: sourceIdentity()
+    });
+    assert.deepStrictEqual(
+      composition.packages[0].files.map(({ path: relative }) => relative),
+      [
+        ".tritonai-plugin/plugin.json",
+        "artifact.json",
+        "plugin.mjs",
+        "skills/sdk-reader/SKILL.md"
+      ]
+    );
+    const descriptorFile = path.join(vendorDir, "packages", "sdk-reader", "artifact.json");
+    const descriptor = JSON.parse(fs.readFileSync(descriptorFile, "utf8"));
+    assert.deepStrictEqual(descriptor.plugin, { id: "sdk-reader", version: "1.0.0" });
+    assert.deepStrictEqual(descriptor.target.environments, ["electron-main", "server"]);
+    assert.deepStrictEqual(descriptor.target.nodeBuiltins, ["node:crypto"]);
+    assert.strictEqual(descriptor.entry, "plugin.mjs");
+
+    const sourceEntry = path.join(sourceRoot, "plugins", "sdk-reader", "dist", "index.mjs");
+    fs.writeFileSync(
+      sourceEntry,
+      'import "./relative.mjs"; export function createIntegrationProvider() { return {}; }\n'
+    );
+    assert.throws(
+      () => stagePluginsFromSource({
+        sourceRoot,
+        vendorDir,
+        selectedIds: ["sdk-reader"],
+        source: sourceIdentity()
+      }),
+      /unresolved or dynamic dependency/
     );
   });
 }
@@ -665,6 +828,100 @@ function writeProviderPlugin(sourceRoot, id, version) {
     path.join(distributionRoot, "index.d.ts"),
     "export declare const manifest: unknown; export declare function createIntegrationProvider(input: unknown): unknown;\n"
   );
+}
+
+function writeSdkPlugin(sourceRoot, id, version) {
+  const packageRoot = path.join(sourceRoot, "plugins", id);
+  fs.mkdirSync(path.join(packageRoot, ".tritonai-plugin"), { recursive: true });
+  fs.mkdirSync(path.join(packageRoot, "dist"), { recursive: true });
+  fs.mkdirSync(path.join(packageRoot, "skills", id), { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, "README.md"), `# ${id}\n`);
+  fs.writeFileSync(path.join(packageRoot, "SECURITY.md"), "# Security\n");
+  fs.writeFileSync(path.join(packageRoot, "package.json"), `${JSON.stringify({
+    name: `@tritonai/plugin-${id}`,
+    version,
+    private: true,
+    type: "module",
+    files: [".tritonai-plugin", "dist", "skills", "README.md", "SECURITY.md"],
+    exports: { ".": "./dist/index.mjs" }
+  }, null, 2)}\n`);
+  const inputSchema = {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    additionalProperties: false,
+    properties: { topic: { type: "string" } },
+    required: ["topic"],
+    type: "object"
+  };
+  const manifest = {
+    apiVersion: "tritonai.plugin/v1",
+    capabilities: [{
+      access: "default",
+      description: "Read deterministic records.",
+      displayName: "Read records",
+      id: `${id}.read`
+    }],
+    configurationSchema: {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      additionalProperties: false,
+      properties: {},
+      required: [],
+      type: "object"
+    },
+    description: `Read ${id} data.`,
+    entry: "dist/index.mjs",
+    id,
+    kind: "IntegrationPlugin",
+    manifestVersion: 1,
+    name: id,
+    provider: id,
+    sdk: { apiMajor: 1, requiredHostContractLevel: 1 },
+    skills: [{ name: id, description: `Read ${id} data.`, capabilities: [`${id}.read`] }],
+    tools: [{
+      capabilities: [`${id}.read`],
+      description: "List deterministic records.",
+      destructive: false,
+      displayName: "List records",
+      effect: "read",
+      idempotent: true,
+      inputSchema,
+      name: `${id}.records.list`,
+      openWorld: false
+    }],
+    version
+  };
+  fs.writeFileSync(
+    path.join(packageRoot, ".tritonai-plugin", "plugin.json"),
+    `${canonicalJson(manifest)}\n`
+  );
+  fs.writeFileSync(
+    path.join(packageRoot, "dist", "index.mjs"),
+    [
+      'import { createHash } from "node:crypto";',
+      "export function createIntegrationProvider() {",
+      `  return { id: "${id}", digest: createHash("sha256").update("sdk").digest("hex") };`,
+      "}",
+      ""
+    ].join("\n")
+  );
+  fs.writeFileSync(
+    path.join(packageRoot, "skills", id, "SKILL.md"),
+    `---\nname: ${id}\ndescription: Read ${id} data.\n---\n# ${id}\n`
+  );
+}
+
+function canonicalJson(value) {
+  const normalize = (current) => {
+    if (Array.isArray(current)) return current.map(normalize);
+    if (current && typeof current === "object") {
+      return Object.fromEntries(
+        Object.keys(current)
+          .sort()
+          .map((key) => [key, normalize(current[key])])
+      );
+    }
+    return current;
+  };
+  return JSON.stringify(normalize(value));
 }
 
 function pluginManifest(id, version) {

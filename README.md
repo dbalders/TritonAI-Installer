@@ -51,14 +51,12 @@ and either one `TRITONAI_HARNESS_RELEASE_BASE` or both canonical platform-specif
 The vendoring command does not infer a version or use a moving latest-release URL.
 Packaged builds use the canonical `edu.ucsd.tritonai.installer` application identifier; legacy Installer product identifiers are not migration inputs for this new product.
 
-Managed plugins have a separate, fail-closed source contract. Stable macOS and Windows release
-packaging resolves the highest canonical `vMAJOR.MINOR.PATCH` Plugins tag at the start of the run,
-freezes its exact commit, and selects the production `github`, `google-workspace`, and `microsoft-365`
-packages. Every Harness release must publish an artifact-bound composition proof for that exact
-selection. A moving branch such as `main` and nearby `TritonAI-Plugins` checkouts are never used
-automatically.
-Production package inclusion remains an explicit reviewed Installer allowlist, so publishing an
-experimental package does not silently add it to desktop releases.
+Managed plugins have a separate, fail-closed source contract. Stable macOS and Windows packaging
+uses the reviewed `config/managed-plugin-catalog.json`, which pins the exact Plugins ref, commit,
+publisher, package versions, package and manifest digests, SDK artifact descriptor digest, release
+channel, required status, and retirement policy. Every Harness release must publish an
+artifact-bound composition proof for those exact bytes. Publishing a package or placing it in the
+source tree never approves it for production.
 
 For an exact rebuild or a preselected composition, set all three values below. Complete explicit
 pins override automatic latest-release selection:
@@ -75,10 +73,9 @@ override and is accepted only for a clean Git checkout with that canonical origi
 and a ref resolving to the same commit. Dirty local validation work is rejected.
 
 `npm run prepare:plugins-vendor` retains the explicit/manual behavior above; without pins it disables
-managed plugins for a development build. Stable packaging invokes the same tool with `--latest`.
-Release orchestration that has already frozen the plugin ref and commit uses `--production` to
-select this Installer commit's reviewed production allowlist without duplicating package IDs in
-Harness.
+managed plugins for a development build. `--latest` is a candidate-build convenience that keeps the
+catalog's package selection while resolving a newer stable source tag. Stable packaging uses
+`--production`, rejects source overrides, and verifies the staged bytes against the reviewed catalog.
 It validates and atomically stages only selected release package
 contents under ignored `vendor/plugins/`. It rejects symlinks, special files, unsafe paths,
 source/tests in package allowlists or provider output, malformed manifests, package/manifest drift,
