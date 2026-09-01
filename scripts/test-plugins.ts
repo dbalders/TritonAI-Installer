@@ -173,6 +173,25 @@ function assertReviewedPluginCatalog() {
     }))
   };
   assert.strictEqual(assertCatalogComposition(catalog, composition), composition);
+  const descriptorDigest = "a".repeat(64);
+  const sdkCatalog = {
+    ...catalog,
+    packages: catalog.packages.map((plugin, index) => index === 0
+      ? { ...plugin, artifactDescriptorDigest: descriptorDigest }
+      : plugin)
+  };
+  const sdkComposition = {
+    ...composition,
+    packages: composition.packages.map((plugin, index) => index === 0
+      ? {
+          ...plugin,
+          files: [...plugin.files, { path: "artifact.json", sha256: descriptorDigest, size: 1 }]
+        }
+      : plugin)
+  };
+  assert.strictEqual(assertCatalogComposition(sdkCatalog, sdkComposition), sdkComposition);
+  assert.throws(() => assertCatalogComposition(sdkCatalog, composition), /catalog digests/);
+  assert.throws(() => assertCatalogComposition(catalog, sdkComposition), /catalog digests/);
   assert.throws(
     () => assertCatalogComposition(catalog, {
       ...composition,
