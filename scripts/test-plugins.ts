@@ -60,6 +60,7 @@ function main() {
   assertRejectsUnsafePackages();
   assertAtomicVendorRollback();
   assertAtomicRequirementRollback();
+  assertRollbackQuarantineFailurePreservesOneGeneration();
   assertCompositionContract();
   assertPlatformSpecificProofContract();
   assertSafeCompositionPaths();
@@ -634,6 +635,58 @@ function assertAtomicRequirementRollback() {
       previousRequirement,
       "requirement activation failure must restore the previous requirement marker"
     );
+  });
+}
+
+function assertRollbackQuarantineFailurePreservesOneGeneration() {
+  withTempRoot("tritonai-plugin-quarantine-rollback-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    const requirementPath = path.join(tempRoot, "build", "managed-plugin-composition.json");
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.0");
+    stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["alpha-reader"],
+      source: sourceIdentity(),
+      compositionRequirementPath: requirementPath
+    });
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.1");
+
+    const originalRename = fs.renameSync;
+    let previousRequirementMoved = false;
+    fs.renameSync = (source, target) => {
+      if (source === requirementPath) previousRequirementMoved = true;
+      if (previousRequirementMoved && target === requirementPath) {
+        throw new Error("simulated requirement activation failure");
+      }
+      if (source === vendorDir && path.basename(target) === "failed-vendor") {
+        throw new Error("simulated vendor quarantine failure");
+      }
+      return originalRename(source, target);
+    };
+    try {
+      assert.throws(
+        () => stagePluginsFromSource({
+          sourceRoot,
+          vendorDir,
+          selectedIds: ["alpha-reader"],
+          source: sourceIdentity(),
+          compositionRequirementPath: requirementPath
+        }),
+        /rollback failed: simulated vendor quarantine failure/
+      );
+    } finally {
+      fs.renameSync = originalRename;
+    }
+
+    assert.strictEqual(fs.existsSync(requirementPath), false, "failed rollback must stay fail closed");
+    const backup = fs.readdirSync(path.dirname(vendorDir))
+      .find((name) => name.startsWith(".managed-plugins-vendor-backup-"));
+    assert(backup, "failed rollback must preserve its complete previous generation");
+    const backupRoot = path.join(path.dirname(vendorDir), backup);
+    assert(fs.existsSync(path.join(backupRoot, "previous-vendor", "manifest.json")));
+    assert(fs.existsSync(path.join(backupRoot, "previous-requirement.json")));
   });
 }
 

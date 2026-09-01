@@ -791,11 +791,13 @@ function activateStagedVendor(stagingDir, targetDir, requirement) {
     }
   } catch (error) {
     const rollbackErrors = [];
+    let quarantineFailed = false;
     if (requirementActivated && fs.existsSync(requirement.targetPath)) {
       try {
         fs.renameSync(requirement.targetPath, failedRequirement);
         requirementActivated = false;
       } catch (rollbackError) {
+        quarantineFailed = true;
         rollbackErrors.push(rollbackError.message);
       }
     }
@@ -804,21 +806,28 @@ function activateStagedVendor(stagingDir, targetDir, requirement) {
         fs.renameSync(targetDir, failedVendor);
         vendorActivated = false;
       } catch (rollbackError) {
+        quarantineFailed = true;
         rollbackErrors.push(rollbackError.message);
       }
     }
-    if (previousRequirementMoved) {
+    let restoreFailed = quarantineFailed;
+    if (!restoreFailed && previousVendorMoved) {
       try {
-        fs.renameSync(previousRequirement, requirement.targetPath);
-        previousRequirementMoved = false;
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError.message);
-      }
-    }
-    if (previousVendorMoved) {
-      try {
+        if (fs.existsSync(targetDir)) throw new Error("plugin vendor restore target is occupied");
         fs.renameSync(previousVendor, targetDir);
         previousVendorMoved = false;
+      } catch (rollbackError) {
+        restoreFailed = true;
+        rollbackErrors.push(rollbackError.message);
+      }
+    }
+    if (!restoreFailed && previousRequirementMoved) {
+      try {
+        if (fs.existsSync(requirement.targetPath)) {
+          throw new Error("composition requirement restore target is occupied");
+        }
+        fs.renameSync(previousRequirement, requirement.targetPath);
+        previousRequirementMoved = false;
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError.message);
       }
