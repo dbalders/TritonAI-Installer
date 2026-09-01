@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 const {
   assertCanonicalPluginRepository,
   CANONICAL_PLUGIN_REPOSITORY_URL
@@ -31,6 +32,7 @@ const {
   readPluginSourceEnvironment,
   selectPluginSourceInput,
   stagePluginsFromSource,
+  materializeSelectedPluginTrees,
   validatePluginManifest,
   validateSourceInput
 } = require("./prepare-plugins-vendor");
@@ -54,9 +56,11 @@ function main() {
   assertReviewedPluginCatalog();
   assertLatestStableReleaseSelection();
   assertExplicitSourceContract();
+  assertPinnedGitMaterializationIncludesSdkArtifact();
   assertDeterministicSelectionAndStaging();
   assertCatalogValidationPrecedesActivation();
   assertProviderPackageStaging();
+  assertSdkArtifactPassThrough();
   assertRejectsUnsafePackages();
   assertAtomicVendorRollback();
   assertAtomicRequirementRollback();
@@ -69,7 +73,8 @@ function main() {
 }
 
 function assertLatestStableReleaseSelection() {
-  const catalog = readManagedPluginCatalog(managedPluginCatalogPath);
+  const catalog = syntheticCatalog();
+  const catalogIds = catalog.packages.map((plugin) => plugin.pluginId);
   assert.deepStrictEqual(parseArguments([]), { latest: false, production: false });
   assert.deepStrictEqual(parseArguments(["--latest"]), { latest: true, production: false });
   assert.deepStrictEqual(parseArguments(["--production"]), { latest: false, production: true });
@@ -120,12 +125,12 @@ function assertLatestStableReleaseSelection() {
   assert.strictEqual(resolverCalls, 1);
   assert.strictEqual(automatic.ref, "refs/tags/v1.2.3");
   assert.strictEqual(automatic.commit, "c".repeat(40));
-  assert.deepStrictEqual(automatic.selectedIds, ["github", "google-workspace", "microsoft-365"]);
+  assert.deepStrictEqual(automatic.selectedIds, catalogIds);
 
   const explicit = readPluginSourceEnvironment({
     TRITONAI_PLUGINS_REF: "refs/tags/v1.2.3",
     TRITONAI_PLUGINS_COMMIT: "d".repeat(40),
-    TRITONAI_PLUGIN_IDS: "microsoft-365"
+    TRITONAI_PLUGIN_IDS: "zeta-reader"
   });
   assert.strictEqual(
     selectPluginSourceInput(explicit, { latest: true }, () => { throw new Error("must not resolve latest"); }),
@@ -142,7 +147,7 @@ function assertLatestStableReleaseSelection() {
     undefined,
     catalog
   );
-  assert.deepStrictEqual(production.selectedIds, ["github", "google-workspace", "microsoft-365"]);
+  assert.deepStrictEqual(production.selectedIds, catalogIds);
   assert.throws(
     () => selectPluginSourceInput(explicit, { latest: false, production: true }),
     /source overrides must be unset/
@@ -151,10 +156,6 @@ function assertLatestStableReleaseSelection() {
 
 function assertReviewedPluginCatalog() {
   const catalog = readManagedPluginCatalog(managedPluginCatalogPath);
-  assert.deepStrictEqual(
-    catalog.packages.map((plugin) => plugin.pluginId),
-    ["github", "google-workspace", "microsoft-365"]
-  );
   assert.strictEqual(validateManagedPluginCatalog(catalog), catalog);
 
   const composition = {
@@ -278,6 +279,33 @@ function assertExplicitSourceContract() {
     () => validateSourceInput({ ...environment, selectedIds: [] }),
     /TRITONAI_PLUGIN_IDS/
   );
+}
+
+function assertPinnedGitMaterializationIncludesSdkArtifact() {
+  withTempRoot("tritonai-sdk-plugin-git-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const targetRoot = path.join(tempRoot, "target");
+    const expected = writeSdkPluginArtifact(sourceRoot, "sdk-reader", "1.0.0");
+    execFileSync("git", ["init", "-q"], { cwd: sourceRoot });
+    execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: sourceRoot });
+    execFileSync("git", ["config", "user.name", "Installer Test"], { cwd: sourceRoot });
+    execFileSync("git", ["add", "plugins", "artifacts"], { cwd: sourceRoot });
+    execFileSync("git", ["commit", "-qm", "fixture"], { cwd: sourceRoot });
+    const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: sourceRoot,
+      encoding: "utf8"
+    }).trim();
+    execFileSync("git", ["clone", "-q", "--no-checkout", sourceRoot, targetRoot]);
+
+    materializeSelectedPluginTrees(targetRoot, commit, ["sdk-reader"]);
+    for (const [relative, contents] of expected) {
+      assert.deepStrictEqual(
+        fs.readFileSync(path.join(targetRoot, "artifacts", "sdk-reader", relative)),
+        contents
+      );
+    }
+    assert(fs.existsSync(path.join(targetRoot, "plugins", "sdk-reader", "package.json")));
+  });
 }
 
 function assertDeterministicSelectionAndStaging() {
@@ -411,6 +439,42 @@ function assertProviderPackageStaging() {
         source: sourceIdentity()
       }),
       /composed package is missing dist\/index\.d\.ts/
+    );
+  });
+}
+
+function assertSdkArtifactPassThrough() {
+  withTempRoot("tritonai-sdk-plugin-stage-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    const expected = writeSdkPluginArtifact(sourceRoot, "sdk-reader", "1.0.0");
+
+    const composition = stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["sdk-reader"],
+      source: sourceIdentity()
+    });
+    const stagedRoot = path.join(vendorDir, "packages", "sdk-reader");
+    assert.deepStrictEqual(
+      composition.packages[0].files.map(({ path: relative }) => relative),
+      [...expected.keys()].sort()
+    );
+    for (const [relative, contents] of expected) {
+      assert.deepStrictEqual(fs.readFileSync(path.join(stagedRoot, relative)), contents);
+    }
+    assert(!fs.existsSync(path.join(stagedRoot, "package.json")));
+    assert(!fs.existsSync(path.join(stagedRoot, "README.md")));
+
+    fs.rmSync(path.join(sourceRoot, "artifacts", "sdk-reader", "plugin.mjs"));
+    assert.throws(
+      () => stagePluginsFromSource({
+        sourceRoot,
+        vendorDir,
+        selectedIds: ["sdk-reader"],
+        source: sourceIdentity()
+      }),
+      /sealed SDK artifact is missing plugin\.mjs/
     );
   });
 }
@@ -916,6 +980,57 @@ function writeProviderPlugin(sourceRoot, id, version) {
     path.join(distributionRoot, "index.d.ts"),
     "export declare const manifest: unknown; export declare function createIntegrationProvider(input: unknown): unknown;\n"
   );
+}
+
+function writeSdkPluginArtifact(sourceRoot, id, version) {
+  const packageRoot = path.join(sourceRoot, "plugins", id);
+  fs.mkdirSync(packageRoot, { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, "README.md"), "Source documentation is not staged.\n");
+  fs.writeFileSync(
+    path.join(packageRoot, "package.json"),
+    `${JSON.stringify({ name: `@tritonai/plugin-${id}`, version, private: true }, null, 2)}\n`
+  );
+
+  const artifactRoot = path.join(sourceRoot, "artifacts", id);
+  const files = new Map([
+    ["artifact.json", Buffer.from('{"artifactVersion":1,"format":"tritonai.plugin-artifact/v1"}\n')],
+    [
+      ".tritonai-plugin/plugin.json",
+      Buffer.from(`{"apiVersion":"tritonai.plugin/v1","id":"${id}","version":"${version}"}\n`)
+    ],
+    [
+      "plugin.mjs",
+      Buffer.from('throw new Error("Installer must not import sealed plugin code");\n')
+    ],
+    [
+      `skills/${id}/SKILL.md`,
+      Buffer.from(`---\nname: ${id}\ndescription: Read sealed fixture data.\n---\n`)
+    ]
+  ]);
+  for (const [relative, contents] of files) {
+    const target = path.join(artifactRoot, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, contents);
+  }
+  return files;
+}
+
+function syntheticCatalog() {
+  return validateManagedPluginCatalog({
+    version: 1,
+    kind: "tritonai-managed-plugin-catalog",
+    source: {
+      repository: CANONICAL_PLUGIN_REPOSITORY_URL,
+      ref: "refs/tags/v1.2.3",
+      commit: "e".repeat(40)
+    },
+    packages: ["alpha-reader", "zeta-reader"].map((pluginId) => ({
+      pluginId,
+      version: "1.0.0",
+      digest: "a".repeat(64),
+      manifestDigest: "b".repeat(64)
+    }))
+  });
 }
 
 function pluginManifest(id, version) {

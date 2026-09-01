@@ -306,7 +306,7 @@ function clonePinnedSource(input, target) {
 }
 
 function materializeSelectedPluginTrees(repositoryRoot, commit, selectedIds) {
-  const selectedPaths = selectedIds.map((id) => `plugins/${id}`);
+  const selectedPaths = selectedIds.flatMap((id) => [`plugins/${id}`, `artifacts/${id}`]);
   let output;
   try {
     output = execFileSync(
@@ -322,11 +322,13 @@ function materializeSelectedPluginTrees(repositoryRoot, commit, selectedIds) {
     const match = record.match(/^(\d+) ([^ ]+) ([a-f0-9]{40,64})\t(.+)$/);
     if (!match) throw new Error("Pinned managed plugin tree contains an unsupported Git entry.");
     const [, mode, type, objectId, relative] = match;
-    const selectedId = selectedIds.find((id) => relative.startsWith(`plugins/${id}/`));
+    const selectedId = selectedIds.find(
+      (id) => relative.startsWith(`plugins/${id}/`) || relative.startsWith(`artifacts/${id}/`)
+    );
     if (!selectedId || type !== "blob" || !["100644", "100755"].includes(mode) || !isSafeGitObjectPath(relative)) {
       throw new Error(`Pinned managed plugin tree contains an unsafe entry: ${relative}.`);
     }
-    found.add(selectedId);
+    if (relative.startsWith(`plugins/${selectedId}/`)) found.add(selectedId);
     const target = path.join(repositoryRoot, ...relative.split("/"));
     fs.mkdirSync(path.dirname(target), { recursive: true });
     let contents;
@@ -349,7 +351,7 @@ function materializeSelectedPluginTrees(repositoryRoot, commit, selectedIds) {
 }
 
 function isSafeGitObjectPath(value) {
-  if (!value.startsWith("plugins/") || value.includes("\\") || value.includes("\0")) return false;
+  if (!/^(?:plugins|artifacts)\//.test(value) || value.includes("\\") || value.includes("\0")) return false;
   return value.split("/").every((segment) => segment && segment !== "." && segment !== "..");
 }
 
@@ -398,10 +400,13 @@ function stagePluginsFromSource({
 }) {
   assertCanonicalPluginRepository(source.repository, "Managed plugin source");
   const pluginsRoot = path.join(sourceRoot, "plugins");
+  const artifactsRoot = path.join(sourceRoot, "artifacts");
   validatePluginsRoot(pluginsRoot);
   const stagingDir = createSiblingTempDir(vendorDir, ".managed-plugins-vendor-");
   try {
-    const packages = selectedIds.map((id) => stagePluginPackage(pluginsRoot, stagingDir, id));
+    const packages = selectedIds.map((id) =>
+      stagePluginPackage(pluginsRoot, artifactsRoot, stagingDir, id)
+    );
     const manifest = createManagedPluginBundleManifest({ source, packages });
     fs.writeFileSync(path.join(stagingDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     validateStagedVendor(stagingDir, manifest);
@@ -451,7 +456,7 @@ function validatePluginsRoot(pluginsRoot) {
   }
 }
 
-function stagePluginPackage(pluginsRoot, stagingDir, id) {
+function stagePluginPackage(pluginsRoot, artifactsRoot, stagingDir, id) {
   const packageRoot = path.join(pluginsRoot, id);
   const packageStat = safeLstat(packageRoot, `Selected plugin ${id}`);
   if (!packageStat.isDirectory() || packageStat.isSymbolicLink()) {
@@ -459,6 +464,10 @@ function stagePluginPackage(pluginsRoot, stagingDir, id) {
   }
   validateRegularTree(packageRoot, `Selected plugin ${id} source`, { skipNodeModules: true });
   const packageJson = readJson(path.join(packageRoot, "package.json"), `${id} package.json`);
+  const artifactRoot = path.join(artifactsRoot, id);
+  if (fs.existsSync(artifactRoot)) {
+    return stageSdkPluginArtifact(packageJson, artifactRoot, stagingDir, id);
+  }
   const pluginManifest = readJson(
     path.join(packageRoot, ".tritonai-plugin", "plugin.json"),
     `${id} plugin manifest`
@@ -492,6 +501,41 @@ function stagePluginPackage(pluginsRoot, stagingDir, id) {
     name: packageJson.name,
     version: packageJson.version,
     digest,
+    files
+  };
+}
+
+function stageSdkPluginArtifact(packageJson, artifactRoot, stagingDir, id) {
+  const artifactStat = safeLstat(artifactRoot, `Selected plugin ${id} sealed artifact`);
+  if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink()) {
+    throw new Error(`Selected plugin ${id} sealed artifact must be a real directory.`);
+  }
+  validateRegularTree(artifactRoot, `Selected plugin ${id} sealed artifact`);
+  if (packageJson.name !== `@tritonai/plugin-${id}`) throw new Error(`${id}: package name drift.`);
+  if (typeof packageJson.version !== "string" || !STABLE_SEMVER.test(packageJson.version)) {
+    throw new Error(`${id}: package version must use stable semantic versioning.`);
+  }
+
+  const targetRoot = path.join(stagingDir, "packages", id);
+  fs.cpSync(artifactRoot, targetRoot, {
+    recursive: true,
+    force: false,
+    errorOnExist: true
+  });
+  const files = describeFiles(targetRoot);
+  for (const required of ["artifact.json", ".tritonai-plugin/plugin.json", "plugin.mjs"]) {
+    if (!files.some(({ path: relative }) => relative === required)) {
+      throw new Error(`${id}: sealed SDK artifact is missing ${required}.`);
+    }
+  }
+  if (files.some(({ path: relative }) => relative.split("/").includes("node_modules"))) {
+    throw new Error(`${id}: sealed SDK artifact cannot contain node_modules content.`);
+  }
+  return {
+    id,
+    name: packageJson.name,
+    version: packageJson.version,
+    digest: digestFileSet(targetRoot, files),
     files
   };
 }

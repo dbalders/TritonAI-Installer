@@ -77,13 +77,15 @@ and a ref resolving to the same commit. Dirty local validation work is rejected.
 managed plugins for a development build. `--latest` is a candidate-build convenience that keeps the
 catalog's package selection while resolving a newer stable source tag. Stable packaging uses
 `--production`, rejects source overrides, and verifies the staged bytes against the reviewed catalog.
-It validates and atomically stages only selected release package
-contents under ignored `vendor/plugins/`. It rejects symlinks, special files, unsafe paths,
+It validates and atomically stages only selected release package contents under ignored
+`vendor/plugins/`. Harness v2 packages keep their legacy allowlisted layout. SDK v1 packages are
+copied byte-for-byte from `artifacts/<plugin-id>/`; the Installer does not compile, import, or
+semantically validate provider code. It rejects symlinks, special files, unsafe paths,
 source/tests in package allowlists or provider output, malformed manifests, package/manifest drift,
 and skill/manifest drift. The staged packages are a Harness build input, not an Installer runtime
 payload. Provider packages expose their exact manifest and synchronous
 `createIntegrationProvider({ secrets, configuration })` factory from `dist/index.js`; the Installer
-does not import factories or interpret their package-owned configuration.
+does not import factories or interpret package-owned configuration.
 
 The Harness build must compose those exact packages into its immutable catalog. After all
 signing, notarization, and stapling, it publishes `tritonai-plugin-composition-mac-arm64.json` and
