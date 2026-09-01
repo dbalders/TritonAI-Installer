@@ -55,6 +55,7 @@ function main() {
   assertLatestStableReleaseSelection();
   assertExplicitSourceContract();
   assertDeterministicSelectionAndStaging();
+  assertCatalogValidationPrecedesActivation();
   assertProviderPackageStaging();
   assertSdkArtifactStaging();
   assertRejectsUnsafePackages();
@@ -347,6 +348,49 @@ function assertDeterministicSelectionAndStaging() {
     });
     assert.deepStrictEqual(second, first);
     assert.strictEqual(fs.readFileSync(path.join(vendorDir, "manifest.json"), "utf8"), firstBytes);
+  });
+}
+
+function assertCatalogValidationPrecedesActivation() {
+  withTempRoot("tritonai-plugin-catalog-transaction-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.0");
+    stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["alpha-reader"],
+      source: sourceIdentity()
+    });
+    const previousManifest = fs.readFileSync(path.join(vendorDir, "manifest.json"));
+    const previousSkill = fs.readFileSync(
+      path.join(vendorDir, "packages", "alpha-reader", "skills", "alpha-reader", "SKILL.md")
+    );
+
+    assert.throws(
+      () => stagePluginsFromSource({
+        sourceRoot,
+        vendorDir,
+        selectedIds: ["alpha-reader"],
+        source: sourceIdentity(),
+        assertComposition: () => {
+          throw new Error("simulated catalog mismatch");
+        }
+      }),
+      /simulated catalog mismatch/
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(path.join(vendorDir, "manifest.json")),
+      previousManifest,
+      "catalog rejection must preserve the previous vendor manifest"
+    );
+    assert.deepStrictEqual(
+      fs.readFileSync(
+        path.join(vendorDir, "packages", "alpha-reader", "skills", "alpha-reader", "SKILL.md")
+      ),
+      previousSkill,
+      "catalog rejection must preserve the previous vendor payloads"
+    );
   });
 }
 

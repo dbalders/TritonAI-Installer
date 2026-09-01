@@ -61,9 +61,11 @@ function main(env = process.env, args = process.argv.slice(2)) {
         repository: CANONICAL_PLUGIN_REPOSITORY_URL,
         ref: input.ref,
         commit: input.commit
-      }
+      },
+      assertComposition: options.production
+        ? (composition) => assertCatalogComposition(catalog, composition)
+        : undefined
     });
-    if (options.production) assertCatalogComposition(catalog, result);
     writePluginCompositionRequirement(true);
     console.log(
       `Prepared ${result.packages.length} managed Harness plugin package${result.packages.length === 1 ? "" : "s"} `
@@ -375,7 +377,13 @@ function assertRefResolvesToCommit(sourceRoot, ref, commit) {
   }
 }
 
-function stagePluginsFromSource({ sourceRoot, vendorDir, selectedIds, source }) {
+function stagePluginsFromSource({
+  sourceRoot,
+  vendorDir,
+  selectedIds,
+  source,
+  assertComposition
+}) {
   assertCanonicalPluginRepository(source.repository, "Managed plugin source");
   const pluginsRoot = path.join(sourceRoot, "plugins");
   validatePluginsRoot(pluginsRoot);
@@ -385,6 +393,12 @@ function stagePluginsFromSource({ sourceRoot, vendorDir, selectedIds, source }) 
     const manifest = createManagedPluginBundleManifest({ source, packages });
     fs.writeFileSync(path.join(stagingDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     validateStagedVendor(stagingDir, manifest);
+    if (assertComposition !== undefined) {
+      if (typeof assertComposition !== "function") {
+        throw new Error("Managed plugin composition assertion must be a function.");
+      }
+      assertComposition(manifest);
+    }
     activateStagedVendor(stagingDir, vendorDir);
     return manifest;
   } finally {
