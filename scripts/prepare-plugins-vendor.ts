@@ -1105,6 +1105,8 @@ function activateStagedVendor(stagingDir, targetDir, requirement) {
   const backupRoot = createSiblingTempDir(targetDir, ".managed-plugins-vendor-backup-");
   const previousVendor = path.join(backupRoot, "previous-vendor");
   const previousRequirement = path.join(backupRoot, "previous-requirement.json");
+  const failedVendor = path.join(backupRoot, "failed-vendor");
+  const failedRequirement = path.join(backupRoot, "failed-requirement.json");
   let previousVendorMoved = false;
   let previousRequirementMoved = false;
   let vendorActivated = false;
@@ -1129,12 +1131,20 @@ function activateStagedVendor(stagingDir, targetDir, requirement) {
   } catch (error) {
     const rollbackErrors = [];
     if (requirementActivated && fs.existsSync(requirement.targetPath)) {
-      fs.rmSync(requirement.targetPath, { force: true });
-      requirementActivated = false;
+      try {
+        fs.renameSync(requirement.targetPath, failedRequirement);
+        requirementActivated = false;
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError.message);
+      }
     }
     if (vendorActivated && fs.existsSync(targetDir)) {
-      fs.rmSync(targetDir, { recursive: true, force: true });
-      vendorActivated = false;
+      try {
+        fs.renameSync(targetDir, failedVendor);
+        vendorActivated = false;
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError.message);
+      }
     }
     if (previousRequirementMoved) {
       try {

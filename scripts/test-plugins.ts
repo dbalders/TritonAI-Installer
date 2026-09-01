@@ -669,6 +669,7 @@ function assertAtomicRequirementRollback() {
 
     writeSkillPlugin(sourceRoot, "alpha-reader", "1.0.1");
     const originalRename = fs.renameSync;
+    const originalRemove = fs.rmSync;
     let previousRequirementMoved = false;
     let failed = false;
     fs.renameSync = (source, target) => {
@@ -678,6 +679,12 @@ function assertAtomicRequirementRollback() {
         throw new Error("simulated composition requirement activation failure");
       }
       return originalRename(source, target);
+    };
+    fs.rmSync = (target, options) => {
+      if (target === vendorDir || target === compositionRequirementPath) {
+        throw new Error("rollback must not destructively remove live release state");
+      }
+      return originalRemove(target, options);
     };
     try {
       assert.throws(
@@ -692,6 +699,7 @@ function assertAtomicRequirementRollback() {
       );
     } finally {
       fs.renameSync = originalRename;
+      fs.rmSync = originalRemove;
     }
     assert.deepStrictEqual(
       fs.readFileSync(path.join(vendorDir, "manifest.json")),
