@@ -59,13 +59,16 @@ intentionally rejected. Every Harness release must publish an
 artifact-bound composition proof for those exact bytes. Publishing a package or placing it in the
 source tree never approves it for production.
 
+Standalone Harness releases consume this same catalog while they are built, so Harness-only
+updates carry the approved plugins without requiring users to run TritonAI Installer.
+
 For an exact rebuild or a preselected composition, set all three values below. Complete explicit
 pins override automatic latest-release selection:
 
 ```sh
-export TRITONAI_PLUGINS_REF="refs/tags/v0.1.0"
+export TRITONAI_PLUGINS_REF="refs/tags/v0.1.3"
 export TRITONAI_PLUGINS_COMMIT="<full 40-character commit SHA>"
-export TRITONAI_PLUGIN_IDS="github,google-workspace,microsoft-365"
+export TRITONAI_PLUGIN_IDS="github,google-workspace,kuali-build,microsoft-365,n8n"
 ```
 
 `TRITONAI_PLUGINS_REPO` may select another transport URL only when Git resolves it to canonical

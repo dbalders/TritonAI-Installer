@@ -3,27 +3,39 @@
   "kind": "tritonai-managed-plugin-catalog",
   "source": {
     "repository": "https://github.com/dbalders/TritonAI-Plugins.git",
-    "ref": "refs/tags/v0.1.2",
-    "commit": "ae18ce8dee3dc4310f6072b0bd45b139f364ce6e"
+    "ref": "refs/tags/v0.1.3",
+    "commit": "179aa990a842d14a0196fd757eb6482f3bad29b3"
   },
   "packages": [
     {
       "pluginId": "github",
       "version": "1.0.0",
-      "digest": "a4fbb7d2bd9dcca9ab3c0460e70a5384365d4319e7c5fb37deec97fef3bedb3f",
+      "digest": "b157289cbf659939eb545171a91975ba0dff9b3f939d31b5dbad55b947d94de7",
       "manifestDigest": "774b940854dded25bd5ad117d57e9376b59719d879410d6d505e98fa0ffbd8ad"
     },
     {
       "pluginId": "google-workspace",
       "version": "1.0.0",
-      "digest": "fd537b17cb46908b3fe22c202237bdbe0386ada50368d3a113937726d03f4c51",
+      "digest": "8c55258a2adbb52cca2dcb230cffe38f545d7b2532215cb80927f47b62966d3e",
       "manifestDigest": "0a2f5fc9341e5382f64461958c020f53967681a9365e7a8dbf7a3ab121bd90c3"
     },
     {
-      "pluginId": "microsoft-365",
+      "pluginId": "kuali-build",
       "version": "1.1.0",
-      "digest": "d48eafc4e6735179972931f0e0be5586f074b813cacd757ca40c726231630526",
-      "manifestDigest": "7f80a2c6d646ff86770766b889013b081d06660d88e195a304bb73612354062e"
+      "digest": "1cb075c2591f925c39fad20d18c0d8b2c743ea5d64215c030766751ea8446820",
+      "manifestDigest": "3ea524184d89a59b6eb1befa3703ba0c690e86024378dc196d6b945b17d9afbf"
+    },
+    {
+      "pluginId": "microsoft-365",
+      "version": "1.2.0",
+      "digest": "e1039d19ff3506a5c5f60187523f301565ecce51add6bfe0ed8827a0fc92d100",
+      "manifestDigest": "1c8ad09f0a4f6fb5f49c81a77c6cf72548667be53e5b96b147c93f478c9ffb41"
+    },
+    {
+      "pluginId": "n8n",
+      "version": "1.0.0",
+      "digest": "2c36975921cf4608c83a952f2a92002294ade34b5573a55a763bf148720df663",
+      "manifestDigest": "6268b3210984def7a325389881f4cf437d77e39d0e21990c7491e01a1ebdabe8"
     }
   ]
 }
