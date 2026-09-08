@@ -105,7 +105,11 @@ async function checkAndAssignCredentials({
   baseUrl?: string;
   timeoutMs?: number;
 }) {
-  const keys = [...new Set((apiKeys || []).map(normalizeApiKey).filter(Boolean))];
+  if (!Array.isArray(apiKeys) || apiKeys.length > 2
+    || apiKeys.some((key) => typeof key !== "string" || key.length > 4096 || /[\x00-\x1f\x7f]/.test(key))) {
+    throw new Error("Provide up to two valid TritonAI access keys (at most 4096 characters each).");
+  }
+  const keys = [...new Set(apiKeys.map(normalizeApiKey).filter(Boolean))];
   if (keys.length === 0) {
     throw new Error("A TritonAI access key is required to continue.");
   }

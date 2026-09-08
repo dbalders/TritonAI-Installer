@@ -56,7 +56,6 @@ interface InstallResponse {
 
 interface FinishPayload {
   openTool?: string;
-  desktopApps?: DesktopApps;
 }
 
 interface InstallerPlatformInfo {
@@ -73,7 +72,7 @@ interface InstallerPlatformInfo {
 interface InstallerApi {
   getPlatform(): Promise<InstallerPlatformInfo>;
   reportReady(): Promise<void>;
-  openDocs(url: string): Promise<void>;
+  openDocs(): Promise<void>;
   checkAccess(payload: CredentialCheckPayload): Promise<CredentialCheckResponse>;
   startInstall(payload: InstallPayload): Promise<InstallResponse>;
   finishInstall(payload: FinishPayload): Promise<void>;

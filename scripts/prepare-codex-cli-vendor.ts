@@ -1,8 +1,8 @@
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
+const { hasNativeCodexExecutable } = require("../src/installer/codex-vendor");
 const { NPM_POLICY, CODEX_CLI_VERSION } = require("../src/installer/npm-policy");
 
 const root = path.resolve(__dirname, "..", "..");
@@ -126,7 +126,7 @@ function verifyStagedCodex(prefix, targetName, target) {
   assertFile(path.join(prefix, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"));
   assertFile(path.join(prefix, target.binPath));
   const nativePackageDir = path.join(prefix, target.nativePackageDir);
-  if (!fs.existsSync(nativePackageDir) || !fs.statSync(nativePackageDir).isDirectory()) {
+  if (!hasNativeCodexExecutable(nativePackageDir, target.os)) {
     throw new Error(`Codex ${targetName} native package is missing: ${nativePackageDir}`);
   }
 }
@@ -181,9 +181,15 @@ function npmCommand() {
 }
 
 function run(command, args) {
+  if (process.env.npm_execpath) {
+    args = [process.env.npm_execpath, ...args];
+    command = process.execPath;
+  }
   execFileSync(command, args, {
     cwd: root,
     stdio: "inherit",
+    timeout: 10 * 60 * 1000,
+    shell: process.platform === "win32" && /\.cmd$/i.test(command),
   });
 }
 

@@ -1,3 +1,4 @@
+import { fileDigest } from "../src/installer/file-digest";
 const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
@@ -789,7 +790,7 @@ function digestFileSet(root, files) {
 }
 
 function sha256(file) {
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  return fileDigest(file, "sha256", "hex");
 }
 
 function validateStagedVendor(stagingDir, manifest) {

@@ -42,9 +42,16 @@ async function main() {
   lifecycle.endInstall();
   assert.strictEqual(lifecycle.shouldBlockExit(), false);
   lifecycle.beginInstall();
+  assert.strictEqual(lifecycle.requestFinish(), false);
+  assert.strictEqual(lifecycle.shouldBlockExit(), true);
+  lifecycle.endInstall();
   assert.strictEqual(lifecycle.requestFinish(), true);
   assert.strictEqual(lifecycle.requestFinish(), false);
   assert.strictEqual(lifecycle.shouldBlockExit(), false);
+  assert.throws(() => lifecycle.beginInstall(), /closing/);
+  lifecycle.cancelFinish();
+  lifecycle.beginInstall();
+  assert.strictEqual(lifecycle.shouldBlockExit(), true);
   lifecycle.endInstall();
 
   const originalConsoleError = console.error;

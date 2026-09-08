@@ -1,4 +1,4 @@
-const crypto = require("crypto");
+import { fileDigest } from "../src/installer/file-digest";
 const fs = require("fs");
 const path = require("path");
 const { Arch, Platform, build } = require("electron-builder");
@@ -71,7 +71,7 @@ function writeWindowsUpdateManifest({
     throw new Error(`Windows update manifest is missing its Setup executable: ${setupPath}`);
   }
   const size = fs.statSync(setupPath).size;
-  const digest = crypto.createHash("sha512").update(fs.readFileSync(setupPath)).digest("base64");
+  const digest = fileDigest(setupPath, "sha512", "base64");
   const manifestPath = path.join(output, "latest.yml");
   const temporaryPath = `${manifestPath}.${process.pid}.tmp`;
   fs.writeFileSync(temporaryPath, [
@@ -244,7 +244,7 @@ async function main() {
 }
 
 function sha256(file) {
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  return fileDigest(file, "sha256", "hex");
 }
 
 if (require.main === module) {

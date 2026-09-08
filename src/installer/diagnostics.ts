@@ -1,3 +1,5 @@
+const { randomUUID } = require("crypto");
+const { writeFileAtomic } = require("./atomic-file");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -39,13 +41,17 @@ function createDiagnosticsSession({
   installerVersion = "unknown",
   secretValues = []
 }) {
-  fs.mkdirSync(paths.logsDir, { recursive: true });
-  const stamp = timestampForFile(new Date());
+  const stamp = `${timestampForFile(new Date())}-${randomUUID()}`;
   const logFile = path.join(paths.logsDir, `installer-${stamp}.log`);
   const supportReportFile = path.join(paths.logsDir, `support-report-${stamp}.json`);
   const events: DiagnosticsEvent[] = [];
   let currentStep = "start";
-  fs.writeFileSync(logFile, `[${new Date().toISOString()}] [start] Installer diagnostics started${os.EOL}`);
+  try {
+    fs.mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(logFile, `[${new Date().toISOString()}] [start] Installer diagnostics started${os.EOL}`, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    console.error(`Could not initialize Installer diagnostics: ${error.message}`);
+  }
 
   function redact(value: unknown): string {
     return redactSensitive(value, secretValues);
@@ -58,7 +64,8 @@ function createDiagnosticsSession({
       step: currentStep,
       message: redacted
     });
-    fs.appendFileSync(logFile, `[${events[events.length - 1].time}] [${currentStep}] ${redacted}${os.EOL}`);
+    if (events.length > MAX_REPORT_EVENTS) events.shift();
+    fs.appendFileSync(logFile, `[${events[events.length - 1].time}] [${currentStep}] ${redacted}${os.EOL}`, { mode: 0o600 });
   }
 
   function setStep(step: string) {
@@ -106,7 +113,7 @@ function createDiagnosticsSession({
       ...extra
     };
 
-    fs.writeFileSync(supportReportFile, `${JSON.stringify(report, null, 2)}${os.EOL}`);
+    writeFileAtomic(supportReportFile, `${JSON.stringify(report, null, 2)}${os.EOL}`, { mode: 0o600 });
     return {
       logsDir: paths.logsDir,
       logFile,
@@ -156,12 +163,12 @@ function serializeError(error: ErrorWithCode, redact: (value: unknown) => string
 
 function redactSensitive(value: unknown, secretValues: string[] = []): string {
   let output = String(value == null ? "" : value);
-  for (const secret of secretValues.filter(Boolean)) {
+  for (const secret of [...new Set(secretValues.filter(Boolean))].sort((a, b) => b.length - a.length)) {
     output = output.replace(new RegExp(escapeRegExp(secret), "g"), "[redacted]");
   }
   return output
     .replace(/(authorization\s*:\s*bearer\s+)[^\s"']+/gi, "$1[redacted]")
-    .replace(/(TRITONAI_API_KEY\s*[:=]\s*)[^\s"',}]+/gi, "$1[redacted]")
+    .replace(/(TRITONAI_(?:ONPREM_|FRONTIER_)?API_KEY["']?\s*[:=]\s*["']?)[^\s"',}]+/gi, "$1[redacted]")
     .replace(/(["']?apiKey["']?\s*[:=]\s*["']?)[^"',}\s]+/gi, "$1[redacted]")
     .replace(/(["']?api_key["']?\s*[:=]\s*["']?)[^"',}\s]+/gi, "$1[redacted]")
     .replace(/(["']?accessKey["']?\s*[:=]\s*["']?)[^"',}\s]+/gi, "$1[redacted]");

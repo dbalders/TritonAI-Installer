@@ -1,4 +1,4 @@
-const crypto = require("crypto");
+import { fileDigest } from "../src/installer/file-digest";
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
@@ -340,7 +340,7 @@ function isRegularFile(file) {
 }
 
 function sha256(file) {
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  return fileDigest(file, "sha256", "hex");
 }
 
 function git(cwd, args) {

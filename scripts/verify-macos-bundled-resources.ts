@@ -1,5 +1,5 @@
+import { fileDigest } from "../src/installer/file-digest";
 const fs = require("fs");
-const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
@@ -96,7 +96,7 @@ function verifyManifestFileDigest(manifest, file) {
     throw new Error(`Size mismatch for ${path.basename(file)}: expected ${expected.size}, got ${stat.size}`);
   }
 
-  const actual = crypto.createHash("sha512").update(fs.readFileSync(file)).digest("base64");
+  const actual = fileDigest(file, "sha512", "base64");
   if (actual !== expected.sha512) {
     throw new Error(`SHA-512 mismatch for ${path.basename(file)}`);
   }

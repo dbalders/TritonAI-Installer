@@ -14,6 +14,7 @@ interface RequestJsonOptions {
   apiKey: string;
   timeoutMs: number;
   body?: unknown;
+  requestFactory?: typeof https.request;
 }
 
 function assertJsonResponseWithinLimit(byteLength: number) {
@@ -149,67 +150,85 @@ async function canSendExternalModelMessage({ apiKey, baseUrl, timeoutMs, model }
   }
 }
 
-function requestJson({ url, method = "GET", apiKey, timeoutMs, body }: RequestJsonOptions): Promise<ConnectionResponse> {
+function requestJson({ url, method = "GET", apiKey, timeoutMs, body, requestFactory = https.request }: RequestJsonOptions): Promise<ConnectionResponse> {
   return new Promise<ConnectionResponse>((resolve, reject) => {
-    const payload = body ? JSON.stringify(body) : "";
-    const request = https.request(url, {
-      method,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "User-Agent": "TritonAI-Installer",
-        ...(payload ? {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload)
-        } : {})
+    let request;
+    let response;
+    let settled = false;
+    const finish = (error: Error | null, result?: ConnectionResponse) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (error) {
+        request?.destroy();
+        response?.destroy();
+        reject(error);
+      } else {
+        resolve(result!);
       }
-    }, (response) => {
-      const chunks: Buffer[] = [];
-      let byteLength = 0;
-      let overflowError: Error | null = null;
-      response.on("data", (chunk) => {
-        if (overflowError) return;
-        const bytes = Buffer.from(chunk);
-        byteLength += bytes.length;
-        try {
-          assertJsonResponseWithinLimit(byteLength);
-          chunks.push(bytes);
-        } catch (error) {
-          overflowError = error as Error;
-          response.destroy();
-          reject(overflowError);
+    };
+    const timeout = () => finish(new Error(
+      "TritonAI connection check timed out. Check your internet connection, then try again."
+    ));
+    // A socket idle timeout alone never expires during DNS lookup or a slow trickle of bytes.
+    const deadline = setTimeout(timeout, timeoutMs);
+    try {
+      const payload = body ? JSON.stringify(body) : "";
+      request = requestFactory(url, {
+        method,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "User-Agent": "TritonAI-Installer",
+          ...(payload ? {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(payload)
+          } : {})
         }
-      });
-      response.on("end", () => {
-        if (overflowError) return;
-        const text = Buffer.concat(chunks).toString("utf8").trim();
-        let responseBody: unknown = null;
-        if (text) {
+      }, (incoming) => {
+        response = incoming;
+        response.on("error", (error) => finish(new Error(`TritonAI response failed: ${error.message}`)));
+        response.on("aborted", () => finish(new Error("TritonAI response was interrupted. Try again.")));
+        if (settled) { response.destroy(); return; }
+        const chunks: Buffer[] = [];
+        let byteLength = 0;
+        response.on("data", (chunk) => {
+          if (settled) return;
+          const bytes = Buffer.from(chunk);
+          byteLength += bytes.length;
           try {
-            responseBody = JSON.parse(text);
-          } catch {
-            responseBody = null;
+            assertJsonResponseWithinLimit(byteLength);
+            chunks.push(bytes);
+          } catch (error) {
+            finish(error);
           }
-        }
-        resolve({ statusCode: response.statusCode || 0, body: responseBody });
+        });
+        response.on("end", () => {
+          if (settled) return;
+          const text = Buffer.concat(chunks).toString("utf8").trim();
+          let responseBody: unknown = null;
+          if (text) {
+            try { responseBody = JSON.parse(text); } catch { /* Some gateways omit a model catalog. */ }
+          }
+          finish(null, { statusCode: response.statusCode || 0, body: responseBody });
+        });
+        response.on("close", () => {
+          if (!settled) finish(new Error("TritonAI response closed before completion. Try again."));
+        });
       });
-    });
-
-    request.setTimeout(timeoutMs, () => {
-      request.destroy(new Error("TritonAI connection check timed out. Check your internet connection, then try again."));
-    });
-    request.on("error", (error) => {
-      reject(new Error(`TritonAI connection check failed: ${error.message}`));
-    });
-    if (payload) {
-      request.write(payload);
+      request.on("error", (error) => finish(new Error(`TritonAI connection check failed: ${error.message}`)));
+      request.setTimeout(timeoutMs, timeout);
+      if (payload) request.write(payload);
+      request.end();
+    } catch (error) {
+      finish(error);
     }
-    request.end();
   });
 }
 
 module.exports = {
   __test: {
+    requestJson,
     assertJsonResponseWithinLimit,
     MAX_JSON_RESPONSE_BYTES,
     probeFallbackModelAccess
