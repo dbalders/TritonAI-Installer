@@ -89,18 +89,43 @@ function profileFor(options) {
   const available = fs.existsSync(nodeDirs) ? fs.readdirSync(nodeDirs).filter(v => /^v24\./.test(v)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map(v => path.join(nodeDirs, v, 'bin')) : [];
   const node = executable(profile.node || 'node', available);
   const vp = executable(profile.vp || 'vp', [path.join(os.homedir(), '.vite-plus/bin')]);
-  return { profileFile, profile, repos, tools: { node, vp, wine: executable(profile.wine || 'wine64', ['/usr/local/bin', '/opt/homebrew/bin']) } };
+  const rust = rustTools(profile);
+  let clang = profile.clang;
+  if (!clang) try { clang = execFileSync('/usr/bin/xcrun', ['--find', 'clang'], { encoding: 'utf8', stdio: 'pipe', timeout: 15000 }).trim(); } catch {}
+  const rustHost = `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`;
+  const rustLinker = rust.rustc && path.join(path.dirname(path.dirname(rust.rustc)), 'lib/rustlib', rustHost, 'bin/gcc-ld/lld-link');
+  return { profileFile, profile, repos, tools: { node, vp, ...rust,
+    cargoXwin: executable(profile.cargoXwin || 'cargo-xwin', [path.join(os.homedir(), '.cargo/bin')]),
+    clang: clang ? executable(clang) : null, lldLink: executable(profile.lldLink || rustLinker || 'lld-link'),
+    wine: executable(profile.wine || 'wine64', ['/usr/local/bin', '/opt/homebrew/bin']) } };
+}
+
+function rustTools(profile, { find = executable, execute = execFileSync } = {}) {
+  const rustup = find('rustup', [path.join(os.homedir(), '.cargo/bin')]);
+  return Object.fromEntries(['cargo', 'rustc'].map(name => {
+    if (profile[name]) return [name, find(profile[name])];
+    // Resolve proxies before hashing: realpath(cargo) can otherwise pin rustup
+    // itself, which changes behavior when invoked under that executable name.
+    if (rustup) try {
+      const resolved = execute(rustup, ['which', name], { encoding: 'utf8', stdio: 'pipe', timeout: 15000 }).trim();
+      if (path.isAbsolute(resolved) && find(resolved)) return [name, resolved];
+    } catch {}
+    return [name, find(name)];
+  }));
 }
 
 function cleanEnvironment(base = process.env, tools = {}) {
   const env = { ...base };
   for (const key of Object.keys(env)) if (/^(TRITONAI_|T3CODE_|UCSD_|CSC_|WIN_CSC_|APPLE_|AZURE_|ELECTRON_BUILDER_)/i.test(key) || ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH', 'WINEPREFIX', 'WINE', 'GITHUB_OUTPUT', 'VITE_HTTP_URL', 'VITE_WS_URL', 'DEVELOPER_ID_APPLICATION'].includes(key.toUpperCase())) delete env[key];
   // Tools and release credentials are loaded explicitly from the saved profile below.
-  env.PATH = [...new Set([tools.node && path.dirname(tools.node), tools.vp && path.dirname(tools.vp), ...(env.PATH || '').split(path.delimiter)].filter(Boolean))].join(path.delimiter);
+  for (const key of ['CARGO', 'RUSTC', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_TARGET', 'CARGO_TARGET_DIR', 'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RUSTUP_TOOLCHAIN']) delete env[key];
+  env.PATH = [...new Set([tools.node && path.dirname(tools.node), tools.vp && path.dirname(tools.vp), tools.cargo && path.dirname(tools.cargo), tools.rustc && path.dirname(tools.rustc), ...(env.PATH || '').split(path.delimiter)].filter(Boolean))].join(path.delimiter);
+  if (tools.cargo) env.CARGO = tools.cargo;
+  if (tools.rustc) env.RUSTC = tools.rustc;
   return env;
 }
 
-function inspectHostCommands(tools, { platform = process.platform, find = executable, execute = execFileSync } = {}) {
+function inspectHostCommands(tools, { platform = process.platform, find = executable, execute = execFileSync, exists = fs.existsSync } = {}) {
   const problems = [], found = {};
   const directories = [tools.node && path.dirname(tools.node), tools.vp && path.dirname(tools.vp)].filter(Boolean);
   const required = ['git', 'npm', 'corepack', ...(platform === 'darwin' ? [
@@ -116,6 +141,25 @@ function inspectHostCommands(tools, { platform = process.platform, find = execut
     try { execute(found[name], ['--version'], options); }
     catch { problems.push(`${name} is installed but cannot run with the selected Node toolchain.`); }
   }
+  for (const name of ['cargo', 'rustc']) if (tools[name]) {
+    try {
+      const output = execute(tools[name], name === 'rustc' ? ['-vV'] : ['--version'], options);
+      if (name === 'rustc') {
+        const version = output.match(/^release: (\d+)\.(\d+)\./m);
+        if (!version || Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 95)) problems.push('Rust 1.95 or newer is required for the native resource monitor. Set profile.cargo and profile.rustc to a supported toolchain.');
+      }
+    } catch { problems.push(`${name} is installed but cannot run. Select working cargo and rustc binaries in the release profile.`); }
+  }
+  for (const name of ['cargoXwin', 'clang', 'lldLink']) if (tools[name]) {
+    try { execute(tools[name], ['--version'], options); }
+    catch { problems.push(`${name} is installed but cannot run. Set profile.${name} to a working Windows cross-build tool.`); }
+  }
+  if (platform === 'darwin' && tools.rustc) for (const target of ['aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
+    try {
+      const libraries = execute(tools.rustc, ['--print', 'target-libdir', '--target', target], options).trim();
+      if (!path.isAbsolute(libraries) || !exists(libraries)) throw new Error('Target libraries are missing');
+    } catch { problems.push(`Selected Rust toolchain lacks ${target} standard libraries; install that target before building.`); }
+  }
   if (found.xcrun) for (const name of ['clang', 'notarytool', 'stapler']) {
     try { execute(found.xcrun, ['--find', name], options); }
     catch { problems.push(`The selected Xcode toolchain cannot locate ${name}; configure xcode-select before building.`); }
@@ -126,6 +170,7 @@ function inspectHostCommands(tools, { platform = process.platform, find = execut
 async function preflight(settings, { disk = true, directory } = {}) {
   const { profile, tools, repos } = settings;
   const problems = [];
+  if (/\s/.test(directory || profile.outputRoot || '')) problems.push('The local Windows native cross-build requires an output path without spaces. Choose a path such as ~/Documents/TritonAI-builds.');
   if (process.platform !== 'darwin') problems.push('The Mac/Windows local recipe runs on the configured Mac release host.');
   for (const [name, file] of Object.entries(tools)) if (!file) problems.push(`Missing ${name}; set '${name}' in ${settings.profileFile}.`);
   problems.push(...inspectHostCommands(tools));
@@ -276,4 +321,4 @@ async function main(args = process.argv.slice(2)) {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = failureExitCode(error); });
-module.exports = { parseArgs, executable, resolveRef, profileFor, cleanEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, failureExitCode, main };
+module.exports = { parseArgs, executable, resolveRef, profileFor, rustTools, cleanEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, failureExitCode, main };

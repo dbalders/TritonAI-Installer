@@ -128,7 +128,7 @@ function harnessFiles(version, platform) {
   const prefix = `TritonAI-Harness-${version}-${platform === 'mac' ? 'arm64' : 'x64'}`;
   return platform === 'mac'
     ? [`${prefix}.dmg`, `${prefix}.dmg.blockmap`, `${prefix}.zip`, `${prefix}.zip.blockmap`, 'latest-mac.yml', 'tritonai-plugin-composition-mac-arm64.json', 'harness-mac-verification.json']
-    : [`${prefix}.exe`, `${prefix}.exe.blockmap`, 'latest.yml', 'tritonai-plugin-composition-win-x64.json', 'harness-win-verification.json'];
+    : [`${prefix}.exe`, `${prefix}.exe.blockmap`, 'latest.yml', 'tritonai-plugin-composition-win-x64.json', 'harness-win-verification.json', 'resource-monitor-win-verification.json'];
 }
 function installerFiles(version, platform) {
   return platform === 'mac' ? [`TritonAI-Installer-${version}-arm64.dmg`, 'packaged-boot.json'] : [
@@ -214,6 +214,15 @@ async function stage(id, candidateFile) {
     const [kind, platform] = id.split('-'), cwd = dirs[id], env = await platformEnvironment(root, platform, c, p);
     const out = path.join(root, 'harness', platform); fs.mkdirSync(out, { recursive: true });
     if (kind === 'harness') {
+      if (platform === 'win') {
+        const native = await require('./local-release-native.cjs').buildWindowsResourceMonitor({
+          root: path.join(root, 'toolchains/win/native'), harnessRoot: cwd,
+          cargo: c.tools.cargo, rustc: c.tools.rustc, cargoXwin: c.tools.cargoXwin,
+          clang: c.tools.clang, lldLink: c.tools.lldLink,
+        });
+        Object.assign(env, native.env);
+        save(path.join(out, 'resource-monitor-win-verification.json'), native.receipt);
+      }
       // A failed attempt may have left a kept stage. This directory belongs only
       // to this locked candidate lane; completed stages are never rerun here.
       fs.rmSync(env.TMPDIR, { recursive: true, force: true }); fs.mkdirSync(env.TMPDIR, { recursive: true });

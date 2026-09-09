@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { parseArgs, resolveRef, cleanEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freezeTools, assertToolIdentities, hash, save, failureExitCode } = require('./local-release.cjs');
+const { parseArgs, resolveRef, rustTools, cleanEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freezeTools, assertToolIdentities, hash, save, failureExitCode } = require('./local-release.cjs');
 const { makeBuildRecipe, assertVersionOnly, executeWithEnvironment } = require('./local-release-stages.cjs');
 const { run } = require('./release-runner.cjs');
 
@@ -83,6 +83,35 @@ test('host preflight detects unusable package managers and incomplete selected X
   assert.ok(problems.some(message => message.includes('Xcode toolchain cannot locate stapler')));
   assert.ok(calls.some(call => call.join(' ') === 'xcrun --find notarytool'));
   assert.ok(calls.some(call => call.join(' ') === 'xcrun --find clang'));
+});
+test('Rust selection resolves rustup proxies and honors explicit compiler paths', () => {
+  const calls = [];
+  const options = { find: name => name === 'rustup' ? '/proxy/rustup' : name, execute: (file, args) => {
+    calls.push([file, ...args]); return `/toolchain/bin/${args[1]}\n`;
+  } };
+  assert.deepEqual(rustTools({}, options), { cargo: '/toolchain/bin/cargo', rustc: '/toolchain/bin/rustc' });
+  assert.deepEqual(calls, [['/proxy/rustup', 'which', 'cargo'], ['/proxy/rustup', 'which', 'rustc']]);
+  assert.deepEqual(rustTools({ cargo: '/fixed/cargo', rustc: '/fixed/rustc' }, options), { cargo: '/fixed/cargo', rustc: '/fixed/rustc' });
+});
+test('preflight rejects broken and unsupported Rust before source checks', () => {
+  const tools = { cargo: '/fixed/cargo', rustc: '/fixed/rustc' };
+  const options = { platform: 'darwin', find: name => name, exists: () => true, execute: (file) => {
+    if (file === tools.rustc) throw new Error('dyld: missing LLVM dependency');
+    return '';
+  } };
+  assert.ok(inspectHostCommands(tools, options).some(problem => problem.includes('rustc is installed but cannot run')));
+  options.execute = file => file === tools.rustc ? 'rustc 1.94.0\nrelease: 1.94.0\n' : '';
+  assert.ok(inspectHostCommands(tools, options).some(problem => problem.includes('Rust 1.95 or newer')));
+  options.execute = (file, args) => args.includes('target-libdir') ? '/toolchain/target/lib' : file === tools.rustc ? 'rustc 1.95.0\nrelease: 1.95.0\n' : '';
+  assert.deepEqual(inspectHostCommands(tools, options), []);
+  options.exists = () => false;
+  assert.ok(inspectHostCommands(tools, options).some(problem => problem.includes('lacks x86_64-pc-windows-msvc')));
+  const env = cleanEnvironment({ PATH: '/broken/bin', RUSTC: '/broken/rustc', RUSTC_WRAPPER: '/ambient', CARGO_BUILD_TARGET: 'wrong-target' }, tools);
+  assert.equal(env.PATH.split(path.delimiter)[0], '/fixed');
+  assert.equal(env.RUSTC, tools.rustc);
+  assert.equal(env.CARGO, tools.cargo);
+  assert.equal(env.RUSTC_WRAPPER, undefined);
+  assert.equal(env.CARGO_BUILD_TARGET, undefined);
 });
 test('version-only preparation refuses unrelated edits even in recognized manifests', t => {
   const root = fixture(t), cwd = repo(root, 'installer'), source = { commit: git(cwd, 'rev-parse', 'HEAD') };
