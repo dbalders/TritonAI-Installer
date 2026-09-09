@@ -40,6 +40,18 @@ function validate(plan) {
     if (!path.isAbsolute(step.cwd) || !fs.statSync(step.cwd).isDirectory()) throw new Error(`Invalid cwd: ${step.id}`);
     if (!Array.isArray(step.commands) || !step.commands.length || step.commands.some(c => !Array.isArray(c) || !c.length || c.some(a => typeof a !== 'string'))) throw new Error(`Invalid commands: ${step.id}`);
     if (!Array.isArray(step.outputs) || step.outputs.some(p => typeof p !== 'string')) throw new Error(`Declare outputs for ${step.id}`);
+    for (const field of ['needs', 'resources', 'requiredEnv']) {
+      if (step[field] !== undefined && (!Array.isArray(step[field]) || step[field].some(value => typeof value !== 'string' || !value))) throw new Error(`Invalid ${field}: ${step.id}`);
+    }
+    for (const field of ['inputs', 'sources']) {
+      if (step[field] === undefined) continue;
+      if (!Array.isArray(step[field]) || step[field].some(value => {
+        if (typeof value === 'string') return !value;
+        return !value || typeof value !== 'object' || typeof value.path !== 'string' || !value.path ||
+          !(field === 'inputs' ? /^[a-f0-9]{64}$/.test(value.sha256 || '') : /^[a-f0-9]{40}$/.test(value.commit || ''));
+      })) throw new Error(`Invalid ${field}: ${step.id}`);
+    }
+    if (step.env !== undefined && (!step.env || Array.isArray(step.env) || typeof step.env !== 'object' || Object.values(step.env).some(value => typeof value !== 'string'))) throw new Error(`Invalid env: ${step.id}`);
     for (const key of step.requiredEnv || []) if (!process.env[key]) throw new Error(`Missing environment variable: ${key}`);
   }
   const seen = new Set(), visiting = new Set();
@@ -54,7 +66,7 @@ function validate(plan) {
   for (const id of ids) visit(id);
 }
 async function snapshot(step) {
-  const keys = new Set([...(step.requiredEnv || []), ...Object.keys(process.env).filter(key => /^(TRITONAI_|UCSD_|T3CODE_|CSC_|WIN_CSC_|APPLE_|AZURE_|ELECTRON_BUILDER_)/.test(key))]);
+  const keys = new Set([...(step.requiredEnv || []), ...Object.keys(process.env).filter(key => /^(TRITONAI_|UCSD_|T3CODE_|CSC_|WIN_CSC_|APPLE_|AZURE_|ELECTRON_BUILDER_|DEVELOPER_ID_APPLICATION$)/.test(key))]);
   const environment = Object.fromEntries([...keys].sort().map(key => [key, process.env[key]]));
   const inputs = {};
   for (const entry of step.inputs || []) {

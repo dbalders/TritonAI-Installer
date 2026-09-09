@@ -63,7 +63,10 @@ logs, artifacts, or state.
 Changed source/configuration, missing or modified completed outputs, or an edited recipe require a
 fresh candidate. The runner deliberately refuses to silently rebuild previously verified bytes.
 If forcibly interrupted, confirm that the recorded runner PID and its children have stopped before
-removing `release.json.run/runner.lock`. Never start another runner over live packaging work.
+removing `release.json.run/runner.lock`. Never start another runner over live packaging work. Failed preparation removes the fresh worktrees
+it created so the same command can be retried; unexpected files or changed worktrees are retained
+and reported for inspection. Mac credential environment values and notarization config/key files
+are included in the resume checks without storing their contents in receipts.
 
 ## Scope and remaining release steps
 

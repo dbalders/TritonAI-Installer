@@ -102,7 +102,8 @@ test('preparer creates same-commit isolated worktrees and gates both packages on
   git(plugins, 'tag', 'v1.0.0'); const assets = path.join(f.root, 'assets'); fs.mkdirSync(assets);
   for (const file of ['TritonAI-Harness-0.3.4-arm64.dmg', 'latest-mac.yml', 'tritonai-plugin-composition-mac-arm64.json', 'TritonAI-Harness-0.3.4-x64.exe', 'latest.yml', 'tritonai-plugin-composition-win-x64.json']) fs.writeFileSync(path.join(assets, file), 'fixture');
   const directory = path.join(f.root, 'candidate');
-  const env = { TRITONAI_HARNESS_VERSION: '0.3.4', TRITONAI_PLUGINS_SOURCE: plugins, TRITONAI_PLUGINS_REF: 'refs/tags/v1.0.0', TRITONAI_PLUGINS_COMMIT: git(plugins, 'rev-parse', 'HEAD'), UCSD_SKILLS_SOURCE: skills, TRITONAI_ALLOW_UNSIGNED_WINDOWS_RELEASE: '1', RELEASE_HARNESS_ASSETS: assets };
+  const keyFile = path.join(f.root, 'test-key.p8'); fs.writeFileSync(keyFile, 'fixture-key');
+  const env = { APPLE_API_KEY: keyFile, APPLE_API_KEY_ID: 'test', APPLE_API_ISSUER: 'test', TRITONAI_HARNESS_VERSION: '0.3.4', TRITONAI_PLUGINS_SOURCE: plugins, TRITONAI_PLUGINS_REF: 'refs/tags/v1.0.0', TRITONAI_PLUGINS_COMMIT: git(plugins, 'rev-parse', 'HEAD'), UCSD_SKILLS_SOURCE: skills, TRITONAI_ALLOW_UNSIGNED_WINDOWS_RELEASE: '1', RELEASE_HARNESS_ASSETS: assets };
   const recipe = JSON.parse(fs.readFileSync(await prepare(directory, env, root)));
   assert.equal(git(path.join(directory, 'mac'), 'rev-parse', 'HEAD'), git(path.join(directory, 'win'), 'rev-parse', 'HEAD'));
   assert.equal(recipe.steps.filter(s => s.id.endsWith('-tests')).length, 1);
@@ -115,8 +116,20 @@ test('preparer creates same-commit isolated worktrees and gates both packages on
   await assert.rejects(prepare(directory, env, root), /already exists/);
   await assert.rejects(prepare(path.join(f.root, 'bad'), { ...env, TRITONAI_PLUGINS_COMMIT: '0'.repeat(40) }, root), /commit pin/);
   const packages = recipe.steps.filter(s => s.id.endsWith('-package'));
-  assert.deepEqual(packages[0].inputs, packages[1].inputs);
+  assert.deepEqual(packages[0].inputs[0], packages[1].inputs[0]);
   assert.equal(packages[0].inputs[0].sha256, await require('./release-runner.cjs').treeHash(assets));
+  const failed = path.join(f.root, 'failed');
+  await assert.rejects(prepare(failed, env, root, { git: (cwd, ...args) => {
+    if (args[0] === 'worktree' && args[1] === 'add' && args.includes(path.join(failed, 'win'))) throw new Error('second worktree failed');
+    return git(cwd, ...args);
+  } }), /second worktree failed/);
+  assert.equal(fs.existsSync(failed), false);
+  assert.equal(git(root, 'worktree', 'list', '--porcelain').includes(failed), false);
+  await assert.rejects(prepare(failed, env, root, { writeRecipe: file => { fs.writeFileSync(file, '{partial'); throw new Error('recipe write failed'); } }), /recipe write failed/);
+  assert.equal(fs.existsSync(failed), false);
+  assert.equal(git(root, 'worktree', 'list', '--porcelain').includes(failed), false);
+  assert.ok(fs.existsSync(await prepare(failed, env, root)));
+
 });
 test('changed release environment invalidates receipts without persisting its value', async t => {
   const f = fixture(t), step = f.step('a'), key = 'TRITONAI_RUNNER_TEST_SECRET';
@@ -142,4 +155,22 @@ test('prepared inputs reject changes before first use and between platform stage
   fs.writeFileSync(input, 'replaced-between-platforms');
   await assert.rejects(run({ schemaVersion: 1, steps: [{ ...b, needs: [] }] }, path.join(f.root, 'second-state'), { executeCommand: () => { executions++; } }), /prepared hash/);
   assert.equal(executions, 0);
+});
+test('Mac credential file changes invalidate the prepared inputs', async t => {
+  const { macCredentialInputs } = require('./prepare-release-run.cjs');
+  const f = fixture(t), configDir = path.join(f.root, '.agents', 'secrets', 'appstore'); fs.mkdirSync(configDir, { recursive: true });
+  const config = path.join(configDir, 'config.json'), key = path.join(configDir, 'key.p8');
+  fs.writeFileSync(key, 'test-private-key'); fs.writeFileSync(config, JSON.stringify({ keyId: 'test', issuerId: 'test', keyFile: 'key.p8' }));
+  const inputs = await macCredentialInputs({}, f.root); assert.equal(inputs.length, 2);
+  const step = { ...f.step('package'), inputs };
+  fs.writeFileSync(key, 'rotated-test-private-key');
+  await assert.rejects(run({ schemaVersion: 1, steps: [step] }, f.state), /prepared hash/);
+  const explicit = await macCredentialInputs({ APPLE_API_KEY: key, APPLE_API_KEY_ID: 'test', APPLE_API_ISSUER: 'test' }, f.root);
+  assert.equal(explicit.length, 1);
+});
+test('optional recipe fields fail validation before any work begins', t => {
+  const f = fixture(t), step = f.step('a');
+  for (const [field, value] of [['needs', 'a'], ['resources', 'cache'], ['inputs', [{}]], ['sources', [{}]], ['env', []], ['requiredEnv', 'NAME']]) {
+    assert.throws(() => validate({ schemaVersion: 1, steps: [{ ...step, [field]: value }] }), new RegExp(`Invalid ${field}`));
+  }
 });
