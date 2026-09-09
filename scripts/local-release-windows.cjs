@@ -13,7 +13,7 @@ const BUILDER_VERSION = '26.15.7';
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
-function run(file, args, { env, cwd, input, timeout = 180000, label = path.basename(file), log = () => {}, progressInterval = 30000 } = {}) {
+function run(file, args, { env, cwd, input, timeout = 180000, label = path.basename(file), log = () => {}, progressInterval = 30000, includeStderr = false } = {}) {
   return new Promise((resolve, reject) => {
     // A child may exit while a Wine descendant still owns its stdout/stderr.
     // Own a process group and settle timeouts directly, without waiting for close.
@@ -76,7 +76,7 @@ function run(file, args, { env, cwd, input, timeout = 180000, label = path.basen
     process.once('SIGTERM', onTerminate);
     child.on('error', (error) => finish(error));
     child.on('close', (code, signal) => {
-      if (code === 0) finish(null, stdout.trim());
+      if (code === 0) finish(null, (stdout + (includeStderr ? '\n' + stderr : '')).trim());
       else finish(new Error(`${label} failed (${signal || code}): ${(stderr.trim() || stdout.trim()).slice(-4096)}`));
     });
     child.stdin.on('error', () => {}); // An early child failure is reported by close.
@@ -84,16 +84,15 @@ function run(file, args, { env, cwd, input, timeout = 180000, label = path.basen
   });
 }
 
-async function runWine(file, args, { wine, prefix, log = () => {}, ...options }) {
+async function runWine(file, args, { wineserver, prefix, log = () => {}, ...options }) {
   try { return await run(file, args, { ...options, log }); }
   catch (error) {
     if (error.code === 'ETIMEDOUT' || error.code === 'EINTR') {
       // wineserver and Windows services can detach from the original group. Wine's
       // own shutdown command targets exactly this prefix, never a process-name scan.
-      const server = path.join(path.dirname(fs.realpathSync(wine)), 'wineserver');
       log(`Stopping Wine processes for candidate prefix ${prefix}.`);
       try {
-        await run(server, ['-k'], { env: { ...options.env, WINEPREFIX: prefix }, timeout: 10000, label: 'Stop candidate Wine prefix', log });
+        await run(wineserver, ['-k'], { env: { ...options.env, WINEPREFIX: prefix }, timeout: 10000, label: 'Stop candidate Wine prefix', log });
       } catch (cleanupError) { error.message += ` Candidate Wine cleanup failed: ${cleanupError.message}`; }
     }
     throw error;
@@ -108,14 +107,16 @@ function hasWineDrives(prefix) {
   } catch { return false; }
 }
 
-async function initializeWinePrefix({ wine, compiler, prefix, env, log = () => {}, timeout = 180000 }) {
+async function initializeWinePrefix({ wine, wineserver, compiler, prefix, env, log = () => {}, timeout = 180000 }) {
   if (fs.existsSync(path.join(prefix, 'dosdevices')) && !hasWineDrives(prefix)) {
     throw new Error(`Incomplete Wine prefix at ${prefix}: default C: and Z: drives are missing. Start a fresh candidate toolchain prefix; keep this failed prefix for diagnostics.`);
   }
+  if (!wineserver) throw new Error('Resolve a compatible wineserver before initializing Wine.');
+  fs.accessSync(wineserver, fs.constants.X_OK);
   // Wine treats an existing dosdevices directory as an already-created drive
   // layout. First initialize its C:/Z: drives, then add our T:/U: mappings.
   const version = await runWine(wine, [compiler, '-VERSION'], {
-    wine, prefix, env, log, timeout, label: `Initialize Wine prefix ${prefix}`,
+    wineserver, prefix, env, log, timeout, label: `Initialize Wine prefix ${prefix}`,
   });
   if (!hasWineDrives(prefix)) throw new Error(`Wine initialization did not create default C: and Z: drives at ${prefix}.`);
   if (!/^v3\.04(?:\s|$)/m.test(version)) throw new Error(`Unexpected pinned NSIS version during Wine initialization: ${version}`);
@@ -201,11 +202,55 @@ function findWine(wine, env) {
   throw new Error('Windows cross-build requires Wine. Install Wine, or set the local release profile wine path to its wine64 executable.');
 }
 
+function executableFile(file) {
+  try {
+    const resolved = fs.realpathSync(file);
+    fs.accessSync(resolved, fs.constants.X_OK);
+    return fs.statSync(resolved).isFile() ? resolved : null;
+  } catch { return null; }
+}
+
+async function resolveWineServer({ wine, wineserver, env = process.env, log = () => {} }) {
+  const wineRealPath = fs.realpathSync(wine);
+  const candidates = wineserver ? [wineserver] : [
+    path.join(path.dirname(wineRealPath), 'wineserver'),
+    path.join(path.dirname(wine), 'wineserver'),
+    ...String(env.PATH || '').split(path.delimiter).filter(Boolean).map(dir => path.join(dir, 'wineserver')),
+    '/usr/local/bin/wineserver', '/opt/homebrew/bin/wineserver', '/opt/local/bin/wineserver',
+  ];
+  const executables = [...new Set(candidates.map(executableFile).filter(Boolean))];
+  // Do not launch even the Wine version wrapper when no cleanup tool exists.
+  if (!executables.length) throw new Error(`No executable wineserver found for ${wine}. Install the matching Wine/server pair or add its bin directory to PATH.`);
+  const wineVersion = await run(wine, ['--version'], { env, timeout: 30000, label: 'Read Wine version', log, includeStderr: true });
+  // Staging adds a display suffix to the loader, while wineserver prints only
+  // PACKAGE_STRING. Compare the version token, retaining prerelease identifiers.
+  const normalize = value => value.match(/^wine[- ](\d[^\s()]*)/im)?.[1].toLowerCase();
+  const expected = normalize(wineVersion);
+  if (!expected) throw new Error(`Cannot identify Wine version from ${wine}: ${wineVersion}`);
+  const failures = [];
+  for (const server of executables) {
+    try {
+      const version = await run(server, ['--version'], { env, timeout: 10000, label: `Check wineserver ${server}`, log, includeStderr: true });
+      if (normalize(version) !== expected) {
+        failures.push(`${server}: ${version || 'no version output'}`);
+        continue;
+      }
+      // Passing WINESERVER to Wine binds startup and cleanup to this same binary,
+      // even when the configured wine executable is a wrapper in another folder.
+      return { wineVersion, server: { path: server, version, sha256: sha256(server) } };
+    } catch (error) {
+      if (error.code === 'EINTR') throw error;
+      failures.push(`${server}: ${error.message}`);
+    }
+  }
+  throw new Error(`No wineserver compatible with ${wineVersion} was found. Install the matching Wine/server pair or add its bin directory to PATH. Checked: ${failures.join('; ')}`);
+}
+
 /** Prepare an isolated Windows cross-build lane. Never changes process.env or shared caches.
  * root is the candidate-owned toolchains/win directory; installerRoot has npm ci completed.
  * Return only the environment overlay (safe to save) and deterministic input receipt.
  */
-async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, wine, env = process.env, log = console.log }) {
+async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, wine, wineserver, env = process.env, log = console.log }) {
   if (process.platform !== 'darwin') throw new Error('This local cross-build toolchain requires macOS.');
   if (!path.isAbsolute(root || '') || !path.isAbsolute(installerRoot || '')) {
     throw new Error('Windows toolchain root and installerRoot must be absolute paths.');
@@ -239,6 +284,8 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
   for (const key of Object.keys(childEnv)) {
     if (/^(ELECTRON_BUILDER_NSIS|ELECTRON_BUILDER_WINE|NSISDIR$|WINEARCH$|NODE_OPTIONS$|ELECTRON_RUN_AS_NODE$)/.test(key)) delete childEnv[key];
   }
+  const wineTools = await resolveWineServer({ wine: winePath, wineserver, env: childEnv, log });
+  childEnv.WINESERVER = wineTools.server.path;
   log('Preparing pinned Windows NSIS compiler and resources in the candidate cache.');
   const code = `const {downloadBuilderToolset} = require(${JSON.stringify(downloader)}); (async () => { const result = []; for (const [releaseName, sha256] of ${JSON.stringify([['nsis-' + NSIS_VERSION, NSIS_ARCHIVE_SHA256], ['nsis-resources-3.4.1', RESOURCES_ARCHIVE_SHA256]])}) {const filenameWithExt=releaseName+'.7z';result.push(await downloadBuilderToolset({releaseName,filenameWithExt,checksums:{[filenameWithExt]:sha256},overrideUrl:'https://github.com/electron-userland/electron-builder-binaries/releases/download/'+releaseName}));} console.log(JSON.stringify(result)); })().catch(error => { console.error(error.message); process.exitCode=1; });`;
   const output = await run(process.execPath, ['-e', code], { env: childEnv, cwd: installerRoot, timeout: 300000, label: 'Download pinned NSIS tools', log });
@@ -255,8 +302,7 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
   if (fs.existsSync(templates)) {
     if (hashTree(templates) !== templateSha256) throw new Error(`Candidate NSIS templates changed: ${templates}. Start a fresh candidate toolchain cache.`);
   } else fs.cpSync(templateSource, templates, { recursive: true });
-  const wineVersion = await run(winePath, ['--version'], { env: childEnv, timeout: 30000, label: 'Read Wine version', log });
-  await initializeWinePrefix({ wine: winePath, compiler, prefix, env: { ...childEnv, WINEARCH: 'win64' }, log });
+  await initializeWinePrefix({ wine: winePath, wineserver: wineTools.server.path, compiler, prefix, env: { ...childEnv, WINEARCH: 'win64' }, log });
   // Wine's short drive avoids legacy NSIS MAX_PATH failures in long worktree paths.
   // dosdevices is now initialized by Wine; custom mappings belong to this prefix only.
   const devices = ownPath(root, path.join(prefix, 'dosdevices'));
@@ -281,6 +327,7 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
     USE_SYSTEM_WINE: 'true',
     ELECTRON_BUILDER_WINE_TOOLSET_DIR: '',
     WINEARCH: 'win64',
+    WINESERVER: wineTools.server.path,
     ELECTRON_BUILDER_NSIS_DIR: nsisRoot,
     ELECTRON_BUILDER_NSIS_RESOURCES_DIR: resources,
     ELECTRON_BUILDER_NSIS_TEMPLATE_DIR: templates,
@@ -290,7 +337,7 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
   const probe = ownPath(root, path.join(root, 'compiler-probe.exe'));
   fs.rmSync(probe, { force: true });
   await runWine(macLauncher, ['-WX', '-INPUTCHARSET', 'UTF8', '-'], {
-    wine: winePath, prefix, log, label: 'Compile pinned NSIS probe',
+    wineserver: wineTools.server.path, prefix, log, label: 'Compile pinned NSIS probe',
     env: { ...childEnv, ...overlay },
     input: `!include "${templateSource}/include/StdUtils.nsh"\nUnicode true\nOutFile "${probe}"\nSection\nDetailPrint "TritonAI toolchain probe"\nSectionEnd\n`,
   });
@@ -301,10 +348,11 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
     schemaVersion: 1, nsisVersion: NSIS_VERSION, compilerSha256: NSIS_SHA256,
     nsisArchiveSha256: NSIS_ARCHIVE_SHA256, resourcesArchiveSha256: RESOURCES_ARCHIVE_SHA256,
     resourcesSha256, electronBuilderVersion: version, templateSha256,
-    wine: { path: winePath, version: wineVersion, sha256: sha256(fs.realpathSync(winePath)) },
+    wine: { path: winePath, version: wineTools.wineVersion, sha256: sha256(fs.realpathSync(winePath)) },
+    wineserver: wineTools.server,
     launcherSha256: crypto.createHash('sha256').update(launcher).digest('hex'),
   };
   return { env: overlay, receipt };
 }
 
-module.exports = { prepareWindowsToolchain, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256, runTool: run, initializeWinePrefix };
+module.exports = { prepareWindowsToolchain, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256, runTool: run, initializeWinePrefix, resolveWineServer };

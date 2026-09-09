@@ -11,6 +11,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+const failureExitCode = error => error.exitCode === 130 || error.exitCode === 143 ? error.exitCode : 1;
 function save(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.tmp`;
@@ -274,5 +275,5 @@ async function main(args = process.argv.slice(2)) {
   console.log(`Local candidate: ${path.join(directory, 'handoff')}\nReport: ${path.join(directory, 'handoff/report.json')}`);
 }
 
-if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { parseArgs, executable, resolveRef, profileFor, cleanEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, main };
+if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = failureExitCode(error); });
+module.exports = { parseArgs, executable, resolveRef, profileFor, cleanEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, failureExitCode, main };

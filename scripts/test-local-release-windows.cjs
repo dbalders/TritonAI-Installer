@@ -7,13 +7,59 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
-const { prepareWindowsToolchain, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256, runTool, initializeWinePrefix } = require('./local-release-windows.cjs');
+const { prepareWindowsToolchain, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256, runTool, initializeWinePrefix, resolveWineServer } = require('./local-release-windows.cjs');
 
 function fixture(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tritonai-windows-helper-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
+
+function wineVersionFixture(t, serverVersion = '99.41', wineVersion = '99.41') {
+  const root = fixture(t), wrappers = path.join(root, 'wrappers'), binaries = path.join(root, 'wine-bin');
+  fs.mkdirSync(wrappers); fs.mkdirSync(binaries);
+  const wine = path.join(wrappers, 'wine'), wineserver = path.join(binaries, 'wineserver'), started = path.join(root, 'wine-started');
+  fs.writeFileSync(wine, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(started)},process.argv.slice(2).join(' '));console.log(${JSON.stringify('wine-' + wineVersion)});`, { mode: 0o755 });
+  // Real wineserver writes its version to stderr rather than stdout.
+  fs.writeFileSync(wineserver, `#!${process.execPath}\nconsole.error(${JSON.stringify('Wine ' + serverVersion)});`, { mode: 0o755 });
+  return { root, wine, wineserver, started, env: { ...process.env, PATH: binaries } };
+}
+
+test('resolves a compatible PATH wineserver for a Wine wrapper with no sibling and records its identity', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('macOS Wine wrapper resolution');
+  const { wine, wineserver, env } = wineVersionFixture(t);
+  assert.equal(fs.existsSync(path.join(path.dirname(wine), 'wineserver')), false);
+  const result = await resolveWineServer({ wine, env });
+  assert.deepEqual(result, { wineVersion: 'wine-99.41', server: { path: wineserver, version: 'Wine 99.41', sha256: crypto.createHash('sha256').update(fs.readFileSync(wineserver)).digest('hex') } });
+});
+
+test('a missing cleanup executable fails before launching the Wine wrapper', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('macOS Wine wrapper resolution');
+  const { root, wine, started, env } = wineVersionFixture(t);
+  await assert.rejects(resolveWineServer({ wine, wineserver: path.join(root, 'missing-wineserver'), env }), /No executable wineserver found/);
+  assert.equal(fs.existsSync(started), false);
+});
+
+test('rejects a wineserver from an incompatible Wine installation', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('macOS Wine wrapper resolution');
+  const { wine, wineserver, env } = wineVersionFixture(t, '99.40');
+  await assert.rejects(resolveWineServer({ wine, wineserver, env }), /No wineserver compatible with wine-99\.41/);
+});
+
+test('matches Wine Staging display suffix while preserving version and prerelease differences', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('macOS Wine wrapper resolution');
+  for (const [loader, server, matches] of [
+    ['9.17 (Staging)', '9.17', true],
+    ['9.17 (Staging)', '9.18', false],
+    ['10.0-rc1 (Staging)', '10.0-rc1', true],
+    ['10.0-rc1 (Staging)', '10.0-rc2', false],
+    ['10.0-rc1 (Staging)', '10.0', false],
+  ]) {
+    const { wine, wineserver, env } = wineVersionFixture(t, server, loader);
+    if (matches) assert.equal((await resolveWineServer({ wine, wineserver, env })).server.version, 'Wine ' + server);
+    else await assert.rejects(resolveWineServer({ wine, wineserver, env }), /No wineserver compatible/);
+  }
+});
 
 test('timeout stops owned descendants whose inherited pipes outlive the initial process', async (t) => {
   if (process.platform === 'win32') return t.skip('macOS process-group ownership');
@@ -55,12 +101,12 @@ test('initializes default Wine drives before custom mappings and rejects partial
   const root = fixture(t), prefix = path.join(root, 'prefix'), compiler = path.join(root, 'compiler.cjs');
   fs.mkdirSync(prefix);
   fs.writeFileSync(compiler, `const fs=require('node:fs'),path=require('node:path'),p=process.env.WINEPREFIX; if(fs.existsSync(path.join(p,'dosdevices')))process.exit(17);fs.mkdirSync(path.join(p,'drive_c'));fs.mkdirSync(path.join(p,'dosdevices'));fs.symlinkSync('../drive_c',path.join(p,'dosdevices','c:'));fs.symlinkSync('/',path.join(p,'dosdevices','z:'));console.log('v3.04');`);
-  await initializeWinePrefix({ wine: process.execPath, compiler, prefix, env: { ...process.env, WINEPREFIX: prefix } });
+  await initializeWinePrefix({ wine: process.execPath, wineserver: process.execPath, compiler, prefix, env: { ...process.env, WINEPREFIX: prefix } });
   assert.equal(fs.realpathSync(path.join(prefix, 'dosdevices', 'c:')), path.join(prefix, 'drive_c'));
   const partial = path.join(root, 'partial');
   fs.mkdirSync(path.join(partial, 'dosdevices'), { recursive: true });
   fs.symlinkSync(root, path.join(partial, 'dosdevices', 't:'));
-  await assert.rejects(initializeWinePrefix({ wine: process.execPath, compiler, prefix: partial, env: { ...process.env, WINEPREFIX: partial } }), /Incomplete Wine prefix.*default C: and Z: drives/);
+  await assert.rejects(initializeWinePrefix({ wine: process.execPath, wineserver: process.execPath, compiler, prefix: partial, env: { ...process.env, WINEPREFIX: partial } }), /Incomplete Wine prefix.*default C: and Z: drives/);
 });
 
 function wineServiceFixture(t) {
@@ -73,17 +119,19 @@ function wineServiceFixture(t) {
     fs.rmSync(root, { recursive: true, force: true });
   });
   fs.writeFileSync(compiler, `const {spawn}=require('node:child_process'),fs=require('node:fs');const service=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore','inherit','inherit']});fs.writeFileSync(${JSON.stringify(pidFile)},String(service.pid));service.unref();process.exit(0);`);
-  const wine = path.join(root, 'wine'), server = path.join(root, 'wineserver');
+  const wine = path.join(root, 'wine'), serverDirectory = path.join(root, 'server-bin');
+  fs.mkdirSync(serverDirectory);
+  const server = path.join(serverDirectory, 'wineserver');
   fs.writeFileSync(wine, `#!/bin/sh\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
   fs.writeFileSync(server, `#!${process.execPath}\nconst fs=require('node:fs');const prefix=process.env.WINEPREFIX;if(prefix!==${JSON.stringify(prefix)})process.exit(19);const args=process.argv.slice(2);if(args.length!==1||args[0]!=='-k')process.exit(20);process.kill(Number(fs.readFileSync(${JSON.stringify(pidFile)})),'SIGKILL');fs.writeFileSync(${JSON.stringify(cleaned)},JSON.stringify({prefix,args}));`, { mode: 0o755 });
-  return { prefix, wine, compiler, pidFile, cleaned };
+  return { prefix, wine, wineserver: server, compiler, pidFile, cleaned };
 }
 
 test('timed-out Wine initialization stops only services recorded in the exact prefix', async (t) => {
   if (process.platform !== 'darwin') return t.skip('macOS Wine service cleanup');
-  const { prefix, wine, compiler, cleaned } = wineServiceFixture(t);
+  const { prefix, wine, wineserver, compiler, cleaned } = wineServiceFixture(t);
   const started = Date.now();
-  await assert.rejects(initializeWinePrefix({ wine, compiler, prefix, env: { ...process.env, WINEPREFIX: prefix }, timeout: 500 }), error => error.code === 'ETIMEDOUT');
+  await assert.rejects(initializeWinePrefix({ wine, wineserver, compiler, prefix, env: { ...process.env, WINEPREFIX: prefix }, timeout: 500 }), error => error.code === 'ETIMEDOUT');
   assert.ok(Date.now() - started < 4000);
   assert.deepEqual(JSON.parse(fs.readFileSync(cleaned)), { prefix, args: ['-k'] });
 });
@@ -91,8 +139,8 @@ test('timed-out Wine initialization stops only services recorded in the exact pr
 for (const signal of ['SIGINT', 'SIGTERM']) {
   test(`${signal} interrupts the owned group, cleans the exact Wine prefix, and removes listeners`, async (t) => {
     if (process.platform !== 'darwin') return t.skip('macOS Wine service cleanup');
-    const { prefix, wine, compiler, pidFile, cleaned } = wineServiceFixture(t);
-    const driverSource = `const {initializeWinePrefix}=require(${JSON.stringify(require.resolve('./local-release-windows.cjs'))});initializeWinePrefix(${JSON.stringify({ wine, compiler, prefix })}).catch(error=>{console.log(JSON.stringify({code:error.code,signal:error.signal,exitCode:error.exitCode,sigintListeners:process.listenerCount('SIGINT'),sigtermListeners:process.listenerCount('SIGTERM')}));process.exitCode=error.exitCode||1;});`;
+    const { prefix, wine, wineserver, compiler, pidFile, cleaned } = wineServiceFixture(t);
+    const driverSource = `const {initializeWinePrefix}=require(${JSON.stringify(require.resolve('./local-release-windows.cjs'))});initializeWinePrefix(${JSON.stringify({ wine, wineserver, compiler, prefix })}).catch(error=>{console.log(JSON.stringify({code:error.code,signal:error.signal,exitCode:error.exitCode,sigintListeners:process.listenerCount('SIGINT'),sigtermListeners:process.listenerCount('SIGTERM')}));process.exitCode=error.exitCode||1;});`;
     const driver = spawn(process.execPath, ['-e', driverSource], { env: { ...process.env, WINEPREFIX: prefix }, stdio: ['ignore', 'pipe', 'pipe'] });
     t.after(() => { try { driver.kill('SIGKILL'); } catch {} });
     let output = '', stderr = '';

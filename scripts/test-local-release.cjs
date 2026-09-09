@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { parseArgs, resolveRef, cleanEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freezeTools, assertToolIdentities, hash, save } = require('./local-release.cjs');
+const { parseArgs, resolveRef, cleanEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freezeTools, assertToolIdentities, hash, save, failureExitCode } = require('./local-release.cjs');
 const { makeBuildRecipe, assertVersionOnly, executeWithEnvironment } = require('./local-release-stages.cjs');
 const { run } = require('./release-runner.cjs');
 
@@ -152,11 +152,34 @@ test('interrupting a child prevents downstream work even when it handles the sig
     { id: 'first', cwd: root, git: false, commands: [[process.execPath, '-e', "process.on('SIGINT',()=>process.exit(0));require('fs').writeFileSync('ready','yes');setInterval(()=>{},1000)"]], outputs: ['ready'] },
     { id: 'next', cwd: root, git: false, needs: ['first'], commands: [[process.execPath, '-e', "require('fs').writeFileSync('must-not-run','yes')"]], outputs: ['must-not-run'] }
   ] };
-  const stopped = assert.rejects(run(recipe, path.join(root, 'state'), { executeCommand: executeWithEnvironment({ PATH: process.env.PATH }) }), /SIGINT/);
+  const stopped = assert.rejects(run(recipe, path.join(root, 'state'), { executeCommand: executeWithEnvironment({ PATH: process.env.PATH }) }), error => {
+    assert.match(error.message, /SIGINT/);
+    assert.equal(failureExitCode(error), 130);
+    return true;
+  });
   for (let attempt = 0; attempt < 100 && !fs.existsSync(ready); attempt++) await new Promise(resolve => setTimeout(resolve, 20));
   process.emit('SIGINT');
   await stopped;
   assert.ok(fs.existsSync(ready));
   assert.ok(!fs.existsSync(path.join(root, 'must-not-run')));
   assert.ok(!fs.existsSync(path.join(root, 'state/runner.lock')));
+});
+
+test('production stage CLI preserves cancellation status through its child and runner', async t => {
+  const root = fixture(t), candidate = path.join(root, 'candidate.json');
+  save(candidate, { tools: { vp: process.execPath } });
+  save(path.join(root, 'prepared.json'), { dirs: { 'harness-win': root } });
+  const log = fs.openSync(path.join(root, 'stage.log'), 'a');
+  try {
+    for (const status of [130, 143]) {
+      fs.writeFileSync(path.join(root, 'i'), `process.exit(${status});`);
+      await assert.rejects(executeWithEnvironment({ PATH: process.env.PATH })(
+        [process.execPath, path.join(__dirname, 'local-release-stages.cjs'), 'harness-win-dependencies', candidate],
+        { id: 'cancellation', cwd: root }, log), error => {
+        assert.equal(error.exitCode, status);
+        assert.equal(failureExitCode(error), status);
+        return true;
+      });
+    }
+  } finally { fs.closeSync(log); }
 });

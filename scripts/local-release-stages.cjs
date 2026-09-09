@@ -4,9 +4,10 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { isDeepStrictEqual } = require('node:util');
-const { read, save, git, candidateEnvironment, macSigningEnvironment } = require('./local-release.cjs');
+const { read, save, git, candidateEnvironment, macSigningEnvironment, failureExitCode } = require('./local-release.cjs');
 const { treeHash } = require('./release-runner.cjs');
 const { collect } = require('./collect-release-artifacts.cjs');
+const childExitCode = (code, signal) => signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : code || 1;
 
 function executeWithEnvironment(environment) {
   return (command, step, log) => new Promise((resolve, reject) => {
@@ -18,7 +19,9 @@ function executeWithEnvironment(environment) {
     process.on('SIGINT', interrupt); process.on('SIGTERM', terminate);
     const finish = error => { process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', terminate); error ? reject(error) : resolve(); };
     child.once('error', finish);
-    child.once('exit', (code, signal) => finish(code === 0 && !interrupted ? null : new Error(`${step.id} failed (${interrupted || code || signal}); see its stage log.`)));
+    child.once('exit', (code, signal) => finish(code === 0 && !interrupted ? null : Object.assign(
+      new Error(`${step.id} failed (${interrupted || code || signal}); see its stage log.`),
+      { exitCode: childExitCode(code, interrupted || signal) })));
   });
 }
 
@@ -26,7 +29,9 @@ function command(cwd, argv, env = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawn(argv[0], argv.slice(1), { cwd, env, stdio: 'inherit', shell: false });
     child.once('error', reject);
-    child.once('exit', (code, signal) => code === 0 ? resolve() : reject(new Error(`${path.basename(argv[0])} ${argv[1] || ''} failed (${code ?? signal})`)));
+    child.once('exit', (code, signal) => code === 0 ? resolve() : reject(Object.assign(
+      new Error(`${path.basename(argv[0])} ${argv[1] || ''} failed (${code ?? signal})`),
+      { exitCode: childExitCode(code, signal) })));
   });
 }
 
@@ -190,7 +195,12 @@ async function stage(id, candidateFile) {
   }
   if (id.endsWith('-checks')) {
     const kind = id.split('-')[0], cwd = dirs[kind === 'plugins' ? kind : `${kind}-mac`];
-    const commands = kind === 'harness' ? [[c.tools.vp, 'check'], [c.tools.vp, 'run', 'typecheck'], [c.tools.vp, 'test', 'run', '--maxWorkers=2'], [c.tools.vp, 'run', 'build']]
+    // Honor the server's serial SQLite/Git test configuration. The root runner
+    // otherwise discovers those files without loading apps/server/vite.config.ts.
+    const commands = kind === 'harness' ? [[c.tools.vp, 'check'], [c.tools.vp, 'run', 'typecheck'],
+      [c.tools.vp, 'test', 'run', '--maxWorkers=2', '--exclude', 'apps/server/**'],
+      [c.tools.vp, 'test', 'run', '--root', 'apps/server', '--maxWorkers=1'],
+      [c.tools.vp, 'run', 'build']]
       : kind === 'installer' ? [['npm', 'test']] : [['corepack', 'pnpm', 'readiness:local']];
     for (const argv of commands) await command(cwd, argv, { ...process.env, TRITONAI_HARNESS_ROOT: dirs['harness-mac'], TRITONAI_HARNESS_COMMIT: p.commits.harness });
     stamp(id); return;
@@ -240,5 +250,5 @@ async function stage(id, candidateFile) {
   throw new Error(`Unknown release stage: ${id}`);
 }
 
-if (require.main === module) stage(process.argv[2], path.resolve(process.argv[3])).catch(error => { console.error(error.message); process.exitCode = 1; });
+if (require.main === module) stage(process.argv[2], path.resolve(process.argv[3])).catch(error => { console.error(error.message); process.exitCode = failureExitCode(error); });
 module.exports = { executeWithEnvironment, command, ensureWorktree, assertVersionOnly, applyVersion, prepare, harnessFiles, installerFiles, makeBuildRecipe, platformEnvironment, stage };

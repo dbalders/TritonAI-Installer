@@ -79,8 +79,8 @@ a new timestamped candidate with newly resolved sources; `--output /absolute/new
 chooses a specific location. A forcibly killed process may leave a lock: confirm its recorded
 PID and children have stopped before removing that candidate's lock.
 
-The source test gate runs the repository's test suite with two workers,
-so testing does not exhaust the release host while the other lane prepares.
+The source test gate runs non-server tests with two workers, then runs the server
+suite with its own serial SQLite/Git test configuration. Both groups must pass.
 Node, Vite+, and Wine resolve to immutable executable paths and hashes; a changed executable
 or Windows compiler receipt requires a fresh candidate. Notarization credentials are added
 only to macOS signing/package commands.
