@@ -220,3 +220,11 @@ proof for the signed cross-platform contract.
 - [Security model](docs/security-model.md)
 
 Do not commit API keys, signing credentials, generated managed config, vendored payloads, or release artifacts.
+
+### Resumable release tooling
+
+`npm run release:prepare -- <new-candidate-directory>` creates isolated Installer worktrees and a
+recipe around the existing packaging commands. `npm run release:run -- <recipe.json>` executes or
+resumes it, keeps full logs out of the agent conversation, and collects verified handoff files.
+See [release runner](docs/release-runner.md) for prerequisites, retry behavior, and remaining native
+verification/publication steps.
