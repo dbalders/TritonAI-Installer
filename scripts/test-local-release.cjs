@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { parseArgs, resolveRef, rustTools, cleanEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freezeTools, assertToolIdentities, hash, save, failureExitCode } = require('./local-release.cjs');
+const { parseArgs, resolveRef, profileFor, rustTools, cleanEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freezeTools, assertToolIdentities, hash, save, failureExitCode } = require('./local-release.cjs');
 const { makeBuildRecipe, assertVersionOnly, executeWithEnvironment } = require('./local-release-stages.cjs');
 const { run } = require('./release-runner.cjs');
 
@@ -86,12 +86,43 @@ test('host preflight detects unusable package managers and incomplete selected X
 });
 test('Rust selection resolves rustup proxies and honors explicit compiler paths', () => {
   const calls = [];
-  const options = { find: name => name === 'rustup' ? '/proxy/rustup' : name, execute: (file, args) => {
+  const options = { find: name => name === 'rustup' ? '/proxy/rustup' : name, realpath: file => file, execute: (file, args) => {
     calls.push([file, ...args]); return `/toolchain/bin/${args[1]}\n`;
   } };
   assert.deepEqual(rustTools({}, options), { cargo: '/toolchain/bin/cargo', rustc: '/toolchain/bin/rustc' });
   assert.deepEqual(calls, [['/proxy/rustup', 'which', 'cargo'], ['/proxy/rustup', 'which', 'rustc']]);
   assert.deepEqual(rustTools({ cargo: '/fixed/cargo', rustc: '/fixed/rustc' }, options), { cargo: '/fixed/cargo', rustc: '/fixed/rustc' });
+  assert.equal(calls.length, 2, 'explicit ordinary compilers must not be replaced by the default rustup selection');
+});
+test('explicit symlink and hardlink rustup proxies freeze selected toolchain binaries and derive their linker', { skip: process.platform === 'win32' }, async t => {
+  const root = fixture(t), proxyBin = path.join(root, 'custom-rustup/bin'), toolchain = path.join(root, 'selected-toolchain');
+  const writeExecutable = (file, contents) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, contents, { mode: 0o755 }); return file; };
+  const cargo = writeExecutable(path.join(toolchain, 'bin/cargo'), '#!/bin/sh\nexit 0\n');
+  const rustc = writeExecutable(path.join(toolchain, 'bin/rustc'), '#!/bin/sh\nexit 0\n');
+  const host = `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`;
+  const linker = writeExecutable(path.join(toolchain, 'lib/rustlib', host, 'bin/gcc-ld/lld-link'), '#!/bin/sh\nexit 0\n');
+  // This selector deliberately lives outside ~/.cargo and returns a different
+  // toolchain from the user's default rustup installation.
+  const selector = writeExecutable(path.join(proxyBin, 'rustup'), `#!/bin/sh\n[ "$1" = which ] || exit 1\ncase "$2" in cargo|rustc) printf '%s/%s\\n' '${toolchain}/bin' "$2" ;; *) exit 1 ;; esac\n`);
+  fs.symlinkSync('rustup', path.join(proxyBin, 'rustc'));
+  fs.linkSync(selector, path.join(proxyBin, 'cargo'));
+  const profilePath = path.join(root, 'profile.json');
+  save(profilePath, { schemaVersion: 1, node: process.execPath, vp: cargo, clang: cargo, cargoXwin: cargo, wine: cargo,
+    cargo: path.join(proxyBin, 'cargo'), rustc: path.join(proxyBin, 'rustc') });
+  const settings = profileFor({ profile: profilePath });
+  assert.equal(settings.tools.cargo, fs.realpathSync(cargo));
+  assert.equal(settings.tools.rustc, fs.realpathSync(rustc));
+  assert.equal(settings.tools.lldLink, fs.realpathSync(linker));
+  const frozen = await freezeTools({ cargo: settings.tools.cargo, rustc: settings.tools.rustc });
+  assert.equal(frozen.tools.cargo, fs.realpathSync(cargo));
+  assert.equal(frozen.tools.rustc, fs.realpathSync(rustc));
+  assert.notEqual(frozen.toolIdentities.rustc.sha256, hash(fs.readFileSync(selector)));
+});
+test('an explicit unresolved rustup proxy fails before it can be frozen', { skip: process.platform === 'win32' }, t => {
+  const root = fixture(t), selector = path.join(root, 'rustup'), proxy = path.join(root, 'rustc');
+  fs.writeFileSync(selector, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  fs.symlinkSync(selector, proxy);
+  assert.throws(() => rustTools({ rustc: proxy }, { execute: () => { throw new Error('toolchain unavailable'); } }), /Cannot resolve the selected rustc rustup proxy/);
 });
 test('preflight rejects broken and unsupported Rust before source checks', () => {
   const tools = { cargo: '/fixed/cargo', rustc: '/fixed/rustc' };

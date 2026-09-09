@@ -100,17 +100,43 @@ function profileFor(options) {
     wine: executable(profile.wine || 'wine64', ['/usr/local/bin', '/opt/homebrew/bin']) } };
 }
 
-function rustTools(profile, { find = executable, execute = execFileSync } = {}) {
+function rustTools(profile, { find = executable, execute = execFileSync, realpath = fs.realpathSync, stat = fs.statSync } = {}) {
   const rustup = find('rustup', [path.join(os.homedir(), '.cargo/bin')]);
+  const proxySelector = file => {
+    if (!file) return null;
+    try {
+      const resolved = realpath(file);
+      if (/^rustup(?:\.exe)?$/.test(path.basename(resolved))) return resolved;
+      // Rustup installs proxies as either symlinks or hard links. Use the
+      // selector beside this explicit proxy, not a different rustup on PATH.
+      const sibling = find(path.join(path.dirname(file), process.platform === 'win32' ? 'rustup.exe' : 'rustup'));
+      if (sibling) {
+        const toolInfo = stat(file), selectorInfo = stat(sibling);
+        if (toolInfo.dev === selectorInfo.dev && toolInfo.ino === selectorInfo.ino) return realpath(sibling);
+      }
+    } catch {}
+    return null;
+  };
+  const resolveProxy = (selector, name) => {
+    const resolved = execute(selector, ['which', name], { encoding: 'utf8', stdio: 'pipe', timeout: 15000 }).trim();
+    const tool = path.isAbsolute(resolved) && find(resolved);
+    if (!tool || proxySelector(tool)) throw new Error('Rustup did not select an installed toolchain binary.');
+    return realpath(tool);
+  };
   return Object.fromEntries(['cargo', 'rustc'].map(name => {
-    if (profile[name]) return [name, find(profile[name])];
+    if (profile[name]) {
+      const selected = find(profile[name]);
+      const selector = proxySelector(selected);
+      if (!selector) return [name, selected];
+      try { return [name, resolveProxy(selector, name)]; }
+      catch { throw new Error(`Cannot resolve the selected ${name} rustup proxy to an installed toolchain. Set profile.${name} to a working toolchain binary.`); }
+    }
     // Resolve proxies before hashing: realpath(cargo) can otherwise pin rustup
     // itself, which changes behavior when invoked under that executable name.
-    if (rustup) try {
-      const resolved = execute(rustup, ['which', name], { encoding: 'utf8', stdio: 'pipe', timeout: 15000 }).trim();
-      if (path.isAbsolute(resolved) && find(resolved)) return [name, resolved];
-    } catch {}
-    return [name, find(name)];
+    if (rustup) try { return [name, resolveProxy(rustup, name)]; } catch {}
+    const selected = find(name), selector = proxySelector(selected);
+    // A failed rustup selection must not reach freezeTools as the proxy itself.
+    return [name, selector ? null : selected];
   }));
 }
 
