@@ -3,8 +3,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
+const { treeHash } = require('./release-runner.cjs');
 
-function prepare(directory, env = process.env, root = path.resolve(__dirname, '..')) {
+async function prepare(directory, env = process.env, root = path.resolve(__dirname, '..')) {
   const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version;
   if (env.TRITONAI_HARNESS_VERSION !== version) throw new Error(`Set TRITONAI_HARNESS_VERSION=${version}; commit release versions before preparing.`);
   for (const name of ['UCSD_SKILLS_SOURCE', 'TRITONAI_PLUGINS_SOURCE', 'TRITONAI_PLUGINS_REF', 'TRITONAI_PLUGINS_COMMIT', 'RELEASE_HARNESS_ASSETS']) {
@@ -27,6 +28,7 @@ function prepare(directory, env = process.env, root = path.resolve(__dirname, '.
   ];
   for (const name of requiredAssets) if (!fs.statSync(path.join(assets, name)).isFile()) throw new Error(`Missing Harness asset: ${name}`);
   if (env.TRITONAI_HARNESS_RUN_ID && (!/^\d+$/.test(env.TRITONAI_HARNESS_RUN_ID) || !/^[a-f0-9]{40}$/.test(env.TRITONAI_HARNESS_COMMIT || ''))) throw new Error('Harness run requires a numeric ID and exact TRITONAI_HARNESS_COMMIT.');
+  const assetHash = await treeHash(assets);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   // Separate worktrees prevent concurrent builds from sharing dist/ or vendor/.
   for (const platform of ['mac', 'win']) git(root, 'worktree', 'add', '--detach', path.join(directory, platform), commit);
@@ -52,7 +54,7 @@ function prepare(directory, env = process.env, root = path.resolve(__dirname, '.
     steps.push({
       id: `${platform}-package`, cwd, needs: ['mac-tests', 'win-dependencies'],
       commands: [['npm', 'run', platform === 'mac' ? 'package:mac-release' : 'package:win-installer']],
-      inputs: [assets],
+      inputs: [{ path: assets, sha256: assetHash }],
       sources: [env.UCSD_SKILLS_SOURCE, env.TRITONAI_PLUGINS_SOURCE].map(source => ({ path: path.resolve(source), commit: git(source, 'rev-parse', 'HEAD') })),
       requiredEnv,
       // Cross-build packaging shares Electron Builder's Wine/NSIS caches. Serialize it by default.
@@ -77,7 +79,7 @@ function prepare(directory, env = process.env, root = path.resolve(__dirname, '.
 if (require.main === module) {
   try {
     if (process.argv.length !== 3 || process.argv[2] === '--help') console.log('Usage: npm run release:prepare -- <new absolute candidate directory>\nUses the existing TRITONAI/UCSD release environment and RELEASE_HARNESS_ASSETS. Creates two Installer worktrees and a resumable recipe; does not build or publish.');
-    else console.log(prepare(path.resolve(process.argv[2])));
+    else prepare(path.resolve(process.argv[2])).then(recipe => console.log(recipe)).catch(error => { console.error(error.message); process.exitCode = 1; });
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
 module.exports = { prepare };

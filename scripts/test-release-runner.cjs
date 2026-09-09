@@ -103,7 +103,7 @@ test('preparer creates same-commit isolated worktrees and gates both packages on
   for (const file of ['TritonAI-Harness-0.3.4-arm64.dmg', 'latest-mac.yml', 'tritonai-plugin-composition-mac-arm64.json', 'TritonAI-Harness-0.3.4-x64.exe', 'latest.yml', 'tritonai-plugin-composition-win-x64.json']) fs.writeFileSync(path.join(assets, file), 'fixture');
   const directory = path.join(f.root, 'candidate');
   const env = { TRITONAI_HARNESS_VERSION: '0.3.4', TRITONAI_PLUGINS_SOURCE: plugins, TRITONAI_PLUGINS_REF: 'refs/tags/v1.0.0', TRITONAI_PLUGINS_COMMIT: git(plugins, 'rev-parse', 'HEAD'), UCSD_SKILLS_SOURCE: skills, TRITONAI_ALLOW_UNSIGNED_WINDOWS_RELEASE: '1', RELEASE_HARNESS_ASSETS: assets };
-  const recipe = JSON.parse(fs.readFileSync(prepare(directory, env, root)));
+  const recipe = JSON.parse(fs.readFileSync(await prepare(directory, env, root)));
   assert.equal(git(path.join(directory, 'mac'), 'rev-parse', 'HEAD'), git(path.join(directory, 'win'), 'rev-parse', 'HEAD'));
   assert.equal(recipe.steps.filter(s => s.id.endsWith('-tests')).length, 1);
   for (const step of recipe.steps.filter(s => s.id.endsWith('-package'))) {
@@ -112,8 +112,11 @@ test('preparer creates same-commit isolated worktrees and gates both packages on
     assert.ok(step.resources.includes('electron-builder-release-cache'));
   }
   assert.equal(recipe.steps.at(-1).id, 'handoff');
-  assert.throws(() => prepare(directory, env, root), /already exists/);
-  assert.throws(() => prepare(path.join(f.root, 'bad'), { ...env, TRITONAI_PLUGINS_COMMIT: '0'.repeat(40) }, root), /commit pin/);
+  await assert.rejects(prepare(directory, env, root), /already exists/);
+  await assert.rejects(prepare(path.join(f.root, 'bad'), { ...env, TRITONAI_PLUGINS_COMMIT: '0'.repeat(40) }, root), /commit pin/);
+  const packages = recipe.steps.filter(s => s.id.endsWith('-package'));
+  assert.deepEqual(packages[0].inputs, packages[1].inputs);
+  assert.equal(packages[0].inputs[0].sha256, await require('./release-runner.cjs').treeHash(assets));
 });
 test('changed release environment invalidates receipts without persisting its value', async t => {
   const f = fixture(t), step = f.step('a'), key = 'TRITONAI_RUNNER_TEST_SECRET';
@@ -122,4 +125,21 @@ test('changed release environment invalidates receipts without persisting its va
   const plan = { schemaVersion: 1, steps: [step] }; await run(plan, f.state);
   assert.equal(fs.readFileSync(path.join(f.state, 'state.json'), 'utf8').includes('secret-first-value'), false);
   process.env[key] = 'changed'; await assert.rejects(run(plan, f.state), /changed/);
+});
+test('prepared inputs reject changes before first use and between platform stages', async t => {
+  const { treeHash } = require('./release-runner.cjs');
+  const f = fixture(t), input = path.join(f.root, 'harness'); fs.writeFileSync(input, 'verified');
+  const expected = await treeHash(input);
+  const a = { ...f.step('mac'), inputs: [{ path: input, sha256: expected }] };
+  const b = { ...f.step('win'), needs: ['mac'], inputs: [{ path: input, sha256: expected }] };
+  let executions = 0;
+  fs.writeFileSync(input, 'replaced-before-first-use');
+  await assert.rejects(run({ schemaVersion: 1, steps: [a] }, f.state, { executeCommand: () => { executions++; } }), /prepared hash/);
+  assert.equal(executions, 0);
+  fs.writeFileSync(input, 'verified');
+  await run({ schemaVersion: 1, steps: [a] }, f.state);
+  // A new stage has no prior receipt: it must still use the prepared hash.
+  fs.writeFileSync(input, 'replaced-between-platforms');
+  await assert.rejects(run({ schemaVersion: 1, steps: [{ ...b, needs: [] }] }, path.join(f.root, 'second-state'), { executeCommand: () => { executions++; } }), /prepared hash/);
+  assert.equal(executions, 0);
 });

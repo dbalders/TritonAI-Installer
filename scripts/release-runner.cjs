@@ -57,7 +57,11 @@ async function snapshot(step) {
   const keys = new Set([...(step.requiredEnv || []), ...Object.keys(process.env).filter(key => /^(TRITONAI_|UCSD_|T3CODE_|CSC_|WIN_CSC_|APPLE_|AZURE_|ELECTRON_BUILDER_)/.test(key))]);
   const environment = Object.fromEntries([...keys].sort().map(key => [key, process.env[key]]));
   const inputs = {};
-  for (const input of step.inputs || []) inputs[input] = await treeHash(path.resolve(step.cwd, input));
+  for (const entry of step.inputs || []) {
+    const input = typeof entry === 'string' ? entry : entry.path;
+    inputs[input] = await treeHash(path.resolve(step.cwd, input));
+    if (typeof entry !== 'string' && inputs[input] !== entry.sha256) throw new Error(`Input changed from prepared hash: ${input}`);
+  }
   const sources = {};
   for (const entry of step.sources || []) {
     const source = typeof entry === 'string' ? entry : entry.path;

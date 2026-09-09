@@ -21,7 +21,8 @@ npm run release:run -- /absolute/path/to/new-candidate/release.json --dry-run
 npm run release:run -- /absolute/path/to/new-candidate/release.json
 ```
 
-Preparation creates separate Mac and Windows Installer worktrees at the same current commit.
+Preparation hashes the verified Harness handoff once; both platform stages must match that exact
+hash, even on their first run. It creates separate Mac and Windows Installer worktrees at the same current commit.
 It never changes versions or chooses newer source refs. The recipe:
 
 1. Optionally waits for the **existing** Harness release CI run identified by
