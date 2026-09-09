@@ -6,13 +6,114 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { spawnSync } = require('node:child_process');
-const { prepareWindowsToolchain, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256 } = require('./local-release-windows.cjs');
+const { spawn, spawnSync } = require('node:child_process');
+const { prepareWindowsToolchain, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256, runTool, initializeWinePrefix } = require('./local-release-windows.cjs');
 
 function fixture(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tritonai-windows-helper-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
+}
+
+test('timeout stops owned descendants whose inherited pipes outlive the initial process', async (t) => {
+  if (process.platform === 'win32') return t.skip('macOS process-group ownership');
+  const logs = [];
+  let descendant;
+  t.after(() => { if (descendant) { try { process.kill(descendant, 'SIGKILL'); } catch {} } });
+  const source = `const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:['ignore','inherit','inherit']});console.log('descendant='+child.pid);child.unref();process.exit(0);`;
+  const started = Date.now();
+  await assert.rejects(runTool(process.execPath, ['-e', source], { timeout: 500, progressInterval: 50, label: 'Wine init fixture', log: line => logs.push(line) }), error => {
+    assert.equal(error.code, 'ETIMEDOUT');
+    descendant = Number(error.output.match(/descendant=(\d+)/)?.[1]);
+    assert.ok(descendant > 0, error.message);
+    assert.match(error.message, /Wine init fixture timed out/);
+    return true;
+  });
+  assert.ok(Date.now() - started < 4000, 'inherited pipes must not keep the timeout pending');
+  assert.ok(logs.some(line => /running for/.test(line)), 'long steps emit progress without requiring subprocess output');
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const status = spawnSync('ps', ['-o', 'stat=', '-p', String(descendant)], { encoding: 'utf8' });
+  assert.ok(!status.stdout.trim() || status.stdout.trim().startsWith('Z'), `owned descendant still running: ${status.stdout}`);
+});
+
+test('timeout settles even if a detached descendant still owns a pipe', async (t) => {
+  if (process.platform === 'win32') return t.skip('macOS detached Wine service behavior');
+  let descendant;
+  t.after(() => { if (descendant) { try { process.kill(descendant, 'SIGKILL'); } catch {} } });
+  const source = `const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore','inherit','inherit']});console.log('descendant='+child.pid);child.unref();process.exit(0);`;
+  const started = Date.now();
+  await assert.rejects(runTool(process.execPath, ['-e', source], { timeout: 500 }), error => {
+    descendant = Number(error.output.match(/descendant=(\d+)/)?.[1]);
+    assert.ok(descendant > 0);
+    return error.code === 'ETIMEDOUT';
+  });
+  assert.ok(Date.now() - started < 4000, 'settling cannot depend on detached service pipes closing');
+});
+
+test('initializes default Wine drives before custom mappings and rejects partial prefixes', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('macOS Wine prefix layout');
+  const root = fixture(t), prefix = path.join(root, 'prefix'), compiler = path.join(root, 'compiler.cjs');
+  fs.mkdirSync(prefix);
+  fs.writeFileSync(compiler, `const fs=require('node:fs'),path=require('node:path'),p=process.env.WINEPREFIX; if(fs.existsSync(path.join(p,'dosdevices')))process.exit(17);fs.mkdirSync(path.join(p,'drive_c'));fs.mkdirSync(path.join(p,'dosdevices'));fs.symlinkSync('../drive_c',path.join(p,'dosdevices','c:'));fs.symlinkSync('/',path.join(p,'dosdevices','z:'));console.log('v3.04');`);
+  await initializeWinePrefix({ wine: process.execPath, compiler, prefix, env: { ...process.env, WINEPREFIX: prefix } });
+  assert.equal(fs.realpathSync(path.join(prefix, 'dosdevices', 'c:')), path.join(prefix, 'drive_c'));
+  const partial = path.join(root, 'partial');
+  fs.mkdirSync(path.join(partial, 'dosdevices'), { recursive: true });
+  fs.symlinkSync(root, path.join(partial, 'dosdevices', 't:'));
+  await assert.rejects(initializeWinePrefix({ wine: process.execPath, compiler, prefix: partial, env: { ...process.env, WINEPREFIX: partial } }), /Incomplete Wine prefix.*default C: and Z: drives/);
+});
+
+function wineServiceFixture(t) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tritonai-wine-service-')));
+  const prefix = path.join(root, 'prefix'), compiler = path.join(root, 'compiler.cjs');
+  const pidFile = path.join(prefix, 'service.pid'), cleaned = path.join(root, 'cleanup.json');
+  fs.mkdirSync(prefix);
+  t.after(() => {
+    if (fs.existsSync(pidFile)) { try { process.kill(Number(fs.readFileSync(pidFile)), 'SIGKILL'); } catch {} }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  fs.writeFileSync(compiler, `const {spawn}=require('node:child_process'),fs=require('node:fs');const service=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore','inherit','inherit']});fs.writeFileSync(${JSON.stringify(pidFile)},String(service.pid));service.unref();process.exit(0);`);
+  const wine = path.join(root, 'wine'), server = path.join(root, 'wineserver');
+  fs.writeFileSync(wine, `#!/bin/sh\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(server, `#!${process.execPath}\nconst fs=require('node:fs');const prefix=process.env.WINEPREFIX;if(prefix!==${JSON.stringify(prefix)})process.exit(19);const args=process.argv.slice(2);if(args.length!==1||args[0]!=='-k')process.exit(20);process.kill(Number(fs.readFileSync(${JSON.stringify(pidFile)})),'SIGKILL');fs.writeFileSync(${JSON.stringify(cleaned)},JSON.stringify({prefix,args}));`, { mode: 0o755 });
+  return { prefix, wine, compiler, pidFile, cleaned };
+}
+
+test('timed-out Wine initialization stops only services recorded in the exact prefix', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('macOS Wine service cleanup');
+  const { prefix, wine, compiler, cleaned } = wineServiceFixture(t);
+  const started = Date.now();
+  await assert.rejects(initializeWinePrefix({ wine, compiler, prefix, env: { ...process.env, WINEPREFIX: prefix }, timeout: 500 }), error => error.code === 'ETIMEDOUT');
+  assert.ok(Date.now() - started < 4000);
+  assert.deepEqual(JSON.parse(fs.readFileSync(cleaned)), { prefix, args: ['-k'] });
+});
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  test(`${signal} interrupts the owned group, cleans the exact Wine prefix, and removes listeners`, async (t) => {
+    if (process.platform !== 'darwin') return t.skip('macOS Wine service cleanup');
+    const { prefix, wine, compiler, pidFile, cleaned } = wineServiceFixture(t);
+    const driverSource = `const {initializeWinePrefix}=require(${JSON.stringify(require.resolve('./local-release-windows.cjs'))});initializeWinePrefix(${JSON.stringify({ wine, compiler, prefix })}).catch(error=>{console.log(JSON.stringify({code:error.code,signal:error.signal,exitCode:error.exitCode,sigintListeners:process.listenerCount('SIGINT'),sigtermListeners:process.listenerCount('SIGTERM')}));process.exitCode=error.exitCode||1;});`;
+    const driver = spawn(process.execPath, ['-e', driverSource], { env: { ...process.env, WINEPREFIX: prefix }, stdio: ['ignore', 'pipe', 'pipe'] });
+    t.after(() => { try { driver.kill('SIGKILL'); } catch {} });
+    let output = '', stderr = '';
+    driver.stdout.on('data', data => { output += data; });
+    driver.stderr.on('data', data => { stderr += data; });
+    const completion = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { driver.kill('SIGKILL'); reject(new Error('Interrupted Wine driver did not settle')); }, 5000);
+      driver.on('close', code => { clearTimeout(timer); resolve(code); });
+      driver.on('error', error => { clearTimeout(timer); reject(error); });
+    });
+    for (let attempts = 0; !fs.existsSync(pidFile); attempts++) {
+      assert.ok(attempts < 200, 'Wine service fixture did not start');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    driver.kill(signal);
+    const code = await completion;
+    const expectedExit = signal === 'SIGINT' ? 130 : 143;
+    assert.equal(code, expectedExit, stderr);
+    assert.deepEqual(JSON.parse(output.trim()), { code: 'EINTR', signal, exitCode: expectedExit, sigintListeners: 0, sigtermListeners: 0 });
+    assert.deepEqual(JSON.parse(fs.readFileSync(cleaned)), { prefix, args: ['-k'] });
+  });
 }
 
 test('maps long template and toolchain paths without changing Windows flags, URLs or dollar expressions', () => {

@@ -13,22 +13,112 @@ const BUILDER_VERSION = '26.15.7';
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
-function run(file, args, { env, cwd, input, timeout = 180000 } = {}) {
+function run(file, args, { env, cwd, input, timeout = 180000, label = path.basename(file), log = () => {}, progressInterval = 30000 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { env, cwd, stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '';
-    child.stdout.on('data', (data) => { stdout += data; });
-    child.stderr.on('data', (data) => { stderr += data; });
-    const timer = setTimeout(() => { child.kill('SIGKILL'); }, timeout);
-    child.on('error', (error) => { clearTimeout(timer); reject(error); });
-    child.on('close', (code, signal) => {
+    // A child may exit while a Wine descendant still owns its stdout/stderr.
+    // Own a process group and settle timeouts directly, without waiting for close.
+    const grouped = process.platform !== 'win32';
+    const child = spawn(file, args, { env, cwd, detached: grouped, stdio: ['pipe', 'pipe', 'pipe'] });
+    const started = Date.now();
+    let stdout = '', stderr = '', settled = false;
+    const tail = (value) => value.slice(-65536);
+    child.stdout.on('data', (data) => { stdout = tail(stdout + data); });
+    child.stderr.on('data', (data) => { stderr = tail(stderr + data); });
+    log(`${label}: started pid ${child.pid}, timeout ${Math.ceil(timeout / 1000)}s.`);
+    const progress = setInterval(() => {
+      const lastLine = (stderr.trim() || stdout.trim()).split(/\r?\n/).at(-1);
+      log(`${label}: running for ${Math.floor((Date.now() - started) / 1000)}s (pid ${child.pid}).${lastLine ? ` Last output: ${lastLine}` : ''}`);
+    }, progressInterval);
+    const stopGroup = () => {
+      try {
+        if (grouped && child.pid) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch (error) { if (error.code !== 'ESRCH') log(`${label}: process cleanup failed: ${error.message}`); }
+    };
+    const interrupt = (signal) => {
+      stopGroup();
+      const error = new Error(`${label} interrupted by ${signal} (pid ${child.pid}); its process group was stopped.`);
+      error.code = 'EINTR';
+      error.signal = signal;
+      error.exitCode = signal === 'SIGINT' ? 130 : 143;
+      finish(error);
+    };
+    const onInterrupt = () => interrupt('SIGINT');
+    const onTerminate = () => interrupt('SIGTERM');
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(`${path.basename(file)} failed (${signal || code}): ${stderr.trim() || stdout.trim()}`));
+      clearInterval(progress);
+      process.removeListener('SIGINT', onInterrupt);
+      process.removeListener('SIGTERM', onTerminate);
+      if (error) {
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        error.pid = child.pid;
+        error.output = stdout;
+        error.stderr = stderr;
+        reject(error);
+      } else {
+        log(`${label}: completed in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
+        resolve(value);
+      }
+    };
+    const timer = setTimeout(() => {
+      stopGroup();
+      const detail = (stderr.trim() || stdout.trim()).slice(-4096);
+      const error = new Error(`${label} timed out after ${Math.ceil(timeout / 1000)}s (pid ${child.pid}); its process group was stopped.${detail ? ` Last output: ${detail}` : ''}`);
+      error.code = 'ETIMEDOUT';
+      finish(error);
+    }, timeout);
+    process.once('SIGINT', onInterrupt);
+    process.once('SIGTERM', onTerminate);
+    child.on('error', (error) => finish(error));
+    child.on('close', (code, signal) => {
+      if (code === 0) finish(null, stdout.trim());
+      else finish(new Error(`${label} failed (${signal || code}): ${(stderr.trim() || stdout.trim()).slice(-4096)}`));
     });
     child.stdin.on('error', () => {}); // An early child failure is reported by close.
     child.stdin.end(input);
   });
+}
+
+async function runWine(file, args, { wine, prefix, log = () => {}, ...options }) {
+  try { return await run(file, args, { ...options, log }); }
+  catch (error) {
+    if (error.code === 'ETIMEDOUT' || error.code === 'EINTR') {
+      // wineserver and Windows services can detach from the original group. Wine's
+      // own shutdown command targets exactly this prefix, never a process-name scan.
+      const server = path.join(path.dirname(fs.realpathSync(wine)), 'wineserver');
+      log(`Stopping Wine processes for candidate prefix ${prefix}.`);
+      try {
+        await run(server, ['-k'], { env: { ...options.env, WINEPREFIX: prefix }, timeout: 10000, label: 'Stop candidate Wine prefix', log });
+      } catch (cleanupError) { error.message += ` Candidate Wine cleanup failed: ${cleanupError.message}`; }
+    }
+    throw error;
+  }
+}
+
+function hasWineDrives(prefix) {
+  try {
+    return fs.statSync(path.join(prefix, 'drive_c')).isDirectory()
+      && fs.realpathSync(path.join(prefix, 'dosdevices', 'c:')) === fs.realpathSync(path.join(prefix, 'drive_c'))
+      && fs.realpathSync(path.join(prefix, 'dosdevices', 'z:')) === '/';
+  } catch { return false; }
+}
+
+async function initializeWinePrefix({ wine, compiler, prefix, env, log = () => {}, timeout = 180000 }) {
+  if (fs.existsSync(path.join(prefix, 'dosdevices')) && !hasWineDrives(prefix)) {
+    throw new Error(`Incomplete Wine prefix at ${prefix}: default C: and Z: drives are missing. Start a fresh candidate toolchain prefix; keep this failed prefix for diagnostics.`);
+  }
+  // Wine treats an existing dosdevices directory as an already-created drive
+  // layout. First initialize its C:/Z: drives, then add our T:/U: mappings.
+  const version = await runWine(wine, [compiler, '-VERSION'], {
+    wine, prefix, env, log, timeout, label: `Initialize Wine prefix ${prefix}`,
+  });
+  if (!hasWineDrives(prefix)) throw new Error(`Wine initialization did not create default C: and Z: drives at ${prefix}.`);
+  if (!/^v3\.04(?:\s|$)/m.test(version)) throw new Error(`Unexpected pinned NSIS version during Wine initialization: ${version}`);
 }
 
 function ownPath(root, file) {
@@ -115,7 +205,7 @@ function findWine(wine, env) {
  * root is the candidate-owned toolchains/win directory; installerRoot has npm ci completed.
  * Return only the environment overlay (safe to save) and deterministic input receipt.
  */
-async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, wine, env = process.env, log = () => {} }) {
+async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, wine, env = process.env, log = console.log }) {
   if (process.platform !== 'darwin') throw new Error('This local cross-build toolchain requires macOS.');
   if (!path.isAbsolute(root || '') || !path.isAbsolute(installerRoot || '')) {
     throw new Error('Windows toolchain root and installerRoot must be absolute paths.');
@@ -151,7 +241,7 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
   }
   log('Preparing pinned Windows NSIS compiler and resources in the candidate cache.');
   const code = `const {downloadBuilderToolset} = require(${JSON.stringify(downloader)}); (async () => { const result = []; for (const [releaseName, sha256] of ${JSON.stringify([['nsis-' + NSIS_VERSION, NSIS_ARCHIVE_SHA256], ['nsis-resources-3.4.1', RESOURCES_ARCHIVE_SHA256]])}) {const filenameWithExt=releaseName+'.7z';result.push(await downloadBuilderToolset({releaseName,filenameWithExt,checksums:{[filenameWithExt]:sha256},overrideUrl:'https://github.com/electron-userland/electron-builder-binaries/releases/download/'+releaseName}));} console.log(JSON.stringify(result)); })().catch(error => { console.error(error.message); process.exitCode=1; });`;
-  const output = await run(process.execPath, ['-e', code], { env: childEnv, cwd: installerRoot, timeout: 300000 });
+  const output = await run(process.execPath, ['-e', code], { env: childEnv, cwd: installerRoot, timeout: 300000, label: 'Download pinned NSIS tools', log });
   const [nsisRoot, resources] = JSON.parse(output.split('\n').at(-1));
   ownPath(root, nsisRoot);
   ownPath(root, resources);
@@ -165,9 +255,10 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
   if (fs.existsSync(templates)) {
     if (hashTree(templates) !== templateSha256) throw new Error(`Candidate NSIS templates changed: ${templates}. Start a fresh candidate toolchain cache.`);
   } else fs.cpSync(templateSource, templates, { recursive: true });
-  const wineVersion = await run(winePath, ['--version'], { env: childEnv, timeout: 30000 });
+  const wineVersion = await run(winePath, ['--version'], { env: childEnv, timeout: 30000, label: 'Read Wine version', log });
+  await initializeWinePrefix({ wine: winePath, compiler, prefix, env: { ...childEnv, WINEARCH: 'win64' }, log });
   // Wine's short drive avoids legacy NSIS MAX_PATH failures in long worktree paths.
-  // dosdevices is Wine-owned; the one deliberate mapping belongs to this prefix only.
+  // dosdevices is now initialized by Wine; custom mappings belong to this prefix only.
   const devices = ownPath(root, path.join(prefix, 'dosdevices'));
   fs.mkdirSync(devices, { recursive: true });
   for (const [letter, target] of [['t:', root], ['u:', candidateRoot]]) {
@@ -198,7 +289,8 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
   log('Checking pinned NSIS through Wine with a small stdin-fed compiler probe.');
   const probe = ownPath(root, path.join(root, 'compiler-probe.exe'));
   fs.rmSync(probe, { force: true });
-  await run(macLauncher, ['-WX', '-INPUTCHARSET', 'UTF8', '-'], {
+  await runWine(macLauncher, ['-WX', '-INPUTCHARSET', 'UTF8', '-'], {
+    wine: winePath, prefix, log, label: 'Compile pinned NSIS probe',
     env: { ...childEnv, ...overlay },
     input: `!include "${templateSource}/include/StdUtils.nsh"\nUnicode true\nOutFile "${probe}"\nSection\nDetailPrint "TritonAI toolchain probe"\nSectionEnd\n`,
   });
@@ -215,4 +307,4 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
   return { env: overlay, receipt };
 }
 
-module.exports = { prepareWindowsToolchain, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256 };
+module.exports = { prepareWindowsToolchain, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256, runTool: run, initializeWinePrefix };
