@@ -133,7 +133,7 @@ function harnessFiles(version, platform) {
 function installerFiles(version, platform) {
   return platform === 'mac' ? [`TritonAI-Installer-${version}-arm64.dmg`, 'packaged-boot.json'] : [
     `TritonAI-Installer-Setup-${version}-x64.exe`, `TritonAI-Installer-Setup-${version}-x64.exe.blockmap`,
-    `TritonAI-Installer-${version}-x64-portable.exe`, 'latest.yml', 'unsigned-release.json', 'SHA256SUMS-windows-unsigned.txt'];
+    `TritonAI-Installer-${version}-x64-portable.exe`, 'latest.yml', 'unsigned-release.json', 'SHA256SUMS-windows-unsigned.txt', 'installer-win-verification.json'];
 }
 
 function makeBuildRecipe(candidateFile, prepared) {
@@ -226,7 +226,9 @@ async function stage(id, candidateFile) {
       // A failed attempt may have left a kept stage. This directory belongs only
       // to this locked candidate lane; completed stages are never rerun here.
       fs.rmSync(env.TMPDIR, { recursive: true, force: true }); fs.mkdirSync(env.TMPDIR, { recursive: true });
-      const args = [c.tools.node, 'scripts/build-desktop-artifact.ts', '--platform', platform, '--target', platform === 'mac' ? 'dmg' : 'nsis', '--arch', platform === 'mac' ? 'arm64' : 'x64', '--output-dir', out];
+      // The Mac finalizer signs the kept app and creates the final DMG. Building
+      // an unsigned DMG here duplicates that work and adds a global mount path.
+      const args = [c.tools.node, 'scripts/build-desktop-artifact.ts', '--platform', platform, '--target', platform === 'mac' ? 'zip' : 'nsis', '--arch', platform === 'mac' ? 'arm64' : 'x64', '--output-dir', out];
       if (platform === 'mac') args.push('--keep-stage');
       await command(cwd, args, env);
       if (platform === 'mac') await command(cwd, [c.tools.node, path.join(__dirname, 'local-release-mac.cjs'), cwd, env.TMPDIR, c.version, out], { ...env, ...macSigningEnvironment(c) });
@@ -237,8 +239,14 @@ async function stage(id, candidateFile) {
         save(path.join(out, 'harness-win-verification.json'), proof);
       }
     } else {
+      Object.assign(env, c.installerEnvironment);
       Object.assign(env, { TRITONAI_HARNESS_RELEASE_BASE: pathToFileURL(out).href, TRITONAI_HARNESS_MAC_RELEASE_BASE: pathToFileURL(out).href, TRITONAI_HARNESS_WIN_RELEASE_BASE: pathToFileURL(out).href });
       await command(cwd, ['npm', 'run', platform === 'mac' ? 'package:mac-release' : 'package:win-installer'], { ...env, ...(platform === 'mac' ? macSigningEnvironment(c) : {}) });
+      if (platform === 'win') {
+        const proof = await require('./local-release-installer.cjs').verifyWindowsInstaller({ installerRoot: cwd,
+          harnessArtifact: path.join(out, `TritonAI-Harness-${c.version}-x64.exe`), version: c.version });
+        save(path.join(cwd, 'artifacts/windows-installer/installer-win-verification.json'), proof);
+      }
     }
     return;
   }

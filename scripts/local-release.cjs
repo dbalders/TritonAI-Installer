@@ -9,6 +9,10 @@ const { run, treeHash } = require('./release-runner.cjs');
 
 const SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const INSTALLER_CONFIGURATION_ENV = {
+  baseUrl: 'UCSD_AI_BASE_URL', apiDocsUrl: 'UCSD_AI_DOCS_URL', codexModel: 'UCSD_CODEX_MODEL',
+  restrictedCodexModel: 'UCSD_RESTRICTED_CODEX_MODEL', externalModelProbe: 'UCSD_EXTERNAL_MODEL_PROBE',
+};
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const failureExitCode = error => error.exitCode === 130 || error.exitCode === 143 ? error.exitCode : 1;
@@ -151,6 +155,32 @@ function cleanEnvironment(base = process.env, tools = {}) {
   return env;
 }
 
+function installerConfigurationEnvironment(configuration) {
+  if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) throw new Error('Set profile.installerConfiguration to an object with the required baseUrl.');
+  for (const key of Object.keys(configuration)) if (!Object.hasOwn(INSTALLER_CONFIGURATION_ENV, key)) throw new Error(`Unknown profile.installerConfiguration field: ${key}.`);
+  const env = {};
+  for (const [key, name] of Object.entries(INSTALLER_CONFIGURATION_ENV)) {
+    if (key !== 'baseUrl' && configuration[key] === undefined) continue;
+    const value = configuration[key];
+    if (typeof value !== 'string' || !value.trim()) throw new Error(`profile.installerConfiguration.${key} must be a non-empty string.`);
+    if (key === 'baseUrl' || key === 'apiDocsUrl') {
+      let url;
+      try { url = new URL(value); } catch {}
+      if (!url || !['http:', 'https:'].includes(url.protocol)) throw new Error(`profile.installerConfiguration.${key} must be a valid HTTP(S) URL.`);
+      env[name] = url.toString().replace(/\/$/, '');
+    } else env[name] = value;
+  }
+  return env;
+}
+
+function frozenInstallerEnvironment(candidate) {
+  const env = candidate.installerEnvironment;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) throw new Error('Candidate predates frozen Installer configuration; use --fresh.');
+  for (const name of Object.keys(env)) if (!Object.values(INSTALLER_CONFIGURATION_ENV).includes(name)) throw new Error(`Unexpected frozen Installer environment field: ${name}.`);
+  return installerConfigurationEnvironment(Object.fromEntries(Object.entries(INSTALLER_CONFIGURATION_ENV)
+    .filter(([, name]) => env[name] !== undefined).map(([key, name]) => [key, env[name]])));
+}
+
 function inspectHostCommands(tools, { platform = process.platform, find = executable, execute = execFileSync, exists = fs.existsSync } = {}) {
   const problems = [], found = {};
   const directories = [tools.node && path.dirname(tools.node), tools.vp && path.dirname(tools.vp)].filter(Boolean);
@@ -193,9 +223,12 @@ function inspectHostCommands(tools, { platform = process.platform, find = execut
   return problems;
 }
 
-async function preflight(settings, { disk = true, directory } = {}) {
+async function preflight(settings, { disk = true, directory, frozenCandidate } = {}) {
   const { profile, tools, repos } = settings;
   const problems = [];
+  let installerEnvironment;
+  try { installerEnvironment = frozenCandidate ? frozenInstallerEnvironment(frozenCandidate) : installerConfigurationEnvironment(profile.installerConfiguration); }
+  catch (error) { problems.push(error.message); }
   if (/\s/.test(directory || profile.outputRoot || '')) problems.push('The local Windows native cross-build requires an output path without spaces. Choose a path such as ~/Documents/TritonAI-builds.');
   if (process.platform !== 'darwin') problems.push('The Mac/Windows local recipe runs on the configured Mac release host.');
   for (const [name, file] of Object.entries(tools)) if (!file) problems.push(`Missing ${name}; set '${name}' in ${settings.profileFile}.`);
@@ -244,7 +277,7 @@ async function preflight(settings, { disk = true, directory } = {}) {
     if (!Number.isFinite(minimum) || minimum < 10) problems.push('minimumFreeGiB must be at least 10. Default: 35 for two platforms.');
     else if (free < minimum) problems.push(`${free.toFixed(1)} GiB free; ${minimum} GiB required at ${ancestor}. Choose a larger outputRoot or reclaim inactive build staging.`);
   }
-  return { problems, configuration, identity, notary };
+  return { problems, configuration, identity, notary, installerEnvironment };
 }
 
 async function freezeTools(tools) {
@@ -264,6 +297,7 @@ async function assertToolIdentities(candidate) {
 }
 
 async function freeze(options, settings, ready) {
+  const installerEnvironment = frozenInstallerEnvironment({ installerEnvironment: ready.installerEnvironment });
   const sources = {};
   for (const name of ['harness', 'installer', 'skills']) sources[name] = { repo: settings.repos[name], ...resolveRef(settings.repos[name], options[name] || 'main') };
   const installerPackage = JSON.parse(git(sources.installer.repo, 'show', `${sources.installer.commit}:package.json`));
@@ -275,7 +309,7 @@ async function freeze(options, settings, ready) {
   const configuration = Object.fromEntries(pluginIds.map(id => [id, ready.configuration[id]]));
   return { schemaVersion: 1, version: options.version, sources, pluginIds, catalogSelection: !options.plugins,
     ...await freezeTools(settings.tools), profileFile: settings.profileFile, configurationFile: settings.profile.pluginConfigurationFile,
-    configurationSha256: hash(JSON.stringify(configuration)), developerId: ready.identity,
+    configurationSha256: hash(JSON.stringify(configuration)), installerEnvironment, developerId: ready.identity,
     notary: { ...ready.notary, keySha256: await treeHash(ready.notary.keyFile) },
     selectedAt: new Date().toISOString(), published: false };
 }
@@ -318,7 +352,7 @@ async function main(args = process.argv.slice(2)) {
     candidate = read(candidateFile); assertResumeSelections(candidate, options);
     await assertToolIdentities(candidate);
     if (await treeHash(candidate.notary.keyFile) !== candidate.notary.keySha256) throw new Error('Signing inputs changed; use --fresh.');
-    const ready = await preflight({ ...settings, tools: candidate.tools, repos: Object.fromEntries(Object.entries(candidate.sources).map(([name, source]) => [name, source.repo])), profile: { ...settings.profile, pluginConfigurationFile: candidate.configurationFile, developerId: candidate.developerId, notarizationConfig: candidate.notary.configFile } }, { directory });
+    const ready = await preflight({ ...settings, tools: candidate.tools, repos: Object.fromEntries(Object.entries(candidate.sources).map(([name, source]) => [name, source.repo])), profile: { ...settings.profile, pluginConfigurationFile: candidate.configurationFile, developerId: candidate.developerId, notarizationConfig: candidate.notary.configFile } }, { directory, frozenCandidate: candidate });
     if (ready.problems.length) throw new Error('Release preflight:\n- ' + ready.problems.join('\n- '));
   } else {
     const ready = await preflight(settings, { directory });
@@ -347,4 +381,4 @@ async function main(args = process.argv.slice(2)) {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = failureExitCode(error); });
-module.exports = { parseArgs, executable, resolveRef, profileFor, rustTools, cleanEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, failureExitCode, main };
+module.exports = { parseArgs, executable, resolveRef, profileFor, rustTools, cleanEnvironment, installerConfigurationEnvironment, frozenInstallerEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, failureExitCode, main };

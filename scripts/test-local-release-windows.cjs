@@ -109,13 +109,13 @@ test('initializes default Wine drives before custom mappings and rejects partial
   await assert.rejects(initializeWinePrefix({ wine: process.execPath, wineserver: process.execPath, compiler, prefix: partial, env: { ...process.env, WINEPREFIX: partial } }), /Incomplete Wine prefix.*default C: and Z: drives/);
 });
 
-function wineServiceFixture(t) {
+function wineServiceFixture(t, cleanupRecordedService = true) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tritonai-wine-service-')));
   const prefix = path.join(root, 'prefix'), compiler = path.join(root, 'compiler.cjs');
   const pidFile = path.join(prefix, 'service.pid'), cleaned = path.join(root, 'cleanup.json');
   fs.mkdirSync(prefix);
   t.after(() => {
-    if (fs.existsSync(pidFile)) { try { process.kill(Number(fs.readFileSync(pidFile)), 'SIGKILL'); } catch {} }
+    if (cleanupRecordedService && fs.existsSync(pidFile)) { try { process.kill(Number(fs.readFileSync(pidFile)), 'SIGKILL'); } catch {} }
     fs.rmSync(root, { recursive: true, force: true });
   });
   fs.writeFileSync(compiler, `const {spawn}=require('node:child_process'),fs=require('node:fs');const service=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore','inherit','inherit']});fs.writeFileSync(${JSON.stringify(pidFile)},String(service.pid));service.unref();process.exit(0);`);
@@ -129,9 +129,34 @@ function wineServiceFixture(t) {
 
 test('timed-out Wine initialization stops only services recorded in the exact prefix', async (t) => {
   if (process.platform !== 'darwin') return t.skip('macOS Wine service cleanup');
-  const { prefix, wine, wineserver, compiler, cleaned } = wineServiceFixture(t);
+  const { prefix, wine, wineserver, compiler, pidFile, cleaned } = wineServiceFixture(t, false);
+  // Make the detached service real before starting the timeout under test.
+  // Otherwise loaded CI can kill the fixture compiler before it records a PID.
+  const service = spawn(process.execPath, ['-e', "process.send('ready');setInterval(()=>{},1000)"], { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+  t.after(() => { try { service.kill('SIGKILL'); } catch {} });
+  await new Promise((resolve, reject) => {
+    const finish = error => {
+      clearTimeout(timer);
+      service.removeListener('message', onMessage);
+      service.removeListener('error', onError);
+      service.removeListener('exit', onExit);
+      if (error) reject(error); else resolve();
+    };
+    const onMessage = message => { if (message === 'ready') finish(); };
+    const onError = error => finish(error);
+    const onExit = () => finish(new Error('Wine fixture service exited before readiness'));
+    const timer = setTimeout(() => finish(new Error('Wine fixture service did not become ready')), 5000);
+    service.once('message', onMessage); service.once('error', onError); service.once('exit', onExit);
+  });
+  fs.writeFileSync(pidFile, String(service.pid));
+  service.disconnect(); service.unref();
+  fs.writeFileSync(compiler, 'setInterval(()=>{},1000);');
   const started = Date.now();
-  await assert.rejects(initializeWinePrefix({ wine, wineserver, compiler, prefix, env: { ...process.env, WINEPREFIX: prefix }, timeout: 500 }), error => error.code === 'ETIMEDOUT');
+  await assert.rejects(initializeWinePrefix({ wine, wineserver, compiler, prefix, env: { ...process.env, WINEPREFIX: prefix }, timeout: 500 }), error => {
+    assert.equal(error.code, 'ETIMEDOUT');
+    assert.doesNotMatch(error.message, /Candidate Wine cleanup failed/);
+    return true;
+  });
   assert.ok(Date.now() - started < 4000);
   assert.deepEqual(JSON.parse(fs.readFileSync(cleaned)), { prefix, args: ['-k'] });
 });

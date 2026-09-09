@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { parseArgs, resolveRef, profileFor, rustTools, cleanEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freezeTools, assertToolIdentities, hash, save, failureExitCode } = require('./local-release.cjs');
+const { parseArgs, resolveRef, profileFor, rustTools, cleanEnvironment, installerConfigurationEnvironment, frozenInstallerEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freeze, freezeTools, assertToolIdentities, hash, save, failureExitCode } = require('./local-release.cjs');
 const { makeBuildRecipe, assertVersionOnly, executeWithEnvironment } = require('./local-release-stages.cjs');
 const { run } = require('./release-runner.cjs');
 
@@ -64,6 +64,45 @@ test('release environment excludes ambient build overrides without mutating pare
   assert.equal(result.ELECTRON_RUN_AS_NODE, undefined); assert.equal(result.TRITONAI_PLUGINS_REF, undefined); assert.equal(result.APPLE_API_KEY, undefined);
   assert.equal(result.PATH, ['/tools', '/vite', '/usr/bin'].join(path.delimiter)); assert.equal(result.KEEP, 'yes'); assert.equal(input.ELECTRON_RUN_AS_NODE, '1');
   assert.equal(result.Node_Path, undefined); assert.equal(result.Electron_Run_As_Node, undefined);
+});
+
+test('Installer configuration requires explicit valid values and leaves omitted defaults to its source', () => {
+  assert.deepEqual(installerConfigurationEnvironment({ baseUrl: 'https://api.example.test/v1/' }), { UCSD_AI_BASE_URL: 'https://api.example.test/v1' });
+  assert.deepEqual(installerConfigurationEnvironment({ baseUrl: 'https://api.example.test/v1', apiDocsUrl: 'https://docs.example.test/', codexModel: 'selected', restrictedCodexModel: 'restricted', externalModelProbe: 'probe' }), {
+    UCSD_AI_BASE_URL: 'https://api.example.test/v1', UCSD_AI_DOCS_URL: 'https://docs.example.test', UCSD_CODEX_MODEL: 'selected', UCSD_RESTRICTED_CODEX_MODEL: 'restricted', UCSD_EXTERNAL_MODEL_PROBE: 'probe',
+  });
+  for (const configuration of [undefined, null, [], {}, { baseUrl: '' }, { baseUrl: 42 }, { baseUrl: 'not a URL' }, { baseUrl: 'file:///tmp/api' },
+    { baseUrl: 'https://api.example.test', apiDocsUrl: null }, { baseUrl: 'https://api.example.test', codexModel: [] },
+    { baseUrl: 'https://api.example.test', restrictedCodexModel: ' ' }, { baseUrl: 'https://api.example.test', baseURL: 'typo' }]) {
+    assert.throws(() => installerConfigurationEnvironment(configuration), /installerConfiguration/);
+  }
+  assert.throws(() => frozenInstallerEnvironment({}), /use --fresh/);
+  assert.throws(() => frozenInstallerEnvironment({ installerEnvironment: { UCSD_AI_BASE_URL: 'https://api.example.test', NODE_OPTIONS: 'unreviewed' } }), /Unexpected frozen Installer environment field/);
+});
+
+test('freeze persists Installer configuration and resume ignores changed profile and ambient values', async t => {
+  const root = fixture(t), origin = repo(root, 'config-origin'), checkout = path.join(root, 'config-checkout');
+  const original = git(origin, 'rev-parse', 'HEAD');
+  save(path.join(origin, 'package.json'), { version: '0.3.3', scripts: { 'release:local': 'node scripts/local-release.cjs' } });
+  save(path.join(origin, 'config/managed-plugin-catalog.json'), { source: { commit: original }, packages: [{ pluginId: 'github' }] });
+  git(origin, 'add', '.'); git(origin, 'commit', '-m', 'release configuration fixture');
+  execFileSync('git', ['clone', origin, checkout], { stdio: 'pipe' });
+  const configurationFile = path.join(root, 'plugin-config.json'), keyFile = path.join(root, 'notary-key');
+  save(configurationFile, { github: {} }); fs.writeFileSync(keyFile, 'fixture');
+  const settings = { profileFile: path.join(root, 'profile.json'), profile: { pluginConfigurationFile: configurationFile, installerConfiguration: { baseUrl: 'https://api.example.test/v1' } },
+    repos: Object.fromEntries(['harness', 'installer', 'plugins', 'skills'].map(name => [name, checkout])), tools: { node: process.execPath } };
+  const ready = { configuration: { github: {} }, identity: 'Fixture', notary: { keyFile }, installerEnvironment: installerConfigurationEnvironment(settings.profile.installerConfiguration) };
+  const candidate = await freeze({ version: '0.3.4', plugins: 'main' }, settings, ready);
+  const candidateFile = path.join(root, 'candidate.json'); save(candidateFile, candidate);
+  settings.profile.installerConfiguration.baseUrl = 'https://changed.example.test';
+  ready.installerEnvironment.UCSD_AI_BASE_URL = 'https://also-changed.example.test';
+  const saved = JSON.parse(fs.readFileSync(candidateFile, 'utf8'));
+  const frozen = frozenInstallerEnvironment(saved);
+  assert.deepEqual(frozen, { UCSD_AI_BASE_URL: 'https://api.example.test/v1' });
+  assert.deepEqual(candidate.installerEnvironment, frozen);
+  const ambient = cleanEnvironment({ UCSD_AI_BASE_URL: 'https://ambient.example.test', UCSD_CODEX_MODEL: 'ambient-model' });
+  assert.deepEqual({ ...ambient, ...frozen }, { PATH: '', UCSD_AI_BASE_URL: 'https://api.example.test/v1' });
+  assert.equal(frozen.UCSD_CODEX_MODEL, undefined, 'the frozen source selects the default model');
 });
 
 test('host preflight reports missing package managers and packaging utilities before building', () => {
@@ -163,6 +202,8 @@ test('recipe allows both platforms and their downstream installers to overlap wi
   assert.deepEqual(stage('installer-mac').needs, ['harness-mac']);
   assert.ok(!stage('installer-win').needs.includes('installer-mac'));
   assert.ok(stage('harness-mac').outputs.some(f => f.endsWith('harness-mac-verification.json')));
+  assert.ok(stage('installer-win').outputs.some(f => f.endsWith('installer-win-verification.json')));
+  assert.ok(stage('handoff').outputs.some(f => f.endsWith('installer-win-verification.json')));
   assert.ok(stage('handoff').outputs.some(f => f.endsWith('.exe')));
   assert.ok(stage('harness-win').inputs.some(f => f.sha256 === 'e'.repeat(64)));
 });

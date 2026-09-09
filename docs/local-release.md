@@ -34,6 +34,9 @@ Save `~/.config/tritonai/release.json` (or supply `--profile /absolute/file.json
 {
   "schemaVersion": 1,
   "pluginConfigurationFile": "/absolute/private/plugin-configuration.json",
+  "installerConfiguration": {
+    "baseUrl": "https://tritonai-api.ucsd.edu/v1"
+  },
   "outputRoot": "/absolute/TritonAI-builds",
   "developerId": "Your Developer ID name (TEAMID)",
   "minimumFreeGiB": 35
@@ -44,6 +47,14 @@ The configuration file contains an object per plugin ID with its build configura
 Keep credentials out of Git. The runner loads this file, validates the selected plugins'
 configuration before packaging, and stores its hash in the candidate record. It never
 searches transcripts, old apps, or unrelated files for missing configuration.
+
+`installerConfiguration.baseUrl` is required and sets the Installer's managed API URL.
+Optional `apiDocsUrl`, `codexModel`, `restrictedCodexModel`, and `externalModelProbe` fields
+override the corresponding Installer settings. Omit optional fields to use the selected
+Installer source's defaults. These values come only from the profile and are frozen in
+`candidate.json`; ambient environment variables cannot supply or override them. Resuming
+uses the original candidate values even if the profile changes. Use `--fresh` to select
+new values or replace an older candidate that lacks frozen Installer configuration.
 
 The host needs Node 24, Vite+ (`vp`), Git, Xcode command-line tools, a Developer ID signing
 identity, Wine (`wine64`), Rust 1.95 or newer, and `cargo-xwin`. Rust needs the
@@ -100,6 +111,8 @@ helper checks the final signed/notarized DMG and updater ZIP, actual plugin byte
 isolated packaged boot. Windows extraction verifies actual plugin payload bytes; native
 Windows installation/boot remains explicitly unverified until `verify:win-installer:native`
 runs against the exact outputs on Windows.
+Both Windows Installer EXEs are also extracted and checked for the exact bundled Harness,
+skills, Codex CLI, Node runtime, and managed configuration. The handoff retains that proof.
 
 Candidate worktrees carry a persistent local-candidate marker. The public publishing commands
 reject those worktrees, including after their environment variables are cleared. Publishing

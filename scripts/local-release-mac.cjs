@@ -11,10 +11,10 @@ const { createRequire } = require('node:module');
 const { spawnSync } = require('node:child_process');
 const { isDeepStrictEqual } = require('node:util');
 const net = require('node:net');
+const { verifyPluginArchive } = require('./local-release-payload.cjs');
 
 const APP_NAME = 'TritonAI Harness';
 const PROOF_NAME = 'tritonai-plugin-composition-mac-arm64.json';
-const PLUGINS_PATH = 'apps/server/dist/production-integrations';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function run(command, args, options = {}) {
@@ -109,53 +109,17 @@ function verifyPluginPayload(appPath, composition, asar, version) {
   const read = (entry) => asar.extractFile(archive, entry);
   const metadata = JSON.parse(read('package.json').toString('utf8'));
   if (metadata.version !== version) throw new Error('Packaged Harness app version does not match the candidate.');
-  if (composition.version !== 1 || composition.kind !== 'tritonai-harness-plugin-composition' ||
-      composition.source?.repository !== 'https://github.com/dbalders/TritonAI-Plugins.git' ||
-      !Array.isArray(composition.packages) || composition.packages.length === 0) {
-    throw new Error('Invalid frozen plugin composition input.');
-  }
-  const packaged = JSON.parse(read(`${PLUGINS_PATH}/manifest.json`).toString('utf8'));
-  if (!isDeepStrictEqual(packaged, composition)) throw new Error('Packaged plugin manifest differs from frozen build input.');
-  const expected = new Set();
-  const pluginIds = new Set();
+  // Harness packages plugin files; the frozen manifest is an external proof.
+  // Share exact inventory/hash checks across both platform artifact formats.
+  const verified = verifyPluginArchive(archive, asar, composition, 'apps/server/dist/production-integrations/packages');
   const server = read('apps/server/dist/bin.mjs').toString('utf8');
   for (const marker of ['production-integrations', 'tritonai-harness-plugin-composition']) {
     if (!server.includes(marker)) throw new Error(`Packaged backend is missing plugin marker: ${marker}`);
   }
-  let fileCount = 0;
-  for (const plugin of composition.packages) {
-    if (!/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/.test(plugin.id) || pluginIds.has(plugin.id) ||
-        !Array.isArray(plugin.files) || plugin.files.length === 0 || !server.includes(plugin.id)) {
-      throw new Error('Frozen plugin composition contains invalid or duplicate packages, or the backend is missing a selected plugin.');
-    }
-    pluginIds.add(plugin.id);
-    const digest = crypto.createHash('sha256');
-    for (const file of plugin.files) {
-      if (typeof file.path !== 'string' || /[\\:\x00-\x1f]/.test(file.path) ||
-          file.path.split('/').some((part) => !part || part === '.' || part === '..')) {
-        throw new Error('Frozen plugin composition contains an unsafe file path.');
-      }
-      const entry = `${PLUGINS_PATH}/packages/${plugin.id}/${file.path}`;
-      if (expected.has(entry)) throw new Error('Frozen plugin composition contains duplicate files.');
-      expected.add(entry);
-      const stat = asar.statFile(archive, entry, false);
-      const bytes = read(entry);
-      if (stat.link || stat.files || file.size !== bytes.length ||
-          file.sha256 !== crypto.createHash('sha256').update(bytes).digest('hex')) {
-        throw new Error(`Packaged plugin bytes differ from the frozen proof: ${plugin.id}/${file.path}`);
-      }
-      digest.update(file.path).update('\0').update(String(file.size)).update('\0').update(bytes).update('\0');
-      fileCount += 1;
-    }
-    if (digest.digest('hex') !== plugin.digest) throw new Error(`Packaged plugin package digest differs: ${plugin.id}`);
+  for (const id of verified.pluginIds) {
+    if (!server.includes(id)) throw new Error(`Packaged backend is missing selected plugin: ${id}`);
   }
-  const actual = asar.listPackage(archive).map((entry) => entry.replace(/^\//, ''))
-    .filter((entry) => entry.startsWith(`${PLUGINS_PATH}/packages/`))
-    .filter((entry) => !asar.statFile(archive, entry, false).files);
-  if (actual.length !== expected.size || actual.some((entry) => !expected.has(entry))) {
-    throw new Error('Packaged Harness contains unlisted or missing plugin files.');
-  }
-  return { packages: composition.packages.map(({ id, version: pluginVersion }) => ({ id, version: pluginVersion })), fileCount };
+  return { packages: composition.packages.map(({ id, version: pluginVersion }) => ({ id, version: pluginVersion })), fileCount: verified.files };
 }
 
 function diskImageCapacityMib(source) {
@@ -247,38 +211,185 @@ function availablePort() {
   });
 }
 
+async function bounded(promise, milliseconds, label) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${milliseconds} ms.`)), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+function processSnapshot(runCommand) {
+  const output = runCommand('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart='], {
+    capture: true, timeout: 2000, label: 'Read candidate process ownership',
+  }).stdout;
+  return output.trim().split('\n').filter(Boolean).map((line) => {
+    const fields = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/);
+    if (!fields) throw new Error('Could not parse candidate process ownership snapshot.');
+    return { pid: Number(fields[1]), ppid: Number(fields[2]), pgid: Number(fields[3]), status: fields[4], started: fields[5].trim().replace(/\s+/g, ' ') };
+  });
+}
+
+function trackBootProcesses(child, readSnapshot, signalGroup, receipt, freezeTimeoutMs = 2000) {
+  const owned = new Map();
+  const groups = new Map();
+  const matches = (a, b) => a.pid === b.pid && a.pgid === b.pgid && a.started === b.started;
+  const tracker = {
+    stopped: false,
+    capture() {
+      const current = readSnapshot();
+      const live = current.filter((entry) => !entry.status.startsWith('Z'));
+      const descendants = new Map();
+      if (!owned.size) {
+        const root = live.find((entry) => entry.pid === child.pid);
+        if (!root || root.pgid !== child.pid || child.exitCode !== null || child.signalCode !== null) {
+          throw new Error('Could not establish the launched candidate process group.');
+        }
+        descendants.set(root.pid, 0);
+      }
+      for (const entry of live) {
+        const previous = owned.get(entry.pid);
+        if (previous && matches(previous, entry)) descendants.set(entry.pid, previous.depth);
+      }
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const entry of live) if (!descendants.has(entry.pid) && descendants.has(entry.ppid)) {
+          descendants.set(entry.pid, descendants.get(entry.ppid) + 1);
+          changed = true;
+        }
+      }
+      for (const entry of live) if (descendants.has(entry.pid)) {
+        const record = { ...entry, depth: descendants.get(entry.pid) };
+        owned.set(entry.pid, record);
+        if (entry.pid === entry.pgid) groups.set(entry.pgid, record.depth);
+      }
+      fs.writeFileSync(receipt, `${JSON.stringify([...owned.values()], null, 2)}\n`, { mode: 0o600 });
+      return live.filter((entry) => owned.has(entry.pid) && matches(owned.get(entry.pid), entry));
+    },
+    forceStop() {
+      const deadline = Date.now() + freezeTimeoutMs;
+      const paused = new Set();
+      const activeGroups = (remaining) => [...groups].filter(([pgid]) => remaining.some((entry) => entry.pgid === pgid));
+      try {
+        let remaining = tracker.capture();
+        // Keep ancestry intact while stopping forks. A child can enter a new
+        // detached group between a snapshot and SIGSTOP, so discover again
+        // until every owned live process is observed stopped before any kill.
+        while (remaining.some((entry) => !entry.status.startsWith('T'))) {
+          if (Date.now() >= deadline) throw new Error('Could not freeze the owned candidate process tree; retained the boot fixture.');
+          for (const [pgid] of activeGroups(remaining).sort((a, b) => a[1] - b[1])) {
+            if (!remaining.some((entry) => entry.pgid === pgid && !entry.status.startsWith('T'))) continue;
+            try { signalGroup(pgid, 'SIGSTOP'); paused.add(pgid); }
+            catch (error) { if (error.code !== 'ESRCH') throw error; }
+          }
+          remaining = tracker.capture();
+        }
+        let failure;
+        for (const [pgid] of activeGroups(remaining).sort((a, b) => b[1] - a[1])) {
+          try { signalGroup(pgid, 'SIGKILL'); }
+          catch (error) { if (error.code !== 'ESRCH') failure ||= error; }
+        }
+        if (failure) throw failure;
+      } catch (error) {
+        // Restore only groups we paused and can still identify. A failed proof
+        // leaves the fixture for recovery rather than silently deleting it.
+        for (const [pgid] of activeGroups(tracker.capture())) if (paused.has(pgid)) {
+          try { signalGroup(pgid, 'SIGCONT'); } catch { /* preserve original failure */ }
+        }
+        throw error;
+      }
+    },
+    async waitForExit(milliseconds) {
+      const deadline = Date.now() + milliseconds;
+      while (tracker.capture().length) {
+        if (Date.now() >= deadline) throw new Error('Owned candidate processes remain after shutdown; retained the boot fixture.');
+        await sleep(25);
+      }
+      tracker.stopped = true;
+    },
+  };
+  return tracker;
+}
+
+async function closeBootApplication(application, tracker, milliseconds) {
+  let ownershipError;
+  try { tracker.capture(); } catch (error) { ownershipError = error; }
+  try {
+    await bounded(application.close(), milliseconds, 'Packaged Harness shutdown');
+  } finally {
+    tracker.forceStop();
+    await tracker.waitForExit(milliseconds);
+  }
+  if (ownershipError) throw ownershipError;
+}
+
 async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, runCommand = run, wait = sleep,
-  selectPort = availablePort, fetchResponse = fetch, assertAlive = (pid) => process.kill(pid, 0) }) {
+  selectPort = availablePort, fetchResponse = fetch, assertAlive = (pid) => process.kill(pid, 0),
+  operationTimeoutMs = 10_000, closeTimeoutMs = 5000, killGroup = (pid, signal) => process.kill(-pid, signal),
+  readProcessSnapshot = () => processSnapshot(runCommand), signals = process }) {
   const scratch = fs.mkdtempSync(path.join(stageRoot, 'packaged-boot-'));
   const home = path.join(scratch, 'home');
   const installedApp = path.join(scratch, `${APP_NAME}.app`);
+  const bootLog = `${scratch}.log`;
   fs.mkdirSync(home);
   let application;
   let child;
+  let processes;
+  let bootError;
+  let interrupted = false;
+  let loggedBytes = 0;
+  const captureOutput = (chunk) => {
+    const bytes = Buffer.from(chunk).subarray(0, Math.max(0, 2 * 1024 * 1024 - loggedBytes));
+    if (bytes.length) fs.appendFileSync(bootLog, bytes);
+    loggedBytes += bytes.length;
+  };
+  const onInterruption = () => {
+    interrupted = true;
+    // Do not wait for an Electron main thread that may be blocked in native UI.
+    if (processes) {
+      try { processes.forceStop(); }
+      catch (error) { process.stderr.write(`[harness-mac] Candidate interruption cleanup failed: ${error.message}\n`); }
+    }
+  };
   try {
     const backendPort = await selectPort();
     runCommand('/usr/bin/ditto', ['--noextattr', '--noqtn', appPath, installedApp], { label: 'Install exact candidate in isolated boot directory' });
     application = await electron.launch({
       executablePath: path.join(installedApp, 'Contents', 'MacOS', APP_NAME),
       env: { ...isolatedBootEnvironment(home, env), T3CODE_PORT: String(backendPort) }, cwd: home, timeout: 60_000,
-      args: ['--remote-debugging-address=127.0.0.1'],
+      // executablePath skips Playwright's Electron loader, including its normal
+      // mock-keychain switch. This credential-free fixture must not initialize
+      // or prompt for a login keychain in the disposable HOME.
+      args: ['--remote-debugging-address=127.0.0.1', '--use-mock-keychain',
+        `--user-data-dir=${path.join(home, 'Library', 'Application Support', 'tritonai-harness')}`],
     });
     child = application.process();
+    processes = trackBootProcesses(child, readProcessSnapshot, killGroup, `${scratch}.processes.json`);
+    processes.capture();
+    fs.writeFileSync(bootLog, '', { flag: 'wx', mode: 0o600 });
+    child.stdout?.on('data', captureOutput);
+    child.stderr?.on('data', captureOutput);
+    for (const signal of ['SIGINT', 'SIGTERM']) signals.on(signal, onInterruption);
+    process.stdout.write(`[harness-mac] Isolated packaged boot process ${child.pid}; log ${bootLog}\n`);
     const deadline = Date.now() + 60_000;
     let result;
     while (Date.now() < deadline) {
-      const state = await application.evaluate(({ app, BrowserWindow }) => ({
+      if (interrupted) throw new Error('Packaged Harness boot interrupted.');
+      processes.capture();
+      const state = await bounded(application.evaluate(({ app, BrowserWindow }) => ({
         version: app.getVersion(), packaged: app.isPackaged, userData: app.getPath('userData'),
         windows: BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed()).map((window) => ({
           visible: window.isVisible(), url: window.webContents.getURL(), rendererPid: window.webContents.getOSProcessId(),
         })),
-      }));
+      })), operationTimeoutMs, 'Packaged Harness main-process evaluation');
       if (state.version !== version || !state.packaged ||
           !state.userData.startsWith(`${home}${path.sep}`)) throw new Error('Packaged Harness boot did not use the isolated candidate version/user-data directory.');
       const window = state.windows.find((entry) => entry.visible && entry.url.startsWith('t3code://app/') && entry.rendererPid > 0);
       if (window) {
         const page = application.windows().find((entry) => entry.url() === window.url);
-        if (page && await page.evaluate(() => document.readyState === 'complete' && Boolean(document.body?.innerText.trim()))) {
+        if (page && await bounded(page.evaluate(() => document.readyState === 'complete' && Boolean(document.body?.innerText.trim())), operationTimeoutMs, 'Packaged Harness renderer evaluation')) {
           // Current Harness serves the client through t3code://app and exposes
           // this unauthenticated readiness descriptor on its separate backend.
           const response = await fetchResponse(`http://127.0.0.1:${backendPort}/.well-known/t3/environment`, { signal: AbortSignal.timeout(5000), redirect: 'error' });
@@ -299,15 +410,28 @@ async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, 
     await wait(5000);
     assertAlive(result.rendererPid);
     assertAlive(result.backendPid);
-    const stillVisible = await application.evaluate(({ BrowserWindow }, rendererPid) => BrowserWindow.getAllWindows().some((window) => !window.isDestroyed() && window.isVisible() && window.webContents.getOSProcessId() === rendererPid), result.rendererPid);
+    const stillVisible = await bounded(application.evaluate(({ BrowserWindow }, rendererPid) => BrowserWindow.getAllWindows().some((window) => !window.isDestroyed() && window.isVisible() && window.webContents.getOSProcessId() === rendererPid), result.rendererPid), operationTimeoutMs, 'Packaged Harness window stability evaluation');
     if (!stillVisible) throw new Error('Packaged Harness window disappeared during the boot stability check.');
-    return { ...result, healthyForMs: 5000, verifiedAt: new Date().toISOString() };
+    if (interrupted) throw new Error('Packaged Harness boot interrupted.');
+    return { ...result, keychain: 'mock-for-isolated-boot', credentialStorage: 'not-verified', healthyForMs: 5000, verifiedAt: new Date().toISOString() };
+  } catch (error) {
+    bootError = error;
+    throw error;
   } finally {
-    if (application) {
-      try { await application.close(); }
-      finally { if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
+    try {
+      if (application && processes) await closeBootApplication(application, processes, closeTimeoutMs);
+    } catch (error) {
+      // Keep the primary failure actionable; an unresponsive close should not
+      // replace a main-thread timeout with a less useful shutdown message.
+      if (!bootError) throw error;
+      process.stderr.write(`[harness-mac] ${error.message}\n`);
+    } finally {
+      for (const signal of ['SIGINT', 'SIGTERM']) signals.off(signal, onInterruption);
+      child?.stdout?.off('data', captureOutput);
+      child?.stderr?.off('data', captureOutput);
+      // Preserve the owned installation if termination itself failed.
+      if (!child || processes?.stopped) fs.rmSync(scratch, { recursive: true, force: true });
     }
-    fs.rmSync(scratch, { recursive: true, force: true });
   }
 }
 
@@ -394,7 +518,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   return report;
 }
 
-module.exports = { findKeptStage, getNotaryConfig, resolvePackagingTools, fileInfo, verifyPluginPayload,
+module.exports = { findKeptStage, getNotaryConfig, resolvePackagingTools, fileInfo, verifyPluginPayload, processSnapshot, trackBootProcesses,
   createSignedDmg, withMountedDmg, isolatedBootEnvironment, ownsProcess, verifyPackagedBoot, finalizeMacRelease };
 
 if (require.main === module) {
