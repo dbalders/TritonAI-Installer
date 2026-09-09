@@ -10,14 +10,14 @@ function verifyPluginArchive(archive, asar, composition) {
   const manifests = entries.filter(name => name.endsWith('production-integrations/manifest.json'));
   if (manifests.length !== 1) throw new Error('Expected one actual packaged plugin manifest.');
   const manifest = manifests[0], root = manifest.slice(0, -'manifest.json'.length);
-  if (!isDeepStrictEqual(JSON.parse(asar.extractFile(archive, manifest)), composition)) throw new Error('Packaged Windows plugin manifest differs from frozen input.');
+  if (!isDeepStrictEqual(JSON.parse(asar.extractFile(archive, path.normalize(manifest))), composition)) throw new Error('Packaged Windows plugin manifest differs from frozen input.');
   const expected = new Set();
   for (const plugin of composition.packages) for (const file of plugin.files) {
     const name = `${root}packages/${plugin.id}/${file.path}`;
     expected.add(name);
     const stat = asar.statFile(archive, path.normalize(name), false);
     if (stat.link || stat.files) throw new Error(`Packaged Windows plugin file is not regular: ${plugin.id}/${file.path}`);
-    const bytes = asar.extractFile(archive, name);
+    const bytes = asar.extractFile(archive, path.normalize(name));
     if (bytes.length !== file.size || crypto.createHash('sha256').update(bytes).digest('hex') !== file.sha256) throw new Error(`Packaged Windows plugin file differs: ${plugin.id}/${file.path}`);
   }
   for (const name of entries.filter(name => name.startsWith(`${root}packages/`))) {
