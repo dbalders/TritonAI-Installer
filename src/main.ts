@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import { spawn } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
+import { assertInstallerSender, documentationUrl, installedLaunchTarget } from "./installer/ipc-policy";
 import { randomUUID } from "node:crypto";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
 import { InstallLifecycle } from "./install-lifecycle";
@@ -27,11 +28,13 @@ const PACKAGED_BOOT_HEALTH_MS = 5_000;
 const PACKAGED_BOOT_TIMEOUT_MS = 30_000;
 const packagedBootSmoke = readPackagedBootSmokeRequest(process.argv, os.tmpdir());
 let installCompleted = false;
+let installedDesktopApps: DesktopApps | null = null;
 let lastDiagnostics: DiagnosticsInfo | null = null;
 let mainWindow: BrowserWindow | null = null;
 let smokeWindowReady = false;
 let smokeRendererReady = false;
 let smokeFinished = false;
+let smokeHealthStarted = false;
 let installCloseNoticeVisible = false;
 const installLifecycle = new InstallLifecycle();
 const credentialSessions = new Map<string, TritonAiCredentials>();
@@ -59,9 +62,16 @@ function createWindow() {
     minHeight: 390,
     title: "TritonAI Installer",
     webPreferences: {
-      preload: path.join(__dirname, "preload.js")
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
     }
   });
+
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+  mainWindow.webContents.on("will-attach-webview", (event) => event.preventDefault());
 
   if (packagedBootSmoke) {
     mainWindow.once("ready-to-show", () => {
@@ -101,7 +111,7 @@ const ownsSingleInstanceLock = acquireSingleInstance(app, () => {
 });
 
 if (ownsSingleInstanceLock) app.whenReady().then(() => {
-  ipcMain.handle("installer:get-platform", async () => {
+  handleInstallerIpc("installer:get-platform", async () => {
     if (packagedBootSmoke) {
       return {
         platform: process.platform,
@@ -134,22 +144,19 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
     };
   });
 
-  ipcMain.handle("installer:renderer-ready", async () => {
+  handleInstallerIpc("installer:renderer-ready", async () => {
     if (!packagedBootSmoke) return;
     smokeRendererReady = true;
     maybeCompletePackagedBootSmoke();
   });
 
-  ipcMain.handle("installer:open-docs", async (_event, url: string) => {
-    if (!url) {
-      throw new Error("No TritonAI access documentation URL is configured for this build.");
-    }
-    await shell.openExternal(url);
+  handleInstallerIpc("installer:open-docs", async () => {
+    await shell.openExternal(documentationUrl(UCSD.apiDocsUrl));
   });
 
-  ipcMain.handle("installer:check-access", async (_event, payload: CredentialCheckPayload = {}) => {
+  handleInstallerIpc("installer:check-access", async (_event, payload: CredentialCheckPayload = {}) => {
     const result = await checkAndAssignCredentials({
-      apiKeys: payload.apiKeys || [],
+      apiKeys: payload?.apiKeys,
       checkConnection: checkTritonAiConnection,
       baseUrl: UCSD.baseUrl,
       timeoutMs: 10_000
@@ -161,12 +168,14 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
     };
   });
 
-  ipcMain.handle("installer:start", async (event, payload: InstallPayload) => {
+  handleInstallerIpc("installer:start", async (event, payload: InstallPayload) => {
     assertInstallMutationAllowed(packagedBootSmoke);
     installLifecycle.beginInstall();
     installCompleted = false;
+    installedDesktopApps = null;
+    lastDiagnostics = null;
     try {
-      const credentials = credentialSessions.get(payload.credentialHandle);
+      const credentials = credentialSessions.get(payload?.credentialHandle);
       if (!credentials) {
         throw new Error("Check TritonAI access before starting the installation.");
       }
@@ -195,6 +204,8 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
           lastDiagnostics = diagnostics;
         }
       });
+      installedDesktopApps = { ...result.desktopApps };
+      credentialSessions.clear();
       installCompleted = true;
       lastDiagnostics = result.diagnostics || lastDiagnostics;
       return result;
@@ -206,9 +217,9 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle("installer:get-support-info", async () => lastDiagnostics);
+  handleInstallerIpc("installer:get-support-info", async () => lastDiagnostics);
 
-  ipcMain.handle("installer:copy-support-report", async () => {
+  handleInstallerIpc("installer:copy-support-report", async () => {
     if (!lastDiagnostics || !lastDiagnostics.supportReportFile) {
       throw new Error("No installer support report is available yet.");
     }
@@ -218,7 +229,7 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
     return lastDiagnostics;
   });
 
-  ipcMain.handle("installer:show-logs", async () => {
+  handleInstallerIpc("installer:show-logs", async () => {
     if (!lastDiagnostics || !lastDiagnostics.logsDir) {
       throw new Error("No installer logs folder is available yet.");
     }
@@ -228,29 +239,31 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
       return lastDiagnostics;
     }
 
-    await shell.openPath(lastDiagnostics.logsDir);
+    const error = await shell.openPath(lastDiagnostics.logsDir);
+    if (error) throw new Error(error);
     return lastDiagnostics;
   });
 
-  ipcMain.handle("installer:finish", async (event, payload: FinishPayload = {}) => {
-    const openTool = payload.openTool;
-    if (openTool && ["darwin", "win32"].includes(process.platform)) {
-      const target = getLaunchTarget(openTool, payload.desktopApps || {}, app.getPath("home"));
-      if (!target) {
-        throw new Error(`The ${openTool} app is installed, but its launch path could not be found.`);
+  handleInstallerIpc("installer:finish", async (event, payload: FinishPayload = {}) => {
+    if (installLifecycle.isInstallInProgress()) {
+      throw new Error("Wait for installation to finish before closing the Installer.");
+    }
+    if (!installLifecycle.requestFinish()) return;
+    try {
+      const openTool = payload?.openTool;
+      if (openTool && ["darwin", "win32"].includes(process.platform)) {
+        const target = installedLaunchTarget(openTool, installedDesktopApps);
+        const error = await shell.openPath(target);
+        if (error) throw new Error(error);
       }
 
-      const error = await shell.openPath(target);
-      if (error) {
-        throw new Error(error);
-      }
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (window && !window.isDestroyed()) window.close();
+      completeFinish();
+    } catch (error) {
+      installLifecycle.cancelFinish();
+      throw error;
     }
-
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (window && !window.isDestroyed()) {
-      window.close();
-    }
-    finishInstaller();
   });
 
   createWindow();
@@ -262,19 +275,19 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
   });
 });
 
-function getLaunchTarget(toolId: string, desktopApps: DesktopApps, _homeDir: string): string | null {
-  if (toolId === "t3code") {
-    return process.platform === "win32"
-      ? desktopApps.t3codeShortcut || desktopApps.t3code
-      : desktopApps.t3codeShortcut || desktopApps.t3code || "/Applications/TritonAI Harness.app";
-  }
-
-  return null;
+function handleInstallerIpc(channel: string, handler: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => unknown) {
+  ipcMain.handle(channel, (event, ...args) => {
+    assertInstallerSender(event, mainWindow?.webContents, path.join(__dirname, "renderer", "index.html"));
+    return handler(event, ...args);
+  });
 }
 
 function finishInstaller() {
   if (!installLifecycle.requestFinish()) return;
+  completeFinish();
+}
 
+function completeFinish() {
   const mountedVolume = getMountedInstallerVolume();
   if (mountedVolume) {
     scheduleVolumeEject(mountedVolume);
@@ -299,13 +312,14 @@ function showInstallInProgressNotice() {
   const notice = mainWindow && !mainWindow.isDestroyed()
     ? dialog.showMessageBox(mainWindow, options)
     : dialog.showMessageBox(options);
-  void notice.finally(() => {
+  void notice.catch((error) => console.error("Could not show installation notice:", error)).finally(() => {
     installCloseNoticeVisible = false;
   });
 }
 
 function maybeCompletePackagedBootSmoke() {
-  if (!packagedBootSmoke || smokeFinished || !smokeWindowReady || !smokeRendererReady) return;
+  if (!packagedBootSmoke || smokeFinished || smokeHealthStarted || !smokeWindowReady || !smokeRendererReady) return;
+  smokeHealthStarted = true;
   setTimeout(() => {
     if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.webContents.isCrashed()) {
       failPackagedBootSmoke(new Error("Installer window did not remain healthy and visible."));
@@ -363,6 +377,7 @@ function scheduleVolumeEject(volumePath: string) {
     detached: true,
     stdio: "ignore"
   });
+  child.on("error", (error) => console.error("Could not schedule Installer volume eject:", error));
   child.unref();
 }
 

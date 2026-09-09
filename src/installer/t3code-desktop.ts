@@ -1,4 +1,4 @@
-const crypto = require("crypto");
+import { fileDigest } from "./file-digest";
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -291,7 +291,8 @@ async function replaceMacAppTransactionally({
     if (replacementCompleted || !previousMoved) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
-    if (replacementCompleted) fs.rmSync(journalPath, { force: true });
+    // A completed rollback must not leave a journal pointing at deleted recovery directories.
+    if (replacementCompleted || !previousMoved) fs.rmSync(journalPath, { force: true });
   }
 }
 
@@ -580,7 +581,8 @@ function writeMacAppLauncher(paths, emit, arch, options: MacLauncherOptions = {}
     if (replacementCompleted || !previousMoved) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
-    if (replacementCompleted) fs.rmSync(journalPath, { force: true });
+    // A completed rollback must not leave a journal pointing at deleted recovery directories.
+    if (replacementCompleted || !previousMoved) fs.rmSync(journalPath, { force: true });
   }
 }
 
@@ -1027,12 +1029,20 @@ function selectWindowsInstaller(manifest, arch = process.arch) {
 }
 
 function selectManifestFile(manifest, pattern) {
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(manifest.version || "")) {
+    throw new Error("TritonAI Harness manifest must declare a stable semantic version.");
+  }
   const fileName = Object.keys(manifest.files || {}).find((entry) => pattern.test(entry));
   if (!fileName) {
     throw new Error(`${TRITONAI_APP_DISPLAY_NAME} manifest does not include an asset matching ${pattern}`);
   }
 
-  return { fileName, expected: manifest.files[fileName] };
+  const expected = manifest.files[fileName];
+  if (/[\\/:]/.test(fileName) || !Number.isSafeInteger(expected.size) || expected.size <= 0
+    || typeof expected.sha512 !== "string" || !/^[A-Za-z0-9+/]{86}==$/.test(expected.sha512)) {
+    throw new Error("TritonAI Harness manifest contains an unsafe asset name or invalid checksum metadata.");
+  }
+  return { fileName, expected };
 }
 
 function parseLatestYml(text) {
@@ -1049,6 +1059,9 @@ function parseLatestYml(text) {
     const urlMatch = line.match(/^\s*-\s+url:\s+(.+)\s*$/);
     if (urlMatch) {
       currentFile = cleanYamlValue(urlMatch[1]);
+      if (Object.prototype.hasOwnProperty.call(result.files, currentFile) || currentFile === "__proto__") {
+        throw new Error("TritonAI Harness manifest contains a duplicate or unsafe asset name.");
+      }
       result.files[currentFile] = {};
       continue;
     }
@@ -1179,7 +1192,7 @@ function verifyDownload(file, expected) {
     throw new Error(`Size mismatch for ${path.basename(file)}: expected ${expected.size}, got ${stat.size}`);
   }
 
-  const actual = crypto.createHash("sha512").update(fs.readFileSync(file)).digest("base64");
+  const actual = fileDigest(file, "sha512", "base64");
   if (actual !== expected.sha512) {
     throw new Error(`SHA-512 mismatch for ${path.basename(file)}`);
   }

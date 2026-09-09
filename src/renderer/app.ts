@@ -185,7 +185,6 @@ async function init() {
   state.docsUrl = platform.managedConfig && platform.managedConfig.apiDocsUrl
     ? platform.managedConfig.apiDocsUrl
     : "";
-  await installerApi.reportReady();
   updateDocsControls();
   if (platform.version && installerVersionLabel) {
     installerVersionLabel.textContent = `Installer v${platform.version}`;
@@ -195,13 +194,14 @@ async function init() {
 
   installerApi.onLog((message) => {
     if (!message) return;
-    const displayMessage = brandCopy(message);
-    log.textContent += `${displayMessage}\n`;
+    const displayMessage = String(message);
+    log.textContent = `${log.textContent}${displayMessage}\n`.slice(-64 * 1024);
     log.scrollTop = log.scrollHeight;
     if (state.installPhase === "running") {
       addInstallEvent(displayMessage);
     }
   });
+  await installerApi.reportReady();
 }
 
 function updateDocsControls() {
@@ -243,7 +243,7 @@ async function openConfiguredDocs() {
   }
 
   try {
-    await installerApi.openDocs(state.docsUrl);
+    await installerApi.openDocs();
   } catch (_error) {
     showDocsUnavailable();
   }
@@ -686,7 +686,7 @@ function getInstallerErrorMessage(error) {
   const rawMessage = error && error.message
     ? error.message
     : "The installer paused before finishing.";
-  return brandCopy(rawMessage)
+  return String(rawMessage)
     .replace(/^Error invoking remote method 'installer:start': Error:\s*/i, "")
     .replace(/^Error:\s*/i, "");
 }
@@ -705,10 +705,6 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
-}
-
-function brandCopy(value) {
-  return String(value);
 }
 
 function updateCredentialControls() {
@@ -738,11 +734,11 @@ function updateCredentialControls() {
     inputWrap.classList.toggle("is-error", Boolean(state.credentialError));
   }
   if (apiKeyHelp) {
-    apiKeyHelp.textContent = state.credentialError || getCredentialHelpText(hasApiKey);
+    apiKeyHelp.textContent = state.credentialError || getCredentialHelpText();
   }
 }
 
-function getCredentialHelpText(_hasApiKey) {
+function getCredentialHelpText() {
   if (state.prefilledCredentialCount > 0) {
     const noun = state.prefilledCredentialCount === 1 ? "key" : "keys";
     return `Found ${state.prefilledCredentialCount} saved access ${noun}. Leave ${state.prefilledCredentialCount === 1 ? "it" : "them"} as-is or edit the fields to replace ${state.prefilledCredentialCount === 1 ? "it" : "them"}.`;
@@ -818,6 +814,7 @@ function setSecondKeyVisible(isVisible) {
 
 (document.getElementById("credentials-form") as HTMLFormElement).addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (["checking", "running", "complete"].includes(state.installPhase)) return;
   const apiKeys = [
     apiKeyInput.value.trim(),
     ...(state.secondKeyVisible ? [secondaryApiKeyInput.value.trim()] : [])
@@ -921,6 +918,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function startInstallFlow() {
+  if (["running", "complete"].includes(state.installPhase)) return;
   document.body.classList.add("install-started");
   if (inlineProgress) inlineProgress.hidden = false;
   if (setupTitle) setupTitle.textContent = `Installing ${TRITONAI_APP_DISPLAY_NAME}`;
@@ -966,16 +964,15 @@ result.addEventListener("click", async (event) => {
     startInstallFlow();
   }
   if (action === "open-tool") {
-    await installerApi.finishInstall({
-      openTool: target.dataset.toolId,
-      desktopApps: state.installResponse && state.installResponse.desktopApps
+    await finishInstallSafely({
+      openTool: target.dataset.toolId
     });
   }
   if (action === "open-manual-url") {
-    installerApi.openDocs(target.dataset.url || "");
+    openConfiguredDocs();
   }
   if (action === "close-installer") {
-    await installerApi.finishInstall({});
+    await finishInstallSafely({});
   }
   if (action === "open-docs-from-error") {
     openConfiguredDocs();
@@ -1027,14 +1024,34 @@ async function showLogs(button) {
 
 previewOpen?.addEventListener("click", async () => {
   if (!state.installResponse || previewOpen.disabled) return;
-  await installerApi.finishInstall({
-    openTool: "t3code",
-    desktopApps: state.installResponse.desktopApps
+  await finishInstallSafely({
+    openTool: "t3code"
   });
 });
 
+let finishInProgress = false;
+async function finishInstallSafely(payload: FinishPayload) {
+  if (finishInProgress) return;
+  finishInProgress = true;
+  document.getElementById("finish-error")?.remove();
+  try {
+    await installerApi.finishInstall(payload);
+  } catch (error) {
+    const message = document.createElement("p");
+    message.id = "finish-error";
+    message.setAttribute("role", "alert");
+    message.textContent = `Could not finish setup: ${error instanceof Error ? error.message : String(error)}. You can try again.`;
+    result.append(message);
+  } finally {
+    finishInProgress = false;
+  }
+}
+
 updateCredentialControls();
-init();
+void init().catch((error) => {
+  setCredentialError(`Could not initialize setup: ${error instanceof Error ? error.message : String(error)}. Close and reopen the Installer.`);
+  continueButton.disabled = true;
+});
 
 function createPreviewInstallerApi(): InstallerApi {
   const listeners: InstallerEmit[] = [];
@@ -1058,9 +1075,7 @@ function createPreviewInstallerApi(): InstallerApi {
       existingCredentials: null
     }),
     reportReady: async () => {},
-    openDocs: async (url) => {
-      if (url) window.open(url, "_blank", "noopener,noreferrer");
-    },
+    openDocs: async () => {},
     checkAccess: async (payload) => {
       const count = payload.apiKeys?.filter(Boolean).length || 0;
       await new Promise((resolve) => setTimeout(resolve, 350));

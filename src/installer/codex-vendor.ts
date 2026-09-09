@@ -115,7 +115,8 @@ function stageAndActivateBundledCodex({ source, target, platform = process.platf
     if (activationCompleted || !previousMoved) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
-    if (activationCompleted) fs.rmSync(journalPath, { force: true });
+    // A completed rollback must not leave a journal pointing at deleted recovery directories.
+    if (activationCompleted || !previousMoved) fs.rmSync(journalPath, { force: true });
   }
 
   const binary = platform === "win32"
@@ -188,7 +189,14 @@ function isCodexVendorDir(
     && manifest?.target === target
     && isRegularFile(path.join(candidate, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"))
     && isRegularFile(binary)
-    && isRealDirectory(nativePackage);
+    && hasNativeCodexExecutable(nativePackage, platform);
+}
+
+function hasNativeCodexExecutable(nativePackage: string, platform: NodeJS.Platform): boolean {
+  const executable = path.join(nativePackage, "vendor",
+    platform === "win32" ? "x86_64-pc-windows-msvc" : "aarch64-apple-darwin",
+    "bin", platform === "win32" ? "codex.exe" : "codex");
+  return isRealDirectory(nativePackage) && isRegularFile(executable) && fs.statSync(executable).size > 0;
 }
 
 function isRegularFile(file) {
@@ -297,6 +305,7 @@ function managedCodexEntrypoint(installRoot: string, platform: NodeJS.Platform):
 }
 
 module.exports = {
+  hasNativeCodexExecutable,
   CODEX_BACKUP_PREFIX,
   CODEX_STAGE_PREFIX,
   CODEX_TRANSACTION_JOURNAL_FILE,

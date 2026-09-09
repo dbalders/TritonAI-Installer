@@ -726,7 +726,9 @@ function assertCodexResourceLookupFallsBackFromUndefined() {
     fs.mkdirSync(path.join(codexVendorDir, "bin"), { recursive: true });
     fs.writeFileSync(path.join(codexVendorDir, "bin", "codex"), "#!/usr/bin/env sh\n");
     fs.mkdirSync(path.join(codexVendorDir, "lib", "node_modules", "@openai", "codex", "bin"), { recursive: true });
-    fs.mkdirSync(path.join(codexVendorDir, "lib", "node_modules", "@openai", "codex", "node_modules", "@openai", "codex-darwin-arm64"), { recursive: true });
+    const nativeBin = path.join(codexVendorDir, "lib", "node_modules", "@openai", "codex", "node_modules", "@openai", "codex-darwin-arm64", "vendor", "aarch64-apple-darwin", "bin");
+    fs.mkdirSync(nativeBin, { recursive: true });
+    fs.writeFileSync(path.join(nativeBin, "codex"), "native fixture", { mode: 0o755 });
     fs.writeFileSync(path.join(codexVendorDir, "lib", "node_modules", "@openai", "codex", "bin", "codex.js"), "");
     fs.writeFileSync(path.join(codexVendorDir, "manifest.json"), JSON.stringify({
       name: "@openai/codex",
@@ -1588,10 +1590,10 @@ function assertDesktopArtifactHelpers() {
   const t3MacManifest = parseLatestYml(`version: 0.1.3
 files:
   - url: TritonAI-Harness-0.1.3-arm64.dmg
-    sha512: abc
+    sha512: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
     size: 123
   - url: TritonAI-Harness-0.1.3-x64.dmg
-    sha512: def
+    sha512: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB==
     size: 456
 `);
   assert.strictEqual(t3MacManifest.version, "0.1.3");
@@ -1600,7 +1602,7 @@ files:
     () => selectMacDmg(parseLatestYml(`version: 0.1.3
 files:
   - url: TritonAI-Harness-Preview-0.1.3-arm64.dmg
-    sha512: abc
+    sha512: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
     size: 123
 `), "arm64"),
     /does not include an asset matching/,
@@ -1610,7 +1612,7 @@ files:
   const t3WinManifest = parseLatestYml(`version: 0.1.3
 files:
   - url: TritonAI-Harness-0.1.3-x64.exe
-    sha512: abc
+    sha512: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
     size: 123
 `);
   assert.strictEqual(selectWindowsInstaller(t3WinManifest, "x64").fileName, "TritonAI-Harness-0.1.3-x64.exe");
@@ -1618,7 +1620,7 @@ files:
     () => selectWindowsInstaller(parseLatestYml(`version: 0.1.3
 files:
   - url: TritonAI-Harness-Preview-0.1.3-x64.exe
-    sha512: abc
+    sha512: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
     size: 123
 `), "x64"),
     /does not include an asset matching/,
@@ -1635,7 +1637,7 @@ files:
     fs.writeFileSync(path.join(macVendorDir, "latest-mac.yml"), `version: 0.1.3
 files:
   - url: TritonAI-Harness-0.1.3-arm64.dmg
-    sha512: abc
+    sha512: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
     size: 8
 `);
     const dmgPath = path.join(macVendorDir, "TritonAI-Harness-0.1.3-arm64.dmg");

@@ -1,3 +1,4 @@
+import { fileDigest } from "./file-digest";
 const crypto = require("crypto");
 const fs = require("fs");
 const https = require("https");
@@ -306,7 +307,8 @@ async function installNodeRuntimeFromArchive({
     if (replacementCompleted || !previousMoved) {
       fs.rmSync(backupRoot, { recursive: true, force: true });
     }
-    if (replacementCompleted) fs.rmSync(journalPath, { force: true });
+    // A completed rollback must not leave a journal pointing at deleted recovery directories.
+    if (replacementCompleted || !previousMoved) fs.rmSync(journalPath, { force: true });
   }
 }
 
@@ -426,7 +428,7 @@ function verifyArchive(archivePath, expected) {
   if (Number.isFinite(expected.size) && stat.size !== expected.size) {
     throw new Error(`Size mismatch for ${path.basename(archivePath)}: expected ${expected.size}, got ${stat.size}`);
   }
-  const actual = crypto.createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex");
+  const actual = fileDigest(archivePath, "sha256", "hex");
   if (actual !== expected.sha256) {
     throw new Error(`SHA-256 mismatch for ${path.basename(archivePath)}`);
   }

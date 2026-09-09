@@ -1,4 +1,4 @@
-const crypto = require("crypto");
+import { fileDigest } from "../src/installer/file-digest";
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
@@ -158,7 +158,7 @@ function buildDesiredReleaseAssets(assetPaths) {
       name: path.basename(absolutePath),
       absolutePath,
       size: stat.size,
-      sha256: crypto.createHash("sha256").update(fs.readFileSync(absolutePath)).digest("hex")
+      sha256: fileDigest(absolutePath, "sha256", "hex")
     };
   });
   uniqueByName(assets, "desired release assets");

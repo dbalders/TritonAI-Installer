@@ -37,6 +37,7 @@ async function main() {
   assertMacLauncherFallsBackForStandardAccounts();
   assertCodexVendorIdentityIsRequired();
   assertCodexReplacementStagesBeforeSwapAndRollsBack();
+  assertFailedCodexRepairCanBeRetried();
   if (process.platform !== "win32") assertManagedCodexLauncherIgnoresAmbientNode();
   assertWindowsManagedCodexLauncherPinsNode();
   console.log("Installer transaction tests passed.");
@@ -610,6 +611,31 @@ function assertCodexReplacementStagesBeforeSwapAndRollsBack() {
   }
 }
 
+function assertFailedCodexRepairCanBeRetried() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-codex-repair-"));
+  const source = path.join(root, "source");
+  const target = path.join(root, "runtime", "codex");
+  const rename = fs.renameSync;
+  try {
+    writeCodexVendor(source, "replacement");
+    writeCodexVendor(target, "damaged");
+    fs.writeFileSync(path.join(target, "manifest.json"), "invalid JSON");
+    fs.renameSync = (from, to) => {
+      if (from.includes(CODEX_STAGE_PREFIX) && to === target) throw new Error("transient activation failure");
+      return rename(from, to);
+    };
+    assert.throws(() => stageAndActivateBundledCodex({ source, target, platform: "darwin", arch: "arm64" }), /transient activation/);
+    fs.renameSync = rename;
+    assert.equal(readCodexVersion(target), "damaged", "the previous payload must be preserved");
+    assert(!fs.existsSync(path.join(path.dirname(target), CODEX_TRANSACTION_JOURNAL_FILE)), "completed rollback must clear its journal");
+    stageAndActivateBundledCodex({ source, target, platform: "darwin", arch: "arm64" });
+    assert.equal(readCodexVersion(target), "replacement", "a transient failure must not permanently block repair");
+  } finally {
+    fs.renameSync = rename;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 function writeMacApp(appPath, version) {
   fs.rmSync(appPath, { recursive: true, force: true });
   fs.mkdirSync(path.join(appPath, "Contents", "MacOS"), { recursive: true });
@@ -626,7 +652,10 @@ function writeCodexVendor(root, version, platform = "darwin") {
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
   fs.mkdirSync(path.join(root, "lib", "node_modules", "@openai", "codex", "bin"), { recursive: true });
   const nativePackage = platform === "win32" ? "codex-win32-x64" : "codex-darwin-arm64";
-  fs.mkdirSync(path.join(root, "lib", "node_modules", "@openai", "codex", "node_modules", "@openai", nativePackage), { recursive: true });
+  const nativeBin = path.join(root, "lib", "node_modules", "@openai", "codex", "node_modules", "@openai", nativePackage, "vendor",
+    platform === "win32" ? "x86_64-pc-windows-msvc" : "aarch64-apple-darwin", "bin");
+  fs.mkdirSync(nativeBin, { recursive: true });
+  fs.writeFileSync(path.join(nativeBin, platform === "win32" ? "codex.exe" : "codex"), "native fixture", { mode: 0o755 });
   if (platform === "win32") {
     fs.writeFileSync(path.join(root, "codex.cmd"), version);
   } else {

@@ -3,6 +3,9 @@ class InstallLifecycle {
   private finishRequested = false;
 
   beginInstall() {
+    if (this.finishRequested) {
+      throw new Error("The Installer is closing. Reopen it to start another installation.");
+    }
     if (this.installInProgress) {
       throw new Error("A TritonAI installation is already running.");
     }
@@ -14,13 +17,17 @@ class InstallLifecycle {
   }
 
   requestFinish() {
-    if (this.finishRequested) return false;
+    if (this.installInProgress || this.finishRequested) return false;
     this.finishRequested = true;
     return true;
   }
 
+  cancelFinish() {
+    this.finishRequested = false;
+  }
+
   shouldBlockExit() {
-    return this.installInProgress && !this.finishRequested;
+    return this.installInProgress;
   }
 
   isInstallInProgress() {
