@@ -63,7 +63,10 @@ Standalone Harness releases consume this same catalog while they are built, so H
 updates carry the approved plugins without requiring users to run TritonAI Installer.
 
 For an exact rebuild or a preselected composition, set all three values below. Complete explicit
-pins override automatic latest-release selection:
+pins override automatic latest-release selection. `TRITONAI_PLUGINS_REF` accepts a full Git
+commit SHA (identical to `TRITONAI_PLUGINS_COMMIT`) or a fully qualified tag/branch ref.
+Commit refs are verified by fetching the exact object from the canonical remote; they do not
+depend on a temporary branch remaining at the same commit:
 
 ```sh
 export TRITONAI_PLUGINS_REF="refs/tags/v0.1.3"

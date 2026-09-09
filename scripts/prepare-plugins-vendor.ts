@@ -239,6 +239,9 @@ function validateSourceInput(input) {
   if (!COMMIT.test(input.commit)) {
     throw new Error("TRITONAI_PLUGINS_COMMIT must explicitly pin the full lowercase 40-character Git commit SHA.");
   }
+  if (COMMIT.test(input.ref) && input.ref !== input.commit) {
+    throw new Error("TRITONAI_PLUGINS_REF commit must match TRITONAI_PLUGINS_COMMIT.");
+  }
   if (input.selectedIds.length === 0) {
     throw new Error("TRITONAI_PLUGIN_IDS must explicitly select at least one production plugin package.");
   }
@@ -247,6 +250,7 @@ function validateSourceInput(input) {
 }
 
 function isSafeGitRef(ref) {
+  if (COMMIT.test(ref)) return true;
   return /^refs\/(?:heads|tags)\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/.test(ref)
     && !ref.includes("..")
     && !ref.includes("@{")
@@ -357,6 +361,26 @@ function isSafeGitObjectPath(value) {
 }
 
 function assertRemoteRefResolvesToCommit(repository, ref, commit) {
+  if (COMMIT.test(ref)) {
+    if (ref !== commit) throw new Error("Managed plugin commit ref does not match pinned commit.");
+    // ls-remote only advertises named refs. Fetch the immutable commit from the
+    // canonical remote so a local-only object cannot pass provenance validation.
+    const verificationRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-plugin-pin-"));
+    try {
+      execFileSync("git", ["init", "--bare", verificationRoot], { stdio: "pipe" });
+      execFileSync("git", ["fetch", "--no-tags", "--depth=1", repository, commit], {
+        cwd: verificationRoot, stdio: "pipe"
+      });
+      if (git(verificationRoot, ["rev-parse", "FETCH_HEAD^{commit}"]) !== commit) {
+        throw new Error("Fetched plugin commit does not match the pin.");
+      }
+    } catch (_error) {
+      throw new Error(`Could not verify managed plugin commit ${commit} from ${sanitizeRepositoryUrl(repository)}.`);
+    } finally {
+      fs.rmSync(verificationRoot, { recursive: true, force: true });
+    }
+    return;
+  }
   let output;
   try {
     output = execFileSync("git", ["ls-remote", repository, ref, `${ref}^{}`], {
@@ -941,6 +965,7 @@ if (require.main === module) main();
 
 module.exports = {
   activateStagedVendor,
+  assertRemoteRefResolvesToCommit,
   cloneValidatedLocalSource,
   compareStableVersions,
   digestFileSet,

@@ -34,6 +34,9 @@ function validateManagedPluginCatalog(value) {
   if (typeof value.source.commit !== "string" || !COMMIT.test(value.source.commit)) {
     throw new Error("Managed plugin catalog source.commit must be a full lowercase Git commit SHA.");
   }
+  if (COMMIT.test(value.source.ref) && value.source.ref !== value.source.commit) {
+    throw new Error("Managed plugin catalog commit ref must match source.commit.");
+  }
   if (!Array.isArray(value.packages) || value.packages.length === 0) {
     throw new Error("Managed plugin catalog must approve at least one package.");
   }
@@ -93,7 +96,7 @@ function assertCatalogComposition(catalog, composition) {
 
 function isSafeRef(value) {
   return typeof value === "string"
-    && SAFE_REF.test(value)
+    && (COMMIT.test(value) || SAFE_REF.test(value))
     && !value.includes("..")
     && !value.includes("@{")
     && !value.includes("//")

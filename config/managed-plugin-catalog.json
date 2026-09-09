@@ -3,8 +3,8 @@
   "kind": "tritonai-managed-plugin-catalog",
   "source": {
     "repository": "https://github.com/dbalders/TritonAI-Plugins.git",
-    "ref": "refs/heads/fix/n8n-empty-input-provider-contract",
-    "commit": "0d834d02fa3c0e1cc84293aa9b0d39e14ffdf6ce"
+    "ref": "feb583cc3d919e32eb588f1bce3755fae0d6b352",
+    "commit": "feb583cc3d919e32eb588f1bce3755fae0d6b352"
   },
   "packages": [
     {
