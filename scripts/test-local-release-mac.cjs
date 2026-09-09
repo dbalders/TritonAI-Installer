@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { spawn, execFileSync } = require('node:child_process');
 const { test } = require('node:test');
+const { failureExitCode } = require('./local-release.cjs');
 const { findKeptStage, getNotaryConfig, verifyPluginPayload, isolatedBootEnvironment,
   withMountedDmg, verifyPackagedBoot, finalizeMacRelease, processSnapshot, trackBootProcesses } = require('./local-release-mac.cjs');
 
@@ -42,7 +43,11 @@ function fixture(t) {
     return [...names];
   };
   const asar = {
-    extractFile: (_archive, entry) => { assert(entries[entry], `Missing entry ${entry}`); return entries[entry]; },
+    extractFile: (_archive, entry) => {
+      entry = entry.replaceAll('\\', '/');
+      assert(entries[entry], `Missing entry ${entry}`);
+      return entries[entry];
+    },
     listPackage: () => archivePaths().map((entry) => `/${entry}`),
     statFile: (_archive, entry) => {
       entry = entry.replaceAll('\\', '/');
@@ -184,7 +189,7 @@ test('macOS process fixture freezes and discovers a detached child spawned durin
     process.kill(control.pid, 0);
   });
 
-function bootMocks(f, { unsafeUserData = false, hungEvaluation = false, hungClose = false, stuckBackend = false, reusedBackend = false, forkDuringCleanup = false } = {}) {
+function bootMocks(f, { unsafeUserData = false, hungEvaluation = false, hungClose = false, stuckBackend = false, reusedBackend = false, forkDuringCleanup = false, closeSignal } = {}) {
   let launchOptions;
   let closed = false;
   const child = Object.assign(new EventEmitter(), { pid: 100, exitCode: null, signalCode: null });
@@ -208,6 +213,7 @@ function bootMocks(f, { unsafeUserData = false, hungEvaluation = false, hungClos
     },
     windows: () => [page], close: async () => {
       closed = true;
+      if (closeSignal) signals.emit(closeSignal);
       if (reusedBackend) processes = processes.filter(p => p.pid !== 201).map(p => p.pid === 200 ? { ...p, ppid: 1, started: 'Wed Sep 9 16:05:00 2026' } : p);
       if (hungClose) return new Promise(() => {});
       processes = processes.filter(p => p.pid === 900);
@@ -302,17 +308,51 @@ test('cleanup refuses to kill when owned processes cannot be frozen and resumes 
   assert.equal(tracker.stopped, false);
 });
 
-test('interrupted boot terminates the captured fixture process group and removes its signal handlers', async (t) => {
+for (const [signal, exitCode] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  const assertCancellation = error => {
+    assert.equal(error.code, 'EINTR');
+    assert.equal(error.signal, signal);
+    assert.equal(error.exitCode, exitCode);
+    assert.equal(failureExitCode(error), exitCode);
+    return true;
+  };
+  test(`${signal} during evaluation preserves cancellation through shutdown and removes signal handlers`, async (t) => {
+    const f = fixture(t);
+    const mock = bootMocks(f, { hungEvaluation: true, hungClose: true });
+    const result = verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
+      ...mock, operationTimeoutMs: 20, closeTimeoutMs: 10 });
+    const rejected = assert.rejects(result, assertCancellation);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    mock.signals.emit(signal);
+    assert.equal(mock.getState().child.signalCode, 'SIGKILL');
+    assert.deepEqual(mock.getState().killedGroups, [200, 100]);
+    await rejected;
+    assert.equal(mock.signals.listenerCount('SIGINT'), 0);
+    assert.equal(mock.signals.listenerCount('SIGTERM'), 0);
+  });
+
+  test(`${signal} during cleanup cancels a pending successful boot result`, async (t) => {
+    const f = fixture(t);
+    const mock = bootMocks(f, { hungClose: true, closeSignal: signal });
+    await assert.rejects(verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
+      ...mock, operationTimeoutMs: 20, closeTimeoutMs: 10 }), assertCancellation);
+    assert.deepEqual(mock.getState().killedGroups, [200, 100]);
+    assert(!fs.existsSync(mock.getState().launchOptions.env.HOME));
+    assert.equal(mock.signals.listenerCount('SIGINT'), 0);
+    assert.equal(mock.signals.listenerCount('SIGTERM'), 0);
+  });
+}
+
+test('cancellation exit status survives a failed cleanup and the retained fixture remains available', async (t) => {
   const f = fixture(t);
-  const mock = bootMocks(f, { hungEvaluation: true, hungClose: true });
-  const result = verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
-    ...mock, operationTimeoutMs: 20, closeTimeoutMs: 10 });
-  const rejected = assert.rejects(result, /main-process evaluation timed out/);
-  await new Promise(resolve => setTimeout(resolve, 5));
-  mock.signals.emit('SIGINT');
-  assert.equal(mock.getState().child.signalCode, 'SIGKILL');
-  assert.deepEqual(mock.getState().killedGroups, [200, 100]);
-  await rejected;
+  const mock = bootMocks(f, { unsafeUserData: true, hungClose: true, closeSignal: 'SIGTERM', stuckBackend: true });
+  await assert.rejects(verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
+    ...mock, operationTimeoutMs: 10, closeTimeoutMs: 10 }), error => {
+      assert.equal(error.signal, 'SIGTERM');
+      assert.equal(failureExitCode(error), 143);
+      return true;
+    });
+  assert(fs.existsSync(mock.getState().launchOptions.env.HOME));
   assert.equal(mock.signals.listenerCount('SIGINT'), 0);
   assert.equal(mock.signals.listenerCount('SIGTERM'), 0);
 });

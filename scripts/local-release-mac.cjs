@@ -12,6 +12,7 @@ const { spawnSync } = require('node:child_process');
 const { isDeepStrictEqual } = require('node:util');
 const net = require('node:net');
 const { verifyPluginArchive } = require('./local-release-payload.cjs');
+const { failureExitCode } = require('./local-release.cjs');
 
 const APP_NAME = 'TritonAI Harness';
 const PROOF_NAME = 'tritonai-plugin-composition-mac-arm64.json';
@@ -338,21 +339,25 @@ async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, 
   let child;
   let processes;
   let bootError;
-  let interrupted = false;
+  let interruption;
   let loggedBytes = 0;
   const captureOutput = (chunk) => {
     const bytes = Buffer.from(chunk).subarray(0, Math.max(0, 2 * 1024 * 1024 - loggedBytes));
     if (bytes.length) fs.appendFileSync(bootLog, bytes);
     loggedBytes += bytes.length;
   };
-  const onInterruption = () => {
-    interrupted = true;
+  const onInterruption = (signal) => {
+    interruption ||= Object.assign(new Error(`Packaged Harness boot interrupted by ${signal}.`), {
+      code: 'EINTR', signal, exitCode: signal === 'SIGINT' ? 130 : 143,
+    });
     // Do not wait for an Electron main thread that may be blocked in native UI.
     if (processes) {
       try { processes.forceStop(); }
       catch (error) { process.stderr.write(`[harness-mac] Candidate interruption cleanup failed: ${error.message}\n`); }
     }
   };
+  const interrupt = () => onInterruption('SIGINT');
+  const terminate = () => onInterruption('SIGTERM');
   try {
     const backendPort = await selectPort();
     runCommand('/usr/bin/ditto', ['--noextattr', '--noqtn', appPath, installedApp], { label: 'Install exact candidate in isolated boot directory' });
@@ -371,12 +376,13 @@ async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, 
     fs.writeFileSync(bootLog, '', { flag: 'wx', mode: 0o600 });
     child.stdout?.on('data', captureOutput);
     child.stderr?.on('data', captureOutput);
-    for (const signal of ['SIGINT', 'SIGTERM']) signals.on(signal, onInterruption);
+    signals.on('SIGINT', interrupt);
+    signals.on('SIGTERM', terminate);
     process.stdout.write(`[harness-mac] Isolated packaged boot process ${child.pid}; log ${bootLog}\n`);
     const deadline = Date.now() + 60_000;
     let result;
     while (Date.now() < deadline) {
-      if (interrupted) throw new Error('Packaged Harness boot interrupted.');
+      if (interruption) throw interruption;
       processes.capture();
       const state = await bounded(application.evaluate(({ app, BrowserWindow }) => ({
         version: app.getVersion(), packaged: app.isPackaged, userData: app.getPath('userData'),
@@ -412,26 +418,35 @@ async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, 
     assertAlive(result.backendPid);
     const stillVisible = await bounded(application.evaluate(({ BrowserWindow }, rendererPid) => BrowserWindow.getAllWindows().some((window) => !window.isDestroyed() && window.isVisible() && window.webContents.getOSProcessId() === rendererPid), result.rendererPid), operationTimeoutMs, 'Packaged Harness window stability evaluation');
     if (!stillVisible) throw new Error('Packaged Harness window disappeared during the boot stability check.');
-    if (interrupted) throw new Error('Packaged Harness boot interrupted.');
+    if (interruption) throw interruption;
     return { ...result, keychain: 'mock-for-isolated-boot', credentialStorage: 'not-verified', healthyForMs: 5000, verifiedAt: new Date().toISOString() };
   } catch (error) {
     bootError = error;
     throw error;
   } finally {
+    let cleanupError;
     try {
       if (application && processes) await closeBootApplication(application, processes, closeTimeoutMs);
     } catch (error) {
-      // Keep the primary failure actionable; an unresponsive close should not
-      // replace a main-thread timeout with a less useful shutdown message.
-      if (!bootError) throw error;
-      process.stderr.write(`[harness-mac] ${error.message}\n`);
-    } finally {
-      for (const signal of ['SIGINT', 'SIGTERM']) signals.off(signal, onInterruption);
+      cleanupError = error;
+    }
+    try {
+      signals.off('SIGINT', interrupt);
+      signals.off('SIGTERM', terminate);
       child?.stdout?.off('data', captureOutput);
       child?.stderr?.off('data', captureOutput);
       // Preserve the owned installation if termination itself failed.
       if (!child || processes?.stopped) fs.rmSync(scratch, { recursive: true, force: true });
+    } catch (error) {
+      cleanupError ||= error;
     }
+    if (cleanupError) {
+      if (!bootError && !interruption) throw cleanupError;
+      process.stderr.write(`[harness-mac] ${cleanupError.message}\n`);
+    }
+    // A signal during shutdown must also cancel a pending successful return.
+    // Preserve its exit status even if evaluation or cleanup failed afterward.
+    if (interruption) throw interruption;
   }
 }
 
@@ -529,6 +544,6 @@ if (require.main === module) {
   } else {
     finalizeMacRelease({ harnessRoot, stageRoot, version, outputDir }).then(() => {
       process.stdout.write('[harness-mac] Signed, notarized, payload-verified and boot-verified macOS Harness is ready.\n');
-    }).catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+    }).catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = failureExitCode(error); });
   }
 }
