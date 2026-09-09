@@ -73,8 +73,10 @@ function writeReleaseChecksumManifest({
   root = defaultRoot,
   version,
   contract = loadReleaseContract(root),
+  env = process.env,
   verifyAuthenticode = verifyAuthenticodeExecutables
 }) {
+  assertPublicReleaseInputs({ root, env });
   assertBundledHarnessVendorContract({ root });
   const artifacts = requiredReleaseArtifacts({ root, version, contract });
   const missing = artifacts.filter((entry) => !isRegularFile(entry.absolutePath));
@@ -94,6 +96,17 @@ function writeReleaseChecksumManifest({
   fs.renameSync(temporaryPath, manifestPath);
   verifyReleaseChecksumManifest({ root, version, contract });
   return { artifacts, manifestPath };
+}
+
+function assertPublicReleaseInputs({ root = defaultRoot, env = process.env } = {}) {
+  const markerPath = path.join(root, "artifacts", "local-release-candidate.json");
+  if (env.TRITONAI_LOCAL_RELEASE_CANDIDATE || env.TRITONAI_PLUGIN_CATALOG_PATH
+    || fs.existsSync(markerPath)) {
+    throw new Error(
+      "Local release candidates cannot use the public release contract or GitHub publication helper. "
+      + "Build the public release in a separate checkout using the reviewed Installer plugin catalog."
+    );
+  }
 }
 
 function assertPackagedBootProofs({
@@ -361,6 +374,7 @@ function main() {
 if (require.main === module) main();
 
 module.exports = {
+  assertPublicReleaseInputs,
   assertPackagedBootProofs,
   assertBundledHarnessVendorContract,
   assertWindowsAuthenticodeProof,

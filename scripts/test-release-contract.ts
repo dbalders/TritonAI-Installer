@@ -6,6 +6,7 @@ const { execFileSync } = require("child_process");
 
 const repoRoot = path.resolve(__dirname, "..", "..");
 const {
+  assertPublicReleaseInputs,
   assertReleaseMayBeUpdated,
   assertReleaseSourceIdentity,
   assertWindowsAuthenticodeProof,
@@ -41,7 +42,7 @@ function verifyFixtureAuthenticode({ executablePaths, expectedPublisherName }) {
 }
 
 function writeFixtureChecksumManifest(options) {
-  return writeReleaseChecksumManifest({ ...options, verifyAuthenticode: verifyFixtureAuthenticode });
+  return writeReleaseChecksumManifest({ ...options, env: {}, verifyAuthenticode: verifyFixtureAuthenticode });
 }
 
 function assertFixtureWindowsProof(options) {
@@ -51,6 +52,22 @@ function assertFixtureWindowsProof(options) {
 function main() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-release-contract-"));
   try {
+    assert.doesNotThrow(() => assertPublicReleaseInputs({ root: tempRoot, env: {} }));
+    for (const env of [
+      { TRITONAI_LOCAL_RELEASE_CANDIDATE: "1" },
+      { TRITONAI_PLUGIN_CATALOG_PATH: "/tmp/candidate.json" }
+    ]) {
+      assert.throws(() => assertPublicReleaseInputs({ root: tempRoot, env }), /Local release candidates cannot/);
+    }
+    const candidateMarker = path.join(tempRoot, "artifacts", "local-release-candidate.json");
+    fs.mkdirSync(path.dirname(candidateMarker), { recursive: true });
+    fs.writeFileSync(candidateMarker, "{}");
+    assert.throws(
+      () => assertPublicReleaseInputs({ root: tempRoot, env: {} }),
+      /Local release candidates cannot/,
+      "candidate publication must remain blocked after the candidate environment is unset"
+    );
+    fs.rmSync(candidateMarker);
     const contractPath = path.join(tempRoot, "release-artifacts.json");
     fs.copyFileSync(path.join(repoRoot, "release-artifacts.json"), contractPath);
     const releaseContract = JSON.parse(fs.readFileSync(contractPath, "utf8"));

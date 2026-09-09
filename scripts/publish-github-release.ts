@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const {
+  assertPublicReleaseInputs,
   assertReleaseMayBeUpdated,
   assertReleaseSourceIdentity,
   writeReleaseChecksumManifest
@@ -14,6 +15,7 @@ const pkg = require(path.join(root, "package.json"));
 const GITHUB_REPOSITORY = "dbalders/TritonAI-Installer";
 
 function main() {
+  assertPublicReleaseInputs({ root });
   if (!tag) {
     throw new Error("Usage: npm run release:github -- v0.1.0");
   }

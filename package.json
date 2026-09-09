@@ -67,7 +67,8 @@
     "test:reliability": "npm run build && node dist/scripts/test-installer-reliability.js",
     "release:prepare": "node scripts/prepare-release-run.cjs",
     "release:run": "node scripts/release-runner.cjs",
-    "test:release-runner": "node --test scripts/test-release-runner.cjs"
+    "test:release-runner": "node --test scripts/test-release-runner.cjs scripts/test-local-release*.cjs",
+    "release:local": "node scripts/local-release.cjs"
   },
   "keywords": [
     "ucsd",

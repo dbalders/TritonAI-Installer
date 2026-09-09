@@ -1,5 +1,10 @@
 # Run Installer packaging without an agent loop
 
+For the complete local Harness + Installer build with selected plugin/skills versions and
+parallel Mac/Windows packaging, use [the local release command](local-release.md):
+`npm run release:local -- 0.3.4`. It builds its recipes on this same runner. The lower-level
+Installer-only recipe below remains available for an already verified Harness handoff.
+
 The release runner wraps the existing commands. It adds dependency ordering, per-step logs,
 checksummed completion receipts, resume, and a single handoff directory. It does not change
 release pins, signing policy, package validation, or publication order. The runner uses plain Node

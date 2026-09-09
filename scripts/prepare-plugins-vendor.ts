@@ -10,11 +10,13 @@ const {
   sanitizeRepositoryUrl
 } = require("../src/installer/plugin-provenance");
 const {
-  createManagedPluginBundleManifest
+  createManagedPluginBundleManifest,
+  validateManagedPluginBundleManifest
 } = require("../src/installer/plugin-bundle-manifest");
 const {
   assertCatalogComposition,
-  readManagedPluginCatalog
+  readManagedPluginCatalog,
+  validateManagedPluginCatalog
 } = require("../src/installer/plugin-catalog");
 
 const root = path.resolve(__dirname, "..", "..");
@@ -29,10 +31,11 @@ const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 function main(env = process.env, args = process.argv.slice(2)) {
   const options = parseArguments(args);
-  const catalog = readManagedPluginCatalog(managedPluginCatalogPath);
+  const selection = readPluginCatalogSelection(env, options);
+  const { catalog } = selection;
   const input = selectPluginSourceInput(
     readPluginSourceEnvironment(env),
-    options,
+    { ...options, localCandidate: selection.localCandidate },
     undefined,
     catalog
   );
@@ -43,6 +46,9 @@ function main(env = process.env, args = process.argv.slice(2)) {
     return null;
   }
   validateSourceInput(input);
+  // Keep this marker across retries and later environment changes. A candidate
+  // checkout is never implicitly promoted to the public release lane.
+  if (selection.localCandidate) markLocalReleaseCandidate(selection);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-plugins-vendor-"));
   try {
     const sourceRoot = input.localSource
@@ -73,6 +79,81 @@ function main(env = process.env, args = process.argv.slice(2)) {
   }
 }
 
+function readPluginCatalogSelection(
+  env: Record<string, string | undefined> = {},
+  options = { production: false },
+  defaultCatalogPath = managedPluginCatalogPath
+) {
+  const candidateFlag = (env.TRITONAI_LOCAL_RELEASE_CANDIDATE || "").trim();
+  const candidatePath = (env.TRITONAI_PLUGIN_CATALOG_PATH || "").trim();
+  if (!candidateFlag && !candidatePath) {
+    return {
+      catalog: readManagedPluginCatalog(defaultCatalogPath),
+      catalogPath: defaultCatalogPath,
+      localCandidate: false,
+      catalogSha256: null
+    };
+  }
+  if (candidateFlag !== "1" || !candidatePath || !options.production) {
+    throw new Error(
+      "A local candidate plugin catalog requires --production, TRITONAI_LOCAL_RELEASE_CANDIDATE=1, "
+      + "and TRITONAI_PLUGIN_CATALOG_PATH together."
+    );
+  }
+  if (!path.isAbsolute(candidatePath)) {
+    throw new Error("TRITONAI_PLUGIN_CATALOG_PATH must be an absolute path to the frozen local candidate catalog.");
+  }
+  if (path.resolve(candidatePath) === path.resolve(defaultCatalogPath)) {
+    throw new Error("A local candidate catalog must be separate from the reviewed Installer plugin catalog.");
+  }
+  const stat = safeLstat(candidatePath, "Local candidate plugin catalog");
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error("Local candidate plugin catalog must be a regular file.");
+  }
+  const contents = fs.readFileSync(candidatePath);
+  let catalog;
+  try {
+    catalog = JSON.parse(contents.toString("utf8"));
+  } catch (error) {
+    throw new Error(`Local candidate plugin catalog is not valid JSON: ${error.message}`);
+  }
+  return {
+    catalog: validateManagedPluginCatalog(catalog),
+    catalogPath: candidatePath,
+    localCandidate: true,
+    catalogSha256: crypto.createHash("sha256").update(contents).digest("hex")
+  };
+}
+
+function createLocalCandidatePluginCatalog(composition) {
+  const manifest = validateManagedPluginBundleManifest(composition, "Local candidate plugin composition");
+  return validateManagedPluginCatalog({
+    version: 1,
+    kind: "tritonai-managed-plugin-catalog",
+    source: { ...manifest.source },
+    packages: manifest.packages.map((plugin) => ({
+      pluginId: plugin.id,
+      version: plugin.version,
+      digest: plugin.digest,
+      manifestDigest: plugin.files.find((file) => file.path === ".tritonai-plugin/plugin.json")?.sha256
+    }))
+  });
+}
+
+function markLocalReleaseCandidate(selection, candidateRoot = root) {
+  if (!selection.localCandidate || !/^[a-f0-9]{64}$/.test(selection.catalogSha256 || "")) {
+    throw new Error("Local release candidate marker requires a validated candidate catalog selection.");
+  }
+  const markerPath = path.join(candidateRoot, "artifacts", "local-release-candidate.json");
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+  fs.writeFileSync(markerPath, `${JSON.stringify({
+    schemaVersion: 1,
+    kind: "tritonai-local-release-candidate",
+    pluginCatalog: { path: selection.catalogPath, sha256: selection.catalogSha256 }
+  }, null, 2)}\n`);
+  return markerPath;
+}
+
 function parseArguments(args) {
   const values = Array.from(args || [], (value) => String(value));
   const supported = new Set(["--latest", "--production"]);
@@ -100,9 +181,11 @@ function selectPluginSourceInput(
   catalog = null
 ) {
   if (options.production) {
-    if (input.ref || input.commit || input.selectedIds.length > 0 || input.localSource) {
+    if (input.ref || input.commit || input.selectedIds.length > 0
+      || (input.localSource && !options.localCandidate)) {
       throw new Error(
-        "--production selects the reviewed Installer catalog; explicit plugin source overrides must be unset."
+        "--production selects the plugin catalog; explicit plugin source overrides must be unset "
+        + "except a clean TRITONAI_PLUGINS_SOURCE in local candidate mode."
       );
     }
     if (!catalog) throw new Error("--production requires the reviewed Installer plugin catalog.");
@@ -968,15 +1051,18 @@ module.exports = {
   assertRemoteRefResolvesToCommit,
   cloneValidatedLocalSource,
   compareStableVersions,
+  createLocalCandidatePluginCatalog,
   digestFileSet,
   isSafeGitRef,
   isSafeGitObjectPath,
   main,
+  markLocalReleaseCandidate,
   materializeSelectedPluginTrees,
   parseArguments,
   parseLatestStablePluginRelease,
   parseSelectedPluginIds,
   readPluginSourceEnvironment,
+  readPluginCatalogSelection,
   resolveLatestStablePluginRelease,
   selectPluginSourceInput,
   stagePluginsFromSource,
