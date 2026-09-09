@@ -25,6 +25,7 @@ const {
   validateManagedPluginCatalog
 } = require("../src/installer/plugin-catalog");
 const {
+  assertRemoteRefResolvesToCommit,
   compareStableVersions,
   parseArguments,
   parseLatestStablePluginRelease,
@@ -56,6 +57,7 @@ function main() {
   assertReviewedPluginCatalog();
   assertLatestStableReleaseSelection();
   assertExplicitSourceContract();
+  assertImmutableCommitSource();
   assertPinnedGitMaterializationIncludesSdkArtifact();
   assertDeterministicSelectionAndStaging();
   assertCatalogValidationPrecedesActivation();
@@ -249,6 +251,29 @@ function assertCanonicalProvenance() {
     () => assertCanonicalPluginRepository("https://build-token@github.com:bad/dbalders/TritonAI-Plugins.git"),
     (error) => !error.message.includes("build-token") && error.message.includes("invalid-repository-url")
   );
+}
+
+function assertImmutableCommitSource() {
+  withTempRoot("tritonai-immutable-source-", (sourceRoot) => {
+    execFileSync("git", ["init", "-q"], { cwd: sourceRoot });
+    const commitFile = (text) => {
+      fs.writeFileSync(path.join(sourceRoot, "file"), text);
+      execFileSync("git", ["add", "file"], { cwd: sourceRoot });
+      execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", text], { cwd: sourceRoot });
+      return execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourceRoot, encoding: "utf8" }).trim();
+    };
+    const pinned = commitFile("pinned");
+    commitFile("branch advanced");
+    assertRemoteRefResolvesToCommit(sourceRoot, pinned, pinned);
+    assert.throws(() => assertRemoteRefResolvesToCommit(sourceRoot, pinned, COMMIT), /does not match/);
+    assert.throws(() => assertRemoteRefResolvesToCommit(sourceRoot, COMMIT, COMMIT), /Could not verify/);
+    const catalog = syntheticCatalog();
+    catalog.source.ref = catalog.source.commit = pinned;
+    validateManagedPluginCatalog(catalog);
+    validateSourceInput({ ...catalog.source, selectedIds: ["alpha-reader"] });
+    assert.throws(() => validateManagedPluginCatalog({ ...catalog, source: { ...catalog.source, commit: COMMIT } }), /must match/);
+    assert.throws(() => validateSourceInput({ ...catalog.source, commit: COMMIT, selectedIds: ["alpha-reader"] }), /must match/);
+  });
 }
 
 function assertExplicitSourceContract() {

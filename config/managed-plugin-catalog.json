@@ -3,8 +3,8 @@
   "kind": "tritonai-managed-plugin-catalog",
   "source": {
     "repository": "https://github.com/dbalders/TritonAI-Plugins.git",
-    "ref": "refs/tags/v0.1.3",
-    "commit": "179aa990a842d14a0196fd757eb6482f3bad29b3"
+    "ref": "feb583cc3d919e32eb588f1bce3755fae0d6b352",
+    "commit": "feb583cc3d919e32eb588f1bce3755fae0d6b352"
   },
   "packages": [
     {
@@ -34,7 +34,7 @@
     {
       "pluginId": "n8n",
       "version": "1.0.0",
-      "digest": "2c36975921cf4608c83a952f2a92002294ade34b5573a55a763bf148720df663",
+      "digest": "b0676251f714cf7dd448e1b7d8b22b0db9e491fe6ac36f685d90b549c0f38bb5",
       "manifestDigest": "6268b3210984def7a325389881f4cf437d77e39d0e21990c7491e01a1ebdabe8"
     }
   ]
