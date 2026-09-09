@@ -2,6 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const {
   buildDesiredReleaseAssets,
   createGitHubClient,
@@ -10,6 +11,14 @@ const {
 } = require("./publish-github-release");
 
 function main() {
+  const candidateAttempt = spawnSync(process.execPath, [
+    path.join(__dirname, "publish-github-release.js"), "v0.0.0"
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, TRITONAI_LOCAL_RELEASE_CANDIDATE: "1" }
+  });
+  assert.notStrictEqual(candidateAttempt.status, 0);
+  assert.match(candidateAttempt.stderr, /Local release candidates cannot/);
   withFixture(({ desired, paths }) => {
     assertFreshDraft(paths);
     assertPartialDraft(desired, paths);

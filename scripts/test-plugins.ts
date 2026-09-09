@@ -27,10 +27,13 @@ const {
 const {
   assertRemoteRefResolvesToCommit,
   compareStableVersions,
+  createLocalCandidatePluginCatalog,
+  markLocalReleaseCandidate,
   parseArguments,
   parseLatestStablePluginRelease,
   parseSelectedPluginIds,
   readPluginSourceEnvironment,
+  readPluginCatalogSelection,
   selectPluginSourceInput,
   stagePluginsFromSource,
   materializeSelectedPluginTrees,
@@ -55,6 +58,7 @@ const managedPluginCatalogPath = path.join(
 function main() {
   assertCanonicalProvenance();
   assertReviewedPluginCatalog();
+  assertLocalCandidateCatalogSelection();
   assertLatestStableReleaseSelection();
   assertExplicitSourceContract();
   assertImmutableCommitSource();
@@ -72,6 +76,96 @@ function main() {
   assertSafeCompositionPaths();
   assertPackagedResourceInspection();
   console.log("Managed Harness plugin tests passed.");
+}
+
+function assertLocalCandidateCatalogSelection() {
+  withTempRoot("tritonai-local-candidate-catalog-", (tempRoot) => {
+    const sourceRoot = path.join(tempRoot, "source");
+    const vendorDir = path.join(tempRoot, "vendor", "plugins");
+    const catalogPath = path.join(tempRoot, "candidate-plugins.json");
+    writeSkillPlugin(sourceRoot, "alpha-reader", "1.2.3");
+    const composition = stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: ["alpha-reader"],
+      source: { ...sourceIdentity(), ref: COMMIT }
+    });
+    const candidateCatalog = createLocalCandidatePluginCatalog(composition);
+    assertCatalogComposition(candidateCatalog, composition);
+    fs.writeFileSync(catalogPath, `${JSON.stringify(candidateCatalog)}\n`);
+    const production = { production: true };
+    const env = {
+      TRITONAI_LOCAL_RELEASE_CANDIDATE: "1",
+      TRITONAI_PLUGIN_CATALOG_PATH: catalogPath,
+      TRITONAI_PLUGINS_SOURCE: sourceRoot
+    };
+    const selection = readPluginCatalogSelection(env, production);
+    assert.strictEqual(selection.localCandidate, true);
+    assert.deepStrictEqual(selection.catalog, candidateCatalog);
+    assert.strictEqual(
+      selection.catalogSha256,
+      crypto.createHash("sha256").update(fs.readFileSync(catalogPath)).digest("hex")
+    );
+    const input = selectPluginSourceInput(
+      readPluginSourceEnvironment(env),
+      { ...production, localCandidate: selection.localCandidate },
+      undefined,
+      selection.catalog
+    );
+    assert.strictEqual(input.ref, COMMIT);
+    assert.strictEqual(input.commit, COMMIT);
+    assert.strictEqual(input.localSource, sourceRoot);
+    assert.deepStrictEqual(input.selectedIds, ["alpha-reader"]);
+    for (const override of [
+      { TRITONAI_PLUGINS_REF: "refs/heads/main" },
+      { TRITONAI_PLUGINS_COMMIT: "b".repeat(40) },
+      { TRITONAI_PLUGIN_IDS: "zeta-reader" }
+    ]) {
+      assert.throws(() => selectPluginSourceInput(
+        readPluginSourceEnvironment({ ...env, ...override }),
+        { ...production, localCandidate: true },
+        undefined,
+        selection.catalog
+      ), /source overrides must be unset/);
+    }
+    for (const invalidEnv of [
+      { TRITONAI_PLUGIN_CATALOG_PATH: catalogPath },
+      { TRITONAI_LOCAL_RELEASE_CANDIDATE: "1" },
+      { ...env, TRITONAI_LOCAL_RELEASE_CANDIDATE: "true" }
+    ]) {
+      assert.throws(() => readPluginCatalogSelection(invalidEnv, production), /requires --production/);
+    }
+    assert.throws(() => readPluginCatalogSelection(env, { production: false }), /requires --production/);
+    assert.throws(
+      () => readPluginCatalogSelection({ ...env, TRITONAI_PLUGIN_CATALOG_PATH: "candidate.json" }, production),
+      /absolute path/
+    );
+    assert.throws(
+      () => readPluginCatalogSelection({ ...env, TRITONAI_PLUGIN_CATALOG_PATH: managedPluginCatalogPath }, production),
+      /separate from the reviewed/
+    );
+    const link = path.join(tempRoot, "catalog-link.json");
+    fs.symlinkSync(catalogPath, link);
+    assert.throws(
+      () => readPluginCatalogSelection({ ...env, TRITONAI_PLUGIN_CATALOG_PATH: link }, production),
+      /regular file/
+    );
+    const markerPath = markLocalReleaseCandidate(selection, tempRoot);
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+    assert.deepStrictEqual(marker.pluginCatalog, { path: catalogPath, sha256: selection.catalogSha256 });
+
+    const originalVendor = fs.readFileSync(path.join(vendorDir, "manifest.json"));
+    fs.appendFileSync(path.join(sourceRoot, "plugins", "alpha-reader", "README.md"), "changed\n");
+    assert.throws(() => stagePluginsFromSource({
+      sourceRoot,
+      vendorDir,
+      selectedIds: input.selectedIds,
+      source: candidateCatalog.source,
+      assertComposition: (manifest) => assertCatalogComposition(selection.catalog, manifest)
+    }), /catalog digests/);
+    assert.deepStrictEqual(fs.readFileSync(path.join(vendorDir, "manifest.json")), originalVendor);
+    assert.strictEqual(readPluginCatalogSelection({}, production).localCandidate, false);
+  });
 }
 
 function assertLatestStableReleaseSelection() {

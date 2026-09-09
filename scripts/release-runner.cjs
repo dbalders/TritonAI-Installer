@@ -31,7 +31,7 @@ function sourceCommit(cwd) {
   if (git('status', '--porcelain', '--untracked-files=normal')) throw new Error(`Release source must be clean: ${cwd}`);
   return git('rev-parse', 'HEAD');
 }
-function validate(plan) {
+function validate(plan, environment = process.env) {
   if (plan.schemaVersion !== 1 || !Array.isArray(plan.steps) || !plan.steps.length) throw new Error('Invalid release recipe');
   const ids = new Set();
   for (const step of plan.steps) {
@@ -52,7 +52,7 @@ function validate(plan) {
       })) throw new Error(`Invalid ${field}: ${step.id}`);
     }
     if (step.env !== undefined && (!step.env || Array.isArray(step.env) || typeof step.env !== 'object' || Object.values(step.env).some(value => typeof value !== 'string'))) throw new Error(`Invalid env: ${step.id}`);
-    for (const key of step.requiredEnv || []) if (!process.env[key]) throw new Error(`Missing environment variable: ${key}`);
+    for (const key of step.requiredEnv || []) if (!environment[key]) throw new Error(`Missing environment variable: ${key}`);
   }
   const seen = new Set(), visiting = new Set();
   function visit(id) {
@@ -65,9 +65,9 @@ function validate(plan) {
   }
   for (const id of ids) visit(id);
 }
-async function snapshot(step) {
-  const keys = new Set([...(step.requiredEnv || []), ...Object.keys(process.env).filter(key => /^(TRITONAI_|UCSD_|T3CODE_|CSC_|WIN_CSC_|APPLE_|AZURE_|ELECTRON_BUILDER_|DEVELOPER_ID_APPLICATION$)/.test(key))]);
-  const environment = Object.fromEntries([...keys].sort().map(key => [key, process.env[key]]));
+async function snapshot(step, runtimeEnvironment = process.env) {
+  const keys = new Set([...(step.requiredEnv || []), ...Object.keys(runtimeEnvironment).filter(key => /^(TRITONAI_|UCSD_|T3CODE_|CSC_|WIN_CSC_|APPLE_|AZURE_|ELECTRON_BUILDER_|DEVELOPER_ID_APPLICATION$)/.test(key))]);
+  const environment = Object.fromEntries([...keys].sort().map(key => [key, runtimeEnvironment[key]]));
   const inputs = {};
   for (const entry of step.inputs || []) {
     const input = typeof entry === 'string' ? entry : entry.path;
@@ -89,14 +89,14 @@ async function outputs(step) {
   for (const output of step.outputs) result[output] = await fileHash(path.resolve(step.cwd, output));
   return result;
 }
-async function execute(command, step, log) {
+async function execute(command, step, log, environment = process.env) {
   // npm.cmd needs cmd.exe on Windows; invoking npm's JS entrypoint avoids shell quoting.
   let [executable, ...args] = command;
-  if (process.platform === 'win32' && executable === 'npm' && process.env.npm_execpath) {
-    executable = process.execPath; args = [process.env.npm_execpath, ...args];
+  if (process.platform === 'win32' && executable === 'npm' && environment.npm_execpath) {
+    executable = process.execPath; args = [environment.npm_execpath, ...args];
   }
   await new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd: step.cwd, env: { ...process.env, ...step.env }, stdio: ['ignore', log, log], shell: false });
+    const child = spawn(executable, args, { cwd: step.cwd, env: { ...environment, ...step.env }, stdio: ['ignore', log, log], shell: false });
     child.once('error', reject);
     child.once('exit', (code, signal) => code === 0 ? resolve() : reject(new Error(`${step.id}: command exited ${code ?? signal}`)));
   });
@@ -105,8 +105,9 @@ function overlap(a, b) {
   const relative = path.relative(a, b);
   return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
 }
-async function run(plan, stateDir, { jobs = 2, dryRun = false, executeCommand = execute } = {}) {
-  validate(plan);
+async function run(plan, stateDir, { jobs = 2, dryRun = false, executeCommand, environment = process.env } = {}) {
+  validate(plan, environment);
+  const perform = executeCommand || ((command, step, log) => execute(command, step, log, environment));
   if (!Number.isInteger(jobs) || jobs < 1 || jobs > 8) throw new Error('jobs must be between 1 and 8');
   if (dryRun) return { steps: plan.steps.map(({ id, needs, cwd, commands }) => ({ id, needs, cwd, commands })) };
   fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -126,14 +127,14 @@ async function run(plan, stateDir, { jobs = 2, dryRun = false, executeCommand = 
     // Check every completed receipt before starting any new work.
     for (const step of plan.steps) {
       const receipt = state.steps[step.id];
-      if (receipt?.inputHash && receipt.inputHash !== await snapshot(step)) throw new Error(`Completed stage changed or attempted inputs changed: ${step.id}. Use a fresh candidate.`);
+      if (receipt?.inputHash && receipt.inputHash !== await snapshot(step, environment)) throw new Error(`Completed stage changed or attempted inputs changed: ${step.id}. Use a fresh candidate.`);
       if (receipt?.status !== 'complete') continue;
       if (JSON.stringify(receipt.outputs) !== JSON.stringify(await outputs(step))) throw new Error(`Completed stage changed: ${step.id}. Use a fresh candidate; refusing to rebuild verified artifacts.`);
       done.add(step.id);
       console.log(`[${step.id}] reused verified outputs`);
     }
     async function launch(step) {
-      const inputHash = await snapshot(step);
+      const inputHash = await snapshot(step, environment);
       if (state.steps[step.id]?.inputHash && state.steps[step.id].inputHash !== inputHash) throw new Error(`Inputs changed since the previous attempt: ${step.id}`);
       const logPath = path.join(stateDir, `${step.id}.log`);
       const log = fs.openSync(logPath, 'a', 0o600);
@@ -141,8 +142,8 @@ async function run(plan, stateDir, { jobs = 2, dryRun = false, executeCommand = 
       save(stateFile, state);
       console.log(`[${step.id}] started; ${logPath}`);
       try {
-        for (const command of step.commands) await executeCommand(command, step, log);
-        if (await snapshot(step) !== inputHash) throw new Error(`Inputs changed during ${step.id}`);
+        for (const command of step.commands) await perform(command, step, log);
+        if (await snapshot(step, environment) !== inputHash) throw new Error(`Inputs changed during ${step.id}`);
         state.steps[step.id] = { ...state.steps[step.id], status: 'complete', outputs: await outputs(step), completedAt: new Date().toISOString() };
         done.add(step.id);
         console.log(`[${step.id}] complete`);
