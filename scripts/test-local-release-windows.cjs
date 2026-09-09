@@ -36,13 +36,14 @@ test('always rejects an unpinned compiler, including an existing stale cache', (
 });
 
 test('launcher forwards stdin and exact argument boundaries, pins prefix, and catches changes before Wine runs', (t) => {
-  const dir = fixture(t), compiler = path.join(dir, 'compiler.exe'), templates = path.join(dir, 'templates');
+  const dir = fixture(t), compiler = path.join(dir, 'compiler.cjs'), templates = path.join(dir, 'templates');
   fs.mkdirSync(templates);
-  fs.writeFileSync(compiler, 'fixture compiler');
-  const wine = path.join(dir, 'wine.cjs'), record = path.join(dir, 'record.json');
-  fs.writeFileSync(wine, `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({args:process.argv.slice(2),input:fs.readFileSync(0,'utf8'),prefix:process.env.WINEPREFIX,nsis:process.env.NSISDIR,cwd:process.cwd()}));\n`, { mode: 0o755 });
+  // Native Node runs the fake compiler on both CI hosts; Windows cannot execute a shebang shim.
+  const wine = process.execPath, record = path.join(dir, 'record.json');
+  const compilerSource = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({args:process.argv.slice(1),input:fs.readFileSync(0,'utf8'),prefix:process.env.WINEPREFIX,nsis:process.env.NSISDIR,cwd:process.cwd()}));\n`;
+  fs.writeFileSync(compiler, compilerSource);
   const launcher = path.join(dir, 'launcher.cjs');
-  fs.writeFileSync(launcher, launcherSource({ compiler, compilerSha256: crypto.createHash('sha256').update('fixture compiler').digest('hex'), wine, nsisRoot: dir + '/nsis', templates, templateSource: '/very long/source/templates', root: dir, prefix: dir + '/wineprefix' }));
+  fs.writeFileSync(launcher, launcherSource({ compiler, compilerSha256: crypto.createHash('sha256').update(compilerSource).digest('hex'), wine, nsisRoot: dir + '/nsis', templates, templateSource: '/very long/source/templates', root: dir, prefix: dir + '/wineprefix' }));
   const result = spawnSync(process.execPath, [launcher, '-DOUTPUT=' + dir + '/file with spaces.exe', '-XName Example app', '-'], { input: '!include "/very long/source/templates/common.nsh"\nOutFile "' + dir + '/output.exe"', encoding: 'utf8', env: { ...process.env, WINEPREFIX: '/unrelated/prefix' } });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(fs.readFileSync(record)), { args: [compiler, '-DOUTPUT=T:\\file with spaces.exe', '-XName Example app', '-'], input: '!include "T:\\templates\\common.nsh"\nOutFile "T:\\output.exe"', prefix: dir + '/wineprefix', nsis: 'T:\\nsis\\', cwd: fs.realpathSync(templates) });

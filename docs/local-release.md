@@ -51,6 +51,8 @@ identity, and Wine (`wine64`). The runner finds installed Node 24 under nvm and 
 Notarization uses `~/.agents/secrets/appstore/config.json` or the profile's
 `notarizationConfig` path, with `keyFile`, `keyId`, and `issuerId` fields. Optional
 `repositories` fields (`harness`, `installer`, `plugins`, `skills`) override sibling paths.
+Preflight checks npm/Corepack, system packaging utilities, and the selected Xcode compiler,
+notarization and stapling tools before dependency installation starts.
 
 Windows tooling is provisioned from Electron Builder's checksum-verified official downloads.
 NSIS 3.0.4.1's compiler is verified against its pinned SHA-256 on every use. Each platform

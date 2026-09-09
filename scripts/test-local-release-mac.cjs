@@ -87,7 +87,7 @@ test('boot environment isolates all user state and excludes ambient credentials'
     ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--require unsafe', TRITONAI_HOME: '/Users/live/.tritonai-harness',
   });
   assert.equal(environment.HOME, '/tmp/candidate-home');
-  assert.equal(environment.TRITONAI_HOME, '/tmp/candidate-home/harness-state');
+  assert.equal(environment.TRITONAI_HOME, path.join('/tmp/candidate-home', 'harness-state'));
   assert.equal(environment.PATH, '/usr/bin');
   for (const key of ['OPENAI_API_KEY', 'GH_TOKEN', 'ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS']) assert.equal(environment[key], undefined);
 });

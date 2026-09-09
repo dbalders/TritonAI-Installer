@@ -15,13 +15,13 @@ function verifyPluginArchive(archive, asar, composition) {
   for (const plugin of composition.packages) for (const file of plugin.files) {
     const name = `${root}packages/${plugin.id}/${file.path}`;
     expected.add(name);
-    const stat = asar.statFile(archive, name, false);
+    const stat = asar.statFile(archive, path.normalize(name), false);
     if (stat.link || stat.files) throw new Error(`Packaged Windows plugin file is not regular: ${plugin.id}/${file.path}`);
     const bytes = asar.extractFile(archive, name);
     if (bytes.length !== file.size || crypto.createHash('sha256').update(bytes).digest('hex') !== file.sha256) throw new Error(`Packaged Windows plugin file differs: ${plugin.id}/${file.path}`);
   }
   for (const name of entries.filter(name => name.startsWith(`${root}packages/`))) {
-    const stat = asar.statFile(archive, name, false);
+    const stat = asar.statFile(archive, path.normalize(name), false);
     if (!stat.files && !expected.has(name)) throw new Error(`Unexpected packaged Windows plugin file: ${name}`);
   }
   return { files: expected.size, pluginIds: composition.packages.map(p => p.id) };

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { parseArgs, resolveRef, cleanEnvironment, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freezeTools, assertToolIdentities, hash, save } = require('./local-release.cjs');
+const { parseArgs, resolveRef, cleanEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freezeTools, assertToolIdentities, hash, save } = require('./local-release.cjs');
 const { makeBuildRecipe, assertVersionOnly, executeWithEnvironment } = require('./local-release-stages.cjs');
 const { run } = require('./release-runner.cjs');
 
@@ -62,8 +62,27 @@ test('release environment excludes ambient build overrides without mutating pare
   const input = { PATH: '/usr/bin', ELECTRON_RUN_AS_NODE: '1', Node_Path: '/ambient', Electron_Run_As_Node: '1', NODE_OPTIONS: '--bad', TRITONAI_PLUGINS_REF: 'wrong', APPLE_API_KEY: 'ambient', WINEPREFIX: '/shared', KEEP: 'yes' };
   const result = cleanEnvironment(input, { node: '/tools/node', vp: '/vite/vp' });
   assert.equal(result.ELECTRON_RUN_AS_NODE, undefined); assert.equal(result.TRITONAI_PLUGINS_REF, undefined); assert.equal(result.APPLE_API_KEY, undefined);
-  assert.equal(result.PATH, '/tools:/vite:/usr/bin'); assert.equal(result.KEEP, 'yes'); assert.equal(input.ELECTRON_RUN_AS_NODE, '1');
+  assert.equal(result.PATH, ['/tools', '/vite', '/usr/bin'].join(path.delimiter)); assert.equal(result.KEEP, 'yes'); assert.equal(input.ELECTRON_RUN_AS_NODE, '1');
   assert.equal(result.Node_Path, undefined); assert.equal(result.Electron_Run_As_Node, undefined);
+});
+
+test('host preflight reports missing package managers and packaging utilities before building', () => {
+  const missing = new Set(['corepack', 'hdiutil', '/usr/sbin/lsof']);
+  const problems = inspectHostCommands({}, { platform: 'darwin', find: name => missing.has(name) ? null : name, execute: () => '' });
+  for (const name of missing) assert.ok(problems.some(message => message.includes(name)));
+});
+
+test('host preflight detects unusable package managers and incomplete selected Xcode tools', () => {
+  const calls = [];
+  const problems = inspectHostCommands({}, { platform: 'darwin', find: name => name, execute: (name, args) => {
+    calls.push([name, ...args]);
+    if (name === 'corepack' || args.includes('stapler')) throw new Error('fixture unavailable');
+    return '';
+  } });
+  assert.ok(problems.some(message => message.includes('corepack is installed but cannot run')));
+  assert.ok(problems.some(message => message.includes('Xcode toolchain cannot locate stapler')));
+  assert.ok(calls.some(call => call.join(' ') === 'xcrun --find notarytool'));
+  assert.ok(calls.some(call => call.join(' ') === 'xcrun --find clang'));
 });
 test('version-only preparation refuses unrelated edits even in recognized manifests', t => {
   const root = fixture(t), cwd = repo(root, 'installer'), source = { commit: git(cwd, 'rev-parse', 'HEAD') };

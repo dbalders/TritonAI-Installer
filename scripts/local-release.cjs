@@ -38,7 +38,9 @@ function parseArgs(args) {
 }
 
 function executable(name, directories = []) {
-  if (path.isAbsolute(name)) return fs.existsSync(name) ? name : null;
+  if (path.isAbsolute(name)) {
+    try { fs.accessSync(name, fs.constants.X_OK); return fs.statSync(name).isFile() ? name : null; } catch { return null; }
+  }
   for (const dir of [...directories, ...(process.env.PATH || '').split(path.delimiter)]) {
     const file = path.join(dir, name);
     try { fs.accessSync(file, fs.constants.X_OK); if (fs.statSync(file).isFile()) return file; } catch {}
@@ -97,11 +99,35 @@ function cleanEnvironment(base = process.env, tools = {}) {
   return env;
 }
 
+function inspectHostCommands(tools, { platform = process.platform, find = executable, execute = execFileSync } = {}) {
+  const problems = [], found = {};
+  const directories = [tools.node && path.dirname(tools.node), tools.vp && path.dirname(tools.vp)].filter(Boolean);
+  const required = ['git', 'npm', 'corepack', ...(platform === 'darwin' ? [
+    'security', 'codesign', 'hdiutil', 'xcrun', 'spctl', 'curl', 'tar', 'unzip', 'plutil', 'make', 'python3',
+    '/usr/bin/ditto', '/usr/sbin/lsof', '/bin/ps',
+  ] : [])];
+  for (const name of required) {
+    found[name] = find(name, directories);
+    if (!found[name]) problems.push(`Missing required release command: ${name}.`);
+  }
+  const options = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15000, env: cleanEnvironment(process.env, tools) };
+  for (const name of ['npm', 'corepack']) if (found[name]) {
+    try { execute(found[name], ['--version'], options); }
+    catch { problems.push(`${name} is installed but cannot run with the selected Node toolchain.`); }
+  }
+  if (found.xcrun) for (const name of ['clang', 'notarytool', 'stapler']) {
+    try { execute(found.xcrun, ['--find', name], options); }
+    catch { problems.push(`The selected Xcode toolchain cannot locate ${name}; configure xcode-select before building.`); }
+  }
+  return problems;
+}
+
 async function preflight(settings, { disk = true, directory } = {}) {
   const { profile, tools, repos } = settings;
   const problems = [];
   if (process.platform !== 'darwin') problems.push('The Mac/Windows local recipe runs on the configured Mac release host.');
   for (const [name, file] of Object.entries(tools)) if (!file) problems.push(`Missing ${name}; set '${name}' in ${settings.profileFile}.`);
+  problems.push(...inspectHostCommands(tools));
   if (tools.node) {
     const version = execFileSync(tools.node, ['--version'], { encoding: 'utf8' }).trim();
     if (!/^v24\./.test(version)) problems.push(`Node 24 is required; selected ${version}. Set profile.node.`);
@@ -117,8 +143,10 @@ async function preflight(settings, { disk = true, directory } = {}) {
     if (!configuration || Array.isArray(configuration) || typeof configuration !== 'object') throw new Error();
   } catch { problems.push(`Set pluginConfigurationFile to an existing JSON object file in ${settings.profileFile}.`); }
   let identity = profile.developerId;
-  if (process.platform === 'darwin') {
-    const output = execFileSync('security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' });
+  if (process.platform === 'darwin' && executable('security')) {
+    let output = '';
+    try { output = execFileSync('security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' }); }
+    catch { problems.push('Unable to read code-signing identities from the keychain.'); }
     const identities = [...output.matchAll(/"Developer ID Application: ([^"]+)"/g)].map(m => m[1]);
     if (identity) {
       identity = identity.replace(/^Developer ID Application:\s*/, '');
@@ -247,4 +275,4 @@ async function main(args = process.argv.slice(2)) {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { parseArgs, executable, resolveRef, profileFor, cleanEnvironment, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, main };
+module.exports = { parseArgs, executable, resolveRef, profileFor, cleanEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, main };
