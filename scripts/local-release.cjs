@@ -9,8 +9,13 @@ const { run, treeHash } = require('./release-runner.cjs');
 
 const SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const INSTALLER_CONFIGURATION_ENV = {
+  baseUrl: 'UCSD_AI_BASE_URL', apiDocsUrl: 'UCSD_AI_DOCS_URL', codexModel: 'UCSD_CODEX_MODEL',
+  restrictedCodexModel: 'UCSD_RESTRICTED_CODEX_MODEL', externalModelProbe: 'UCSD_EXTERNAL_MODEL_PROBE',
+};
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+const failureExitCode = error => error.exitCode === 130 || error.exitCode === 143 ? error.exitCode : 1;
 function save(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.tmp`;
@@ -88,18 +93,95 @@ function profileFor(options) {
   const available = fs.existsSync(nodeDirs) ? fs.readdirSync(nodeDirs).filter(v => /^v24\./.test(v)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map(v => path.join(nodeDirs, v, 'bin')) : [];
   const node = executable(profile.node || 'node', available);
   const vp = executable(profile.vp || 'vp', [path.join(os.homedir(), '.vite-plus/bin')]);
-  return { profileFile, profile, repos, tools: { node, vp, wine: executable(profile.wine || 'wine64', ['/usr/local/bin', '/opt/homebrew/bin']) } };
+  const rust = rustTools(profile);
+  let clang = profile.clang;
+  if (!clang) try { clang = execFileSync('/usr/bin/xcrun', ['--find', 'clang'], { encoding: 'utf8', stdio: 'pipe', timeout: 15000 }).trim(); } catch {}
+  const rustHost = `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`;
+  const rustLinker = rust.rustc && path.join(path.dirname(path.dirname(rust.rustc)), 'lib/rustlib', rustHost, 'bin/gcc-ld/lld-link');
+  return { profileFile, profile, repos, tools: { node, vp, ...rust,
+    cargoXwin: executable(profile.cargoXwin || 'cargo-xwin', [path.join(os.homedir(), '.cargo/bin')]),
+    clang: clang ? executable(clang) : null, lldLink: executable(profile.lldLink || rustLinker || 'lld-link'),
+    wine: executable(profile.wine || 'wine64', ['/usr/local/bin', '/opt/homebrew/bin']) } };
+}
+
+function rustTools(profile, { find = executable, execute = execFileSync, realpath = fs.realpathSync, stat = fs.statSync } = {}) {
+  const rustup = find('rustup', [path.join(os.homedir(), '.cargo/bin')]);
+  const proxySelector = file => {
+    if (!file) return null;
+    try {
+      const resolved = realpath(file);
+      if (/^rustup(?:\.exe)?$/.test(path.basename(resolved))) return resolved;
+      // Rustup installs proxies as either symlinks or hard links. Use the
+      // selector beside this explicit proxy, not a different rustup on PATH.
+      const sibling = find(path.join(path.dirname(file), process.platform === 'win32' ? 'rustup.exe' : 'rustup'));
+      if (sibling) {
+        const toolInfo = stat(file), selectorInfo = stat(sibling);
+        if (toolInfo.dev === selectorInfo.dev && toolInfo.ino === selectorInfo.ino) return realpath(sibling);
+      }
+    } catch {}
+    return null;
+  };
+  const resolveProxy = (selector, name) => {
+    const resolved = execute(selector, ['which', name], { encoding: 'utf8', stdio: 'pipe', timeout: 15000 }).trim();
+    const tool = path.isAbsolute(resolved) && find(resolved);
+    if (!tool || proxySelector(tool)) throw new Error('Rustup did not select an installed toolchain binary.');
+    return realpath(tool);
+  };
+  return Object.fromEntries(['cargo', 'rustc'].map(name => {
+    if (profile[name]) {
+      const selected = find(profile[name]);
+      const selector = proxySelector(selected);
+      if (!selector) return [name, selected];
+      try { return [name, resolveProxy(selector, name)]; }
+      catch { throw new Error(`Cannot resolve the selected ${name} rustup proxy to an installed toolchain. Set profile.${name} to a working toolchain binary.`); }
+    }
+    // Resolve proxies before hashing: realpath(cargo) can otherwise pin rustup
+    // itself, which changes behavior when invoked under that executable name.
+    if (rustup) try { return [name, resolveProxy(rustup, name)]; } catch {}
+    const selected = find(name), selector = proxySelector(selected);
+    // A failed rustup selection must not reach freezeTools as the proxy itself.
+    return [name, selector ? null : selected];
+  }));
 }
 
 function cleanEnvironment(base = process.env, tools = {}) {
   const env = { ...base };
   for (const key of Object.keys(env)) if (/^(TRITONAI_|T3CODE_|UCSD_|CSC_|WIN_CSC_|APPLE_|AZURE_|ELECTRON_BUILDER_)/i.test(key) || ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH', 'WINEPREFIX', 'WINE', 'GITHUB_OUTPUT', 'VITE_HTTP_URL', 'VITE_WS_URL', 'DEVELOPER_ID_APPLICATION'].includes(key.toUpperCase())) delete env[key];
   // Tools and release credentials are loaded explicitly from the saved profile below.
-  env.PATH = [...new Set([tools.node && path.dirname(tools.node), tools.vp && path.dirname(tools.vp), ...(env.PATH || '').split(path.delimiter)].filter(Boolean))].join(path.delimiter);
+  for (const key of ['CARGO', 'RUSTC', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_TARGET', 'CARGO_TARGET_DIR', 'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RUSTUP_TOOLCHAIN']) delete env[key];
+  env.PATH = [...new Set([tools.node && path.dirname(tools.node), tools.vp && path.dirname(tools.vp), tools.cargo && path.dirname(tools.cargo), tools.rustc && path.dirname(tools.rustc), ...(env.PATH || '').split(path.delimiter)].filter(Boolean))].join(path.delimiter);
+  if (tools.cargo) env.CARGO = tools.cargo;
+  if (tools.rustc) env.RUSTC = tools.rustc;
   return env;
 }
 
-function inspectHostCommands(tools, { platform = process.platform, find = executable, execute = execFileSync } = {}) {
+function installerConfigurationEnvironment(configuration) {
+  if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) throw new Error('Set profile.installerConfiguration to an object with the required baseUrl.');
+  for (const key of Object.keys(configuration)) if (!Object.hasOwn(INSTALLER_CONFIGURATION_ENV, key)) throw new Error(`Unknown profile.installerConfiguration field: ${key}.`);
+  const env = {};
+  for (const [key, name] of Object.entries(INSTALLER_CONFIGURATION_ENV)) {
+    if (key !== 'baseUrl' && configuration[key] === undefined) continue;
+    const value = configuration[key];
+    if (typeof value !== 'string' || !value.trim()) throw new Error(`profile.installerConfiguration.${key} must be a non-empty string.`);
+    if (key === 'baseUrl' || key === 'apiDocsUrl') {
+      let url;
+      try { url = new URL(value); } catch {}
+      if (!url || !['http:', 'https:'].includes(url.protocol)) throw new Error(`profile.installerConfiguration.${key} must be a valid HTTP(S) URL.`);
+      env[name] = url.toString().replace(/\/$/, '');
+    } else env[name] = value;
+  }
+  return env;
+}
+
+function frozenInstallerEnvironment(candidate) {
+  const env = candidate.installerEnvironment;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) throw new Error('Candidate predates frozen Installer configuration; use --fresh.');
+  for (const name of Object.keys(env)) if (!Object.values(INSTALLER_CONFIGURATION_ENV).includes(name)) throw new Error(`Unexpected frozen Installer environment field: ${name}.`);
+  return installerConfigurationEnvironment(Object.fromEntries(Object.entries(INSTALLER_CONFIGURATION_ENV)
+    .filter(([, name]) => env[name] !== undefined).map(([key, name]) => [key, env[name]])));
+}
+
+function inspectHostCommands(tools, { platform = process.platform, find = executable, execute = execFileSync, exists = fs.existsSync } = {}) {
   const problems = [], found = {};
   const directories = [tools.node && path.dirname(tools.node), tools.vp && path.dirname(tools.vp)].filter(Boolean);
   const required = ['git', 'npm', 'corepack', ...(platform === 'darwin' ? [
@@ -115,6 +197,25 @@ function inspectHostCommands(tools, { platform = process.platform, find = execut
     try { execute(found[name], ['--version'], options); }
     catch { problems.push(`${name} is installed but cannot run with the selected Node toolchain.`); }
   }
+  for (const name of ['cargo', 'rustc']) if (tools[name]) {
+    try {
+      const output = execute(tools[name], name === 'rustc' ? ['-vV'] : ['--version'], options);
+      if (name === 'rustc') {
+        const version = output.match(/^release: (\d+)\.(\d+)\./m);
+        if (!version || Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 95)) problems.push('Rust 1.95 or newer is required for the native resource monitor. Set profile.cargo and profile.rustc to a supported toolchain.');
+      }
+    } catch { problems.push(`${name} is installed but cannot run. Select working cargo and rustc binaries in the release profile.`); }
+  }
+  for (const name of ['cargoXwin', 'clang', 'lldLink']) if (tools[name]) {
+    try { execute(tools[name], ['--version'], options); }
+    catch { problems.push(`${name} is installed but cannot run. Set profile.${name} to a working Windows cross-build tool.`); }
+  }
+  if (platform === 'darwin' && tools.rustc) for (const target of ['aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
+    try {
+      const libraries = execute(tools.rustc, ['--print', 'target-libdir', '--target', target], options).trim();
+      if (!path.isAbsolute(libraries) || !exists(libraries)) throw new Error('Target libraries are missing');
+    } catch { problems.push(`Selected Rust toolchain lacks ${target} standard libraries; install that target before building.`); }
+  }
   if (found.xcrun) for (const name of ['clang', 'notarytool', 'stapler']) {
     try { execute(found.xcrun, ['--find', name], options); }
     catch { problems.push(`The selected Xcode toolchain cannot locate ${name}; configure xcode-select before building.`); }
@@ -122,9 +223,13 @@ function inspectHostCommands(tools, { platform = process.platform, find = execut
   return problems;
 }
 
-async function preflight(settings, { disk = true, directory } = {}) {
+async function preflight(settings, { disk = true, directory, frozenCandidate } = {}) {
   const { profile, tools, repos } = settings;
   const problems = [];
+  let installerEnvironment;
+  try { installerEnvironment = frozenCandidate ? frozenInstallerEnvironment(frozenCandidate) : installerConfigurationEnvironment(profile.installerConfiguration); }
+  catch (error) { problems.push(error.message); }
+  if (/\s/.test(directory || profile.outputRoot || '')) problems.push('The local Windows native cross-build requires an output path without spaces. Choose a path such as ~/Documents/TritonAI-builds.');
   if (process.platform !== 'darwin') problems.push('The Mac/Windows local recipe runs on the configured Mac release host.');
   for (const [name, file] of Object.entries(tools)) if (!file) problems.push(`Missing ${name}; set '${name}' in ${settings.profileFile}.`);
   problems.push(...inspectHostCommands(tools));
@@ -172,7 +277,7 @@ async function preflight(settings, { disk = true, directory } = {}) {
     if (!Number.isFinite(minimum) || minimum < 10) problems.push('minimumFreeGiB must be at least 10. Default: 35 for two platforms.');
     else if (free < minimum) problems.push(`${free.toFixed(1)} GiB free; ${minimum} GiB required at ${ancestor}. Choose a larger outputRoot or reclaim inactive build staging.`);
   }
-  return { problems, configuration, identity, notary };
+  return { problems, configuration, identity, notary, installerEnvironment };
 }
 
 async function freezeTools(tools) {
@@ -192,6 +297,7 @@ async function assertToolIdentities(candidate) {
 }
 
 async function freeze(options, settings, ready) {
+  const installerEnvironment = frozenInstallerEnvironment({ installerEnvironment: ready.installerEnvironment });
   const sources = {};
   for (const name of ['harness', 'installer', 'skills']) sources[name] = { repo: settings.repos[name], ...resolveRef(settings.repos[name], options[name] || 'main') };
   const installerPackage = JSON.parse(git(sources.installer.repo, 'show', `${sources.installer.commit}:package.json`));
@@ -203,7 +309,7 @@ async function freeze(options, settings, ready) {
   const configuration = Object.fromEntries(pluginIds.map(id => [id, ready.configuration[id]]));
   return { schemaVersion: 1, version: options.version, sources, pluginIds, catalogSelection: !options.plugins,
     ...await freezeTools(settings.tools), profileFile: settings.profileFile, configurationFile: settings.profile.pluginConfigurationFile,
-    configurationSha256: hash(JSON.stringify(configuration)), developerId: ready.identity,
+    configurationSha256: hash(JSON.stringify(configuration)), installerEnvironment, developerId: ready.identity,
     notary: { ...ready.notary, keySha256: await treeHash(ready.notary.keyFile) },
     selectedAt: new Date().toISOString(), published: false };
 }
@@ -246,7 +352,7 @@ async function main(args = process.argv.slice(2)) {
     candidate = read(candidateFile); assertResumeSelections(candidate, options);
     await assertToolIdentities(candidate);
     if (await treeHash(candidate.notary.keyFile) !== candidate.notary.keySha256) throw new Error('Signing inputs changed; use --fresh.');
-    const ready = await preflight({ ...settings, tools: candidate.tools, repos: Object.fromEntries(Object.entries(candidate.sources).map(([name, source]) => [name, source.repo])), profile: { ...settings.profile, pluginConfigurationFile: candidate.configurationFile, developerId: candidate.developerId, notarizationConfig: candidate.notary.configFile } }, { directory });
+    const ready = await preflight({ ...settings, tools: candidate.tools, repos: Object.fromEntries(Object.entries(candidate.sources).map(([name, source]) => [name, source.repo])), profile: { ...settings.profile, pluginConfigurationFile: candidate.configurationFile, developerId: candidate.developerId, notarizationConfig: candidate.notary.configFile } }, { directory, frozenCandidate: candidate });
     if (ready.problems.length) throw new Error('Release preflight:\n- ' + ready.problems.join('\n- '));
   } else {
     const ready = await preflight(settings, { directory });
@@ -274,5 +380,5 @@ async function main(args = process.argv.slice(2)) {
   console.log(`Local candidate: ${path.join(directory, 'handoff')}\nReport: ${path.join(directory, 'handoff/report.json')}`);
 }
 
-if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { parseArgs, executable, resolveRef, profileFor, cleanEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, main };
+if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = failureExitCode(error); });
+module.exports = { parseArgs, executable, resolveRef, profileFor, rustTools, cleanEnvironment, installerConfigurationEnvironment, frozenInstallerEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, failureExitCode, main };

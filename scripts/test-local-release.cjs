@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { parseArgs, resolveRef, cleanEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freezeTools, assertToolIdentities, hash, save } = require('./local-release.cjs');
+const { parseArgs, resolveRef, profileFor, rustTools, cleanEnvironment, installerConfigurationEnvironment, frozenInstallerEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freeze, freezeTools, assertToolIdentities, hash, save, failureExitCode } = require('./local-release.cjs');
 const { makeBuildRecipe, assertVersionOnly, executeWithEnvironment } = require('./local-release-stages.cjs');
 const { run } = require('./release-runner.cjs');
 
@@ -66,6 +66,45 @@ test('release environment excludes ambient build overrides without mutating pare
   assert.equal(result.Node_Path, undefined); assert.equal(result.Electron_Run_As_Node, undefined);
 });
 
+test('Installer configuration requires explicit valid values and leaves omitted defaults to its source', () => {
+  assert.deepEqual(installerConfigurationEnvironment({ baseUrl: 'https://api.example.test/v1/' }), { UCSD_AI_BASE_URL: 'https://api.example.test/v1' });
+  assert.deepEqual(installerConfigurationEnvironment({ baseUrl: 'https://api.example.test/v1', apiDocsUrl: 'https://docs.example.test/', codexModel: 'selected', restrictedCodexModel: 'restricted', externalModelProbe: 'probe' }), {
+    UCSD_AI_BASE_URL: 'https://api.example.test/v1', UCSD_AI_DOCS_URL: 'https://docs.example.test', UCSD_CODEX_MODEL: 'selected', UCSD_RESTRICTED_CODEX_MODEL: 'restricted', UCSD_EXTERNAL_MODEL_PROBE: 'probe',
+  });
+  for (const configuration of [undefined, null, [], {}, { baseUrl: '' }, { baseUrl: 42 }, { baseUrl: 'not a URL' }, { baseUrl: 'file:///tmp/api' },
+    { baseUrl: 'https://api.example.test', apiDocsUrl: null }, { baseUrl: 'https://api.example.test', codexModel: [] },
+    { baseUrl: 'https://api.example.test', restrictedCodexModel: ' ' }, { baseUrl: 'https://api.example.test', baseURL: 'typo' }]) {
+    assert.throws(() => installerConfigurationEnvironment(configuration), /installerConfiguration/);
+  }
+  assert.throws(() => frozenInstallerEnvironment({}), /use --fresh/);
+  assert.throws(() => frozenInstallerEnvironment({ installerEnvironment: { UCSD_AI_BASE_URL: 'https://api.example.test', NODE_OPTIONS: 'unreviewed' } }), /Unexpected frozen Installer environment field/);
+});
+
+test('freeze persists Installer configuration and resume ignores changed profile and ambient values', async t => {
+  const root = fixture(t), origin = repo(root, 'config-origin'), checkout = path.join(root, 'config-checkout');
+  const original = git(origin, 'rev-parse', 'HEAD');
+  save(path.join(origin, 'package.json'), { version: '0.3.3', scripts: { 'release:local': 'node scripts/local-release.cjs' } });
+  save(path.join(origin, 'config/managed-plugin-catalog.json'), { source: { commit: original }, packages: [{ pluginId: 'github' }] });
+  git(origin, 'add', '.'); git(origin, 'commit', '-m', 'release configuration fixture');
+  execFileSync('git', ['clone', origin, checkout], { stdio: 'pipe' });
+  const configurationFile = path.join(root, 'plugin-config.json'), keyFile = path.join(root, 'notary-key');
+  save(configurationFile, { github: {} }); fs.writeFileSync(keyFile, 'fixture');
+  const settings = { profileFile: path.join(root, 'profile.json'), profile: { pluginConfigurationFile: configurationFile, installerConfiguration: { baseUrl: 'https://api.example.test/v1' } },
+    repos: Object.fromEntries(['harness', 'installer', 'plugins', 'skills'].map(name => [name, checkout])), tools: { node: process.execPath } };
+  const ready = { configuration: { github: {} }, identity: 'Fixture', notary: { keyFile }, installerEnvironment: installerConfigurationEnvironment(settings.profile.installerConfiguration) };
+  const candidate = await freeze({ version: '0.3.4', plugins: 'main' }, settings, ready);
+  const candidateFile = path.join(root, 'candidate.json'); save(candidateFile, candidate);
+  settings.profile.installerConfiguration.baseUrl = 'https://changed.example.test';
+  ready.installerEnvironment.UCSD_AI_BASE_URL = 'https://also-changed.example.test';
+  const saved = JSON.parse(fs.readFileSync(candidateFile, 'utf8'));
+  const frozen = frozenInstallerEnvironment(saved);
+  assert.deepEqual(frozen, { UCSD_AI_BASE_URL: 'https://api.example.test/v1' });
+  assert.deepEqual(candidate.installerEnvironment, frozen);
+  const ambient = cleanEnvironment({ UCSD_AI_BASE_URL: 'https://ambient.example.test', UCSD_CODEX_MODEL: 'ambient-model' });
+  assert.deepEqual({ ...ambient, ...frozen }, { PATH: '', UCSD_AI_BASE_URL: 'https://api.example.test/v1' });
+  assert.equal(frozen.UCSD_CODEX_MODEL, undefined, 'the frozen source selects the default model');
+});
+
 test('host preflight reports missing package managers and packaging utilities before building', () => {
   const missing = new Set(['corepack', 'hdiutil', '/usr/sbin/lsof']);
   const problems = inspectHostCommands({}, { platform: 'darwin', find: name => missing.has(name) ? null : name, execute: () => '' });
@@ -83,6 +122,66 @@ test('host preflight detects unusable package managers and incomplete selected X
   assert.ok(problems.some(message => message.includes('Xcode toolchain cannot locate stapler')));
   assert.ok(calls.some(call => call.join(' ') === 'xcrun --find notarytool'));
   assert.ok(calls.some(call => call.join(' ') === 'xcrun --find clang'));
+});
+test('Rust selection resolves rustup proxies and honors explicit compiler paths', () => {
+  const calls = [];
+  const options = { find: name => name === 'rustup' ? '/proxy/rustup' : name, realpath: file => file, execute: (file, args) => {
+    calls.push([file, ...args]); return `/toolchain/bin/${args[1]}\n`;
+  } };
+  assert.deepEqual(rustTools({}, options), { cargo: '/toolchain/bin/cargo', rustc: '/toolchain/bin/rustc' });
+  assert.deepEqual(calls, [['/proxy/rustup', 'which', 'cargo'], ['/proxy/rustup', 'which', 'rustc']]);
+  assert.deepEqual(rustTools({ cargo: '/fixed/cargo', rustc: '/fixed/rustc' }, options), { cargo: '/fixed/cargo', rustc: '/fixed/rustc' });
+  assert.equal(calls.length, 2, 'explicit ordinary compilers must not be replaced by the default rustup selection');
+});
+test('explicit symlink and hardlink rustup proxies freeze selected toolchain binaries and derive their linker', { skip: process.platform === 'win32' }, async t => {
+  const root = fixture(t), proxyBin = path.join(root, 'custom-rustup/bin'), toolchain = path.join(root, 'selected-toolchain');
+  const writeExecutable = (file, contents) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, contents, { mode: 0o755 }); return file; };
+  const cargo = writeExecutable(path.join(toolchain, 'bin/cargo'), '#!/bin/sh\nexit 0\n');
+  const rustc = writeExecutable(path.join(toolchain, 'bin/rustc'), '#!/bin/sh\nexit 0\n');
+  const host = `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`;
+  const linker = writeExecutable(path.join(toolchain, 'lib/rustlib', host, 'bin/gcc-ld/lld-link'), '#!/bin/sh\nexit 0\n');
+  // This selector deliberately lives outside ~/.cargo and returns a different
+  // toolchain from the user's default rustup installation.
+  const selector = writeExecutable(path.join(proxyBin, 'rustup'), `#!/bin/sh\n[ "$1" = which ] || exit 1\ncase "$2" in cargo|rustc) printf '%s/%s\\n' '${toolchain}/bin' "$2" ;; *) exit 1 ;; esac\n`);
+  fs.symlinkSync('rustup', path.join(proxyBin, 'rustc'));
+  fs.linkSync(selector, path.join(proxyBin, 'cargo'));
+  const profilePath = path.join(root, 'profile.json');
+  save(profilePath, { schemaVersion: 1, node: process.execPath, vp: cargo, clang: cargo, cargoXwin: cargo, wine: cargo,
+    cargo: path.join(proxyBin, 'cargo'), rustc: path.join(proxyBin, 'rustc') });
+  const settings = profileFor({ profile: profilePath });
+  assert.equal(settings.tools.cargo, fs.realpathSync(cargo));
+  assert.equal(settings.tools.rustc, fs.realpathSync(rustc));
+  assert.equal(settings.tools.lldLink, fs.realpathSync(linker));
+  const frozen = await freezeTools({ cargo: settings.tools.cargo, rustc: settings.tools.rustc });
+  assert.equal(frozen.tools.cargo, fs.realpathSync(cargo));
+  assert.equal(frozen.tools.rustc, fs.realpathSync(rustc));
+  assert.notEqual(frozen.toolIdentities.rustc.sha256, hash(fs.readFileSync(selector)));
+});
+test('an explicit unresolved rustup proxy fails before it can be frozen', { skip: process.platform === 'win32' }, t => {
+  const root = fixture(t), selector = path.join(root, 'rustup'), proxy = path.join(root, 'rustc');
+  fs.writeFileSync(selector, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  fs.symlinkSync(selector, proxy);
+  assert.throws(() => rustTools({ rustc: proxy }, { execute: () => { throw new Error('toolchain unavailable'); } }), /Cannot resolve the selected rustc rustup proxy/);
+});
+test('preflight rejects broken and unsupported Rust before source checks', () => {
+  const tools = { cargo: '/fixed/cargo', rustc: '/fixed/rustc' };
+  const options = { platform: 'darwin', find: name => name, exists: () => true, execute: (file) => {
+    if (file === tools.rustc) throw new Error('dyld: missing LLVM dependency');
+    return '';
+  } };
+  assert.ok(inspectHostCommands(tools, options).some(problem => problem.includes('rustc is installed but cannot run')));
+  options.execute = file => file === tools.rustc ? 'rustc 1.94.0\nrelease: 1.94.0\n' : '';
+  assert.ok(inspectHostCommands(tools, options).some(problem => problem.includes('Rust 1.95 or newer')));
+  options.execute = (file, args) => args.includes('target-libdir') ? '/toolchain/target/lib' : file === tools.rustc ? 'rustc 1.95.0\nrelease: 1.95.0\n' : '';
+  assert.deepEqual(inspectHostCommands(tools, options), []);
+  options.exists = () => false;
+  assert.ok(inspectHostCommands(tools, options).some(problem => problem.includes('lacks x86_64-pc-windows-msvc')));
+  const env = cleanEnvironment({ PATH: '/broken/bin', RUSTC: '/broken/rustc', RUSTC_WRAPPER: '/ambient', CARGO_BUILD_TARGET: 'wrong-target' }, tools);
+  assert.equal(env.PATH.split(path.delimiter)[0], '/fixed');
+  assert.equal(env.RUSTC, tools.rustc);
+  assert.equal(env.CARGO, tools.cargo);
+  assert.equal(env.RUSTC_WRAPPER, undefined);
+  assert.equal(env.CARGO_BUILD_TARGET, undefined);
 });
 test('version-only preparation refuses unrelated edits even in recognized manifests', t => {
   const root = fixture(t), cwd = repo(root, 'installer'), source = { commit: git(cwd, 'rev-parse', 'HEAD') };
@@ -103,6 +202,8 @@ test('recipe allows both platforms and their downstream installers to overlap wi
   assert.deepEqual(stage('installer-mac').needs, ['harness-mac']);
   assert.ok(!stage('installer-win').needs.includes('installer-mac'));
   assert.ok(stage('harness-mac').outputs.some(f => f.endsWith('harness-mac-verification.json')));
+  assert.ok(stage('installer-win').outputs.some(f => f.endsWith('installer-win-verification.json')));
+  assert.ok(stage('handoff').outputs.some(f => f.endsWith('installer-win-verification.json')));
   assert.ok(stage('handoff').outputs.some(f => f.endsWith('.exe')));
   assert.ok(stage('harness-win').inputs.some(f => f.sha256 === 'e'.repeat(64)));
 });
@@ -152,11 +253,34 @@ test('interrupting a child prevents downstream work even when it handles the sig
     { id: 'first', cwd: root, git: false, commands: [[process.execPath, '-e', "process.on('SIGINT',()=>process.exit(0));require('fs').writeFileSync('ready','yes');setInterval(()=>{},1000)"]], outputs: ['ready'] },
     { id: 'next', cwd: root, git: false, needs: ['first'], commands: [[process.execPath, '-e', "require('fs').writeFileSync('must-not-run','yes')"]], outputs: ['must-not-run'] }
   ] };
-  const stopped = assert.rejects(run(recipe, path.join(root, 'state'), { executeCommand: executeWithEnvironment({ PATH: process.env.PATH }) }), /SIGINT/);
+  const stopped = assert.rejects(run(recipe, path.join(root, 'state'), { executeCommand: executeWithEnvironment({ PATH: process.env.PATH }) }), error => {
+    assert.match(error.message, /SIGINT/);
+    assert.equal(failureExitCode(error), 130);
+    return true;
+  });
   for (let attempt = 0; attempt < 100 && !fs.existsSync(ready); attempt++) await new Promise(resolve => setTimeout(resolve, 20));
   process.emit('SIGINT');
   await stopped;
   assert.ok(fs.existsSync(ready));
   assert.ok(!fs.existsSync(path.join(root, 'must-not-run')));
   assert.ok(!fs.existsSync(path.join(root, 'state/runner.lock')));
+});
+
+test('production stage CLI preserves cancellation status through its child and runner', async t => {
+  const root = fixture(t), candidate = path.join(root, 'candidate.json');
+  save(candidate, { tools: { vp: process.execPath } });
+  save(path.join(root, 'prepared.json'), { dirs: { 'harness-win': root } });
+  const log = fs.openSync(path.join(root, 'stage.log'), 'a');
+  try {
+    for (const status of [130, 143]) {
+      fs.writeFileSync(path.join(root, 'i'), `process.exit(${status});`);
+      await assert.rejects(executeWithEnvironment({ PATH: process.env.PATH })(
+        [process.execPath, path.join(__dirname, 'local-release-stages.cjs'), 'harness-win-dependencies', candidate],
+        { id: 'cancellation', cwd: root }, log), error => {
+        assert.equal(error.exitCode, status);
+        assert.equal(failureExitCode(error), status);
+        return true;
+      });
+    }
+  } finally { fs.closeSync(log); }
 });

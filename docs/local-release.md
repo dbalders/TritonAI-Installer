@@ -34,6 +34,9 @@ Save `~/.config/tritonai/release.json` (or supply `--profile /absolute/file.json
 {
   "schemaVersion": 1,
   "pluginConfigurationFile": "/absolute/private/plugin-configuration.json",
+  "installerConfiguration": {
+    "baseUrl": "https://tritonai-api.ucsd.edu/v1"
+  },
   "outputRoot": "/absolute/TritonAI-builds",
   "developerId": "Your Developer ID name (TEAMID)",
   "minimumFreeGiB": 35
@@ -45,19 +48,36 @@ Keep credentials out of Git. The runner loads this file, validates the selected 
 configuration before packaging, and stores its hash in the candidate record. It never
 searches transcripts, old apps, or unrelated files for missing configuration.
 
+`installerConfiguration.baseUrl` is required and sets the Installer's managed API URL.
+Optional `apiDocsUrl`, `codexModel`, `restrictedCodexModel`, and `externalModelProbe` fields
+override the corresponding Installer settings. Omit optional fields to use the selected
+Installer source's defaults. These values come only from the profile and are frozen in
+`candidate.json`; ambient environment variables cannot supply or override them. Resuming
+uses the original candidate values even if the profile changes. Use `--fresh` to select
+new values or replace an older candidate that lacks frozen Installer configuration.
+
 The host needs Node 24, Vite+ (`vp`), Git, Xcode command-line tools, a Developer ID signing
-identity, and Wine (`wine64`). The runner finds installed Node 24 under nvm and `vp` under
+identity, Wine (`wine64`), Rust 1.95 or newer, and `cargo-xwin`. Rust needs the
+`aarch64-apple-darwin` and `x86_64-pc-windows-msvc` targets. The runner finds installed Node 24 under nvm and `vp` under
 `~/.vite-plus/bin`; optional `node`, `vp`, and `wine` profile fields select absolute paths.
 Notarization uses `~/.agents/secrets/appstore/config.json` or the profile's
 `notarizationConfig` path, with `keyFile`, `keyId`, and `issuerId` fields. Optional
 `repositories` fields (`harness`, `installer`, `plugins`, `skills`) override sibling paths.
-Preflight checks npm/Corepack, system packaging utilities, and the selected Xcode compiler,
-notarization and stapling tools before dependency installation starts.
+Preflight checks npm/Corepack, system packaging utilities, Rust, and the selected Xcode
+and Windows cross-compilation tools before dependency installation starts. Rustup proxies
+resolve to actual toolchain binaries before freezing; optional `cargo` and `rustc` profile
+fields pin those paths explicitly. `cargoXwin`, `clang`, and `lldLink` can also select exact
+cross-build executables. A broken Homebrew Rust installation does not override these tools.
 
 Windows tooling is provisioned from Electron Builder's checksum-verified official downloads.
 NSIS 3.0.4.1's compiler is verified against its pinned SHA-256 on every use. Each platform
 has its own Electron cache, temporary directory, build outputs, and worktrees; Windows
 has its own Wine prefix and compiler launcher. Shared tool caches are never patched.
+The Windows resource monitor is compiled from the frozen Harness source with the MSVC
+target using `cargo-xwin`, a candidate-owned Microsoft SDK cache, and the selected Xcode
+compiler and Rust linker. Its source, tool, and binary hashes accompany the handoff.
+The native cache path must contain no spaces for the supported cargo-xwin invocation;
+use an output root such as `~/Documents/TritonAI-builds`.
 
 ## Check, run, resume
 
@@ -79,8 +99,8 @@ a new timestamped candidate with newly resolved sources; `--output /absolute/new
 chooses a specific location. A forcibly killed process may leave a lock: confirm its recorded
 PID and children have stopped before removing that candidate's lock.
 
-The source test gate runs the repository's test suite with two workers,
-so testing does not exhaust the release host while the other lane prepares.
+The source test gate runs non-server tests with two workers, then runs the server
+suite with its own serial SQLite/Git test configuration. Both groups must pass.
 Node, Vite+, and Wine resolve to immutable executable paths and hashes; a changed executable
 or Windows compiler receipt requires a fresh candidate. Notarization credentials are added
 only to macOS signing/package commands.
@@ -91,6 +111,8 @@ helper checks the final signed/notarized DMG and updater ZIP, actual plugin byte
 isolated packaged boot. Windows extraction verifies actual plugin payload bytes; native
 Windows installation/boot remains explicitly unverified until `verify:win-installer:native`
 runs against the exact outputs on Windows.
+Both Windows Installer EXEs are also extracted and checked for the exact bundled Harness,
+skills, Codex CLI, Node runtime, and managed configuration. The handoff retains that proof.
 
 Candidate worktrees carry a persistent local-candidate marker. The public publishing commands
 reject those worktrees, including after their environment variables are cleared. Publishing

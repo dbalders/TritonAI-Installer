@@ -16,7 +16,7 @@ const {
   writeReleaseChecksumManifest
 } = require("./release-contract");
 const { expectedWindowsExecutables } = require("./windows-signing");
-const { createDmgFromApp } = require("./package-macos-release");
+const { createDmgFromApp, notarizeDmg } = require("./package-macos-release");
 const {
   activateStagedVendors,
   assertExplicitHarnessSource,
@@ -271,6 +271,7 @@ function main() {
     assert(!macReleaseSource.includes('"SetFile"'));
     assert(!macReleaseSource.includes('"osascript"'));
     testNativeMacDmgCreation(tempRoot);
+    testNotarizationRetry(tempRoot);
     assert(
       macReleaseSource.includes('"--production"'),
       "macOS release packaging must use the reviewed production plugins"
@@ -424,6 +425,83 @@ function writePackagedBootProofs(repositoryRoot, version, artifacts) {
       candidates
     }));
   }
+}
+
+function testNotarizationRetry(tempRoot) {
+  const dmg = path.join(tempRoot, "notarization-fixture.dmg");
+  const id = "2486e1b0-fd66-4bcc-aa5a-e8deb247d439";
+  const notary = { appleApiKey: "/private/test-key.p8", appleApiKeyId: "PRIVATE-KEY-ID", appleApiIssuer: "PRIVATE-ISSUER" };
+  const response = (status, submissionId = id) => ({ status: 0, stdout: JSON.stringify({ id: submissionId, status }) });
+  const timeout = { status: 1, stderr: "Error Domain=NSURLErrorDomain Code=-1001: The request timed out." };
+  const runCase = (waitResults, beforeWait = () => {}, submitted = response(undefined)) => {
+    fs.writeFileSync(dmg, "signed DMG bytes");
+    const commands = [];
+    const logs = [];
+    const sleeps = [];
+    const invoke = () => notarizeDmg(dmg, notary, {
+      execute: (command, args, options) => {
+        assert.strictEqual(command, "xcrun");
+        assert.strictEqual(options.encoding, "utf8");
+        assert.deepStrictEqual(options.stdio, ["ignore", "pipe", "pipe"]);
+        assert(Number.isInteger(options.timeout) && options.timeout > 0);
+        assert(args.includes("--output-format") && args.includes("json"));
+        commands.push(args);
+        if (args[1] === "submit") {
+          assert.strictEqual(args[2], dmg);
+          assert(args.includes("--no-wait") && !args.includes("--wait"));
+          return submitted;
+        }
+        assert.strictEqual(args[1], "wait");
+        assert.strictEqual(args[2], id, "a retry must use the original submission ID");
+        assert(args.includes("--timeout"));
+        beforeWait();
+        return waitResults.shift();
+      },
+      sleep: (milliseconds) => sleeps.push(milliseconds),
+      log: (message) => logs.push(message)
+    });
+    return { invoke, commands, logs, sleeps };
+  };
+
+  const recovered = runCase([timeout, { error: { code: "ETIMEDOUT" }, status: null, signal: "SIGTERM" }, response("In Progress"), response("Accepted")]);
+  const accepted = recovered.invoke();
+  assert.strictEqual(accepted.id, id);
+  assert.strictEqual(accepted.status, "Accepted");
+  assert.strictEqual(accepted.sha256, require("crypto").createHash("sha256").update("signed DMG bytes").digest("hex"));
+  assert.strictEqual(recovered.commands.filter(args => args[1] === "submit").length, 1);
+  assert.strictEqual(recovered.commands.filter(args => args[1] === "wait").length, 4);
+  assert.deepStrictEqual(recovered.sleeps, [5000, 5000, 5000]);
+
+  const rejected = runCase([{ ...response("Invalid"), status: 1 }, response("Accepted")]);
+  assert.throws(rejected.invoke, /rejected submission/);
+  assert.strictEqual(rejected.commands.length, 2, "rejection must fail immediately");
+  assert.strictEqual(rejected.sleeps.length, 0);
+  const exhausted = runCase(Array(6).fill(timeout));
+  assert.throws(exhausted.invoke, new RegExp(`retry limit reached.*${id}`));
+  assert.strictEqual(exhausted.commands.length, 7, "retry budget must not trigger another upload");
+  assert.strictEqual(exhausted.sleeps.length, 5);
+  const unauthorized = runCase([{ status: 1, stderr: `HTTP 401 ${Object.values(notary).join(" ")}` }]);
+  assert.throws(unauthorized.invoke, (error) => {
+    assert.match(error.message, /Could not verify/);
+    for (const secret of Object.values(notary)) assert(!error.message.includes(secret));
+    return true;
+  });
+  assert.strictEqual(unauthorized.commands.length, 2, "authentication failures must not be retried");
+  for (const secret of Object.values(notary)) {
+    assert(!JSON.stringify(unauthorized.logs).includes(secret), "status logs must not expose notarization credentials");
+  }
+  assert.throws(runCase([response("Accepted", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")]).invoke, /different submission ID/);
+  const interrupted = runCase([{ status: null, signal: "SIGTERM", stderr: "network connection failed" }]);
+  assert.throws(interrupted.invoke, /Could not verify/);
+  assert.strictEqual(interrupted.commands.length, 2, "a real interruption must not be retried as a network failure");
+  assert.throws(runCase([response("Unexpected")]).invoke, /Could not verify/);
+  assert.throws(runCase([response("Accepted")], () => fs.writeFileSync(dmg, "replaced DMG bytes")).invoke, /DMG changed/);
+  const missingId = runCase([], () => {}, { status: 1, stdout: "not JSON" });
+  assert.throws(missingId.invoke, /did not return a submission ID/);
+  assert.strictEqual(missingId.commands.length, 1, "an uncertain upload must never be repeated automatically");
+  const failedUpload = runCase([], () => {}, { ...response(undefined), status: 1 });
+  assert.throws(failedUpload.invoke, /upload did not complete successfully/);
+  assert.strictEqual(failedUpload.commands.length, 1);
 }
 
 function testNativeMacDmgCreation(tempRoot) {

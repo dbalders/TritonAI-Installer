@@ -227,18 +227,7 @@ function diskImageCapacityMib(sourceRoot) {
 function notarizeAndStapleDmgs(notary) {
   const candidates = [];
   for (const dmg of releaseFiles(".dmg")) {
-    run("xcrun", [
-      "notarytool",
-      "submit",
-      dmg,
-      "--key",
-      notary.appleApiKey,
-      "--key-id",
-      notary.appleApiKeyId,
-      "--issuer",
-      notary.appleApiIssuer,
-      "--wait"
-    ]);
+    notarizeDmg(dmg, notary);
     run("xcrun", ["stapler", "staple", dmg]);
     run("xcrun", ["stapler", "validate", dmg]);
     run("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=4", dmg]);
@@ -247,6 +236,56 @@ function notarizeAndStapleDmgs(notary) {
   }
   if (candidates.length !== 1) throw new Error(`Expected exactly one macOS Installer DMG; found ${candidates.length}.`);
   writePackagedBootProof(candidates);
+}
+
+function notarizeDmg(dmg, notary, {
+  execute = spawnSync,
+  sleep = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds),
+  log = console.log
+} = {}) {
+  const digest = sha256(dmg);
+  const auth = ["--key", notary.appleApiKey, "--key-id", notary.appleApiKeyId, "--issuer", notary.appleApiIssuer];
+  const invoke = (args, timeout) => execute("xcrun", ["notarytool", ...args, ...auth, "--output-format", "json"], {
+    cwd: root, env: process.env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout, maxBuffer: 1024 * 1024
+  });
+  const receipt = (result) => {
+    try { return JSON.parse(result.stdout || ""); } catch { return null; }
+  };
+  // Upload once. A wait timeout does not cancel Apple's processing, so every
+  // subsequent request must use this ID instead of uploading the DMG again.
+  const submitted = invoke(["submit", dmg, "--no-wait"], 10 * 60_000);
+  const id = receipt(submitted)?.id;
+  if (typeof id !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)) {
+    throw new Error("Apple notarization did not return a submission ID; no automatic re-upload was attempted.");
+  }
+  log(`Apple notarization submission: ${id}; SHA256: ${digest}`);
+  if (submitted.error || submitted.status !== 0) {
+    throw new Error(`Apple notarization upload did not complete successfully for submission ${id}; no automatic re-upload was attempted.`);
+  }
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    const result = invoke(["wait", id, "--timeout", "120s"], 150_000);
+    const info = receipt(result);
+    if (info?.id && info.id !== id) throw new Error(`Apple notarization returned a different submission ID for ${id}.`);
+    if (info?.status === "Invalid" || info?.status === "Rejected") {
+      throw new Error(`Apple notarization rejected submission ${id}.`);
+    }
+    if (!result.error && result.status === 0 && info?.id === id && info.status === "Accepted") {
+      if (sha256(dmg) !== digest) throw new Error(`DMG changed after notarization submission ${id}.`);
+      return { id, status: "Accepted", sha256: digest };
+    }
+    const timedOut = result.error?.code === "ETIMEDOUT";
+    const transient = timedOut
+      || /NSURLErrorDomain[^\n]*Code=-100[134569]\b|\b(?:timed out|timeout|connection reset|network connection|HTTP (?:429|5\d\d))\b/i.test(result.stderr || "");
+    if ((result.signal && !timedOut) || (info?.status && info.status !== "In Progress" && info.status !== "Accepted")
+      || (!transient && !(info?.id === id && info.status === "In Progress"))) {
+      throw new Error(`Could not verify Apple notarization submission ${id}; no automatic re-upload was attempted.`);
+    }
+    if (attempt < 6) {
+      log(`Apple notarization status unavailable or still processing; retrying submission ${id} (${attempt}/6).`);
+      sleep(5_000);
+    }
+  }
+  throw new Error(`Apple notarization status retry limit reached for submission ${id}; no automatic re-upload was attempted.`);
 }
 
 function verifyMountedDmgApp(dmg) {
@@ -350,4 +389,4 @@ function run(command, args, env = process.env) {
 
 if (require.main === module) main();
 
-module.exports = { createDmgFromApp };
+module.exports = { createDmgFromApp, notarizeDmg };

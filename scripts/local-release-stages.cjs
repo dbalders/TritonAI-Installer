@@ -4,9 +4,10 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { isDeepStrictEqual } = require('node:util');
-const { read, save, git, candidateEnvironment, macSigningEnvironment } = require('./local-release.cjs');
+const { read, save, git, candidateEnvironment, macSigningEnvironment, failureExitCode } = require('./local-release.cjs');
 const { treeHash } = require('./release-runner.cjs');
 const { collect } = require('./collect-release-artifacts.cjs');
+const childExitCode = (code, signal) => signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : code || 1;
 
 function executeWithEnvironment(environment) {
   return (command, step, log) => new Promise((resolve, reject) => {
@@ -18,7 +19,9 @@ function executeWithEnvironment(environment) {
     process.on('SIGINT', interrupt); process.on('SIGTERM', terminate);
     const finish = error => { process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', terminate); error ? reject(error) : resolve(); };
     child.once('error', finish);
-    child.once('exit', (code, signal) => finish(code === 0 && !interrupted ? null : new Error(`${step.id} failed (${interrupted || code || signal}); see its stage log.`)));
+    child.once('exit', (code, signal) => finish(code === 0 && !interrupted ? null : Object.assign(
+      new Error(`${step.id} failed (${interrupted || code || signal}); see its stage log.`),
+      { exitCode: childExitCode(code, interrupted || signal) })));
   });
 }
 
@@ -26,7 +29,9 @@ function command(cwd, argv, env = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawn(argv[0], argv.slice(1), { cwd, env, stdio: 'inherit', shell: false });
     child.once('error', reject);
-    child.once('exit', (code, signal) => code === 0 ? resolve() : reject(new Error(`${path.basename(argv[0])} ${argv[1] || ''} failed (${code ?? signal})`)));
+    child.once('exit', (code, signal) => code === 0 ? resolve() : reject(Object.assign(
+      new Error(`${path.basename(argv[0])} ${argv[1] || ''} failed (${code ?? signal})`),
+      { exitCode: childExitCode(code, signal) })));
   });
 }
 
@@ -123,12 +128,12 @@ function harnessFiles(version, platform) {
   const prefix = `TritonAI-Harness-${version}-${platform === 'mac' ? 'arm64' : 'x64'}`;
   return platform === 'mac'
     ? [`${prefix}.dmg`, `${prefix}.dmg.blockmap`, `${prefix}.zip`, `${prefix}.zip.blockmap`, 'latest-mac.yml', 'tritonai-plugin-composition-mac-arm64.json', 'harness-mac-verification.json']
-    : [`${prefix}.exe`, `${prefix}.exe.blockmap`, 'latest.yml', 'tritonai-plugin-composition-win-x64.json', 'harness-win-verification.json'];
+    : [`${prefix}.exe`, `${prefix}.exe.blockmap`, 'latest.yml', 'tritonai-plugin-composition-win-x64.json', 'harness-win-verification.json', 'resource-monitor-win-verification.json'];
 }
 function installerFiles(version, platform) {
   return platform === 'mac' ? [`TritonAI-Installer-${version}-arm64.dmg`, 'packaged-boot.json'] : [
     `TritonAI-Installer-Setup-${version}-x64.exe`, `TritonAI-Installer-Setup-${version}-x64.exe.blockmap`,
-    `TritonAI-Installer-${version}-x64-portable.exe`, 'latest.yml', 'unsigned-release.json', 'SHA256SUMS-windows-unsigned.txt'];
+    `TritonAI-Installer-${version}-x64-portable.exe`, 'latest.yml', 'unsigned-release.json', 'SHA256SUMS-windows-unsigned.txt', 'installer-win-verification.json'];
 }
 
 function makeBuildRecipe(candidateFile, prepared) {
@@ -190,7 +195,12 @@ async function stage(id, candidateFile) {
   }
   if (id.endsWith('-checks')) {
     const kind = id.split('-')[0], cwd = dirs[kind === 'plugins' ? kind : `${kind}-mac`];
-    const commands = kind === 'harness' ? [[c.tools.vp, 'check'], [c.tools.vp, 'run', 'typecheck'], [c.tools.vp, 'test', 'run', '--maxWorkers=2'], [c.tools.vp, 'run', 'build']]
+    // Honor the server's serial SQLite/Git test configuration. The root runner
+    // otherwise discovers those files without loading apps/server/vite.config.ts.
+    const commands = kind === 'harness' ? [[c.tools.vp, 'check'], [c.tools.vp, 'run', 'typecheck'],
+      [c.tools.vp, 'test', 'run', '--maxWorkers=2', '--exclude', 'apps/server/**'],
+      [c.tools.vp, 'test', 'run', '--root', 'apps/server', '--maxWorkers=1'],
+      [c.tools.vp, 'run', 'build']]
       : kind === 'installer' ? [['npm', 'test']] : [['corepack', 'pnpm', 'readiness:local']];
     for (const argv of commands) await command(cwd, argv, { ...process.env, TRITONAI_HARNESS_ROOT: dirs['harness-mac'], TRITONAI_HARNESS_COMMIT: p.commits.harness });
     stamp(id); return;
@@ -204,10 +214,21 @@ async function stage(id, candidateFile) {
     const [kind, platform] = id.split('-'), cwd = dirs[id], env = await platformEnvironment(root, platform, c, p);
     const out = path.join(root, 'harness', platform); fs.mkdirSync(out, { recursive: true });
     if (kind === 'harness') {
+      if (platform === 'win') {
+        const native = await require('./local-release-native.cjs').buildWindowsResourceMonitor({
+          root: path.join(root, 'toolchains/win/native'), harnessRoot: cwd,
+          cargo: c.tools.cargo, rustc: c.tools.rustc, cargoXwin: c.tools.cargoXwin,
+          clang: c.tools.clang, lldLink: c.tools.lldLink,
+        });
+        Object.assign(env, native.env);
+        save(path.join(out, 'resource-monitor-win-verification.json'), native.receipt);
+      }
       // A failed attempt may have left a kept stage. This directory belongs only
       // to this locked candidate lane; completed stages are never rerun here.
       fs.rmSync(env.TMPDIR, { recursive: true, force: true }); fs.mkdirSync(env.TMPDIR, { recursive: true });
-      const args = [c.tools.node, 'scripts/build-desktop-artifact.ts', '--platform', platform, '--target', platform === 'mac' ? 'dmg' : 'nsis', '--arch', platform === 'mac' ? 'arm64' : 'x64', '--output-dir', out];
+      // The Mac finalizer signs the kept app and creates the final DMG. Building
+      // an unsigned DMG here duplicates that work and adds a global mount path.
+      const args = [c.tools.node, 'scripts/build-desktop-artifact.ts', '--platform', platform, '--target', platform === 'mac' ? 'zip' : 'nsis', '--arch', platform === 'mac' ? 'arm64' : 'x64', '--output-dir', out];
       if (platform === 'mac') args.push('--keep-stage');
       await command(cwd, args, env);
       if (platform === 'mac') await command(cwd, [c.tools.node, path.join(__dirname, 'local-release-mac.cjs'), cwd, env.TMPDIR, c.version, out], { ...env, ...macSigningEnvironment(c) });
@@ -218,8 +239,14 @@ async function stage(id, candidateFile) {
         save(path.join(out, 'harness-win-verification.json'), proof);
       }
     } else {
+      Object.assign(env, c.installerEnvironment);
       Object.assign(env, { TRITONAI_HARNESS_RELEASE_BASE: pathToFileURL(out).href, TRITONAI_HARNESS_MAC_RELEASE_BASE: pathToFileURL(out).href, TRITONAI_HARNESS_WIN_RELEASE_BASE: pathToFileURL(out).href });
       await command(cwd, ['npm', 'run', platform === 'mac' ? 'package:mac-release' : 'package:win-installer'], { ...env, ...(platform === 'mac' ? macSigningEnvironment(c) : {}) });
+      if (platform === 'win') {
+        const proof = await require('./local-release-installer.cjs').verifyWindowsInstaller({ installerRoot: cwd,
+          harnessArtifact: path.join(out, `TritonAI-Harness-${c.version}-x64.exe`), version: c.version });
+        save(path.join(cwd, 'artifacts/windows-installer/installer-win-verification.json'), proof);
+      }
     }
     return;
   }
@@ -240,5 +267,5 @@ async function stage(id, candidateFile) {
   throw new Error(`Unknown release stage: ${id}`);
 }
 
-if (require.main === module) stage(process.argv[2], path.resolve(process.argv[3])).catch(error => { console.error(error.message); process.exitCode = 1; });
+if (require.main === module) stage(process.argv[2], path.resolve(process.argv[3])).catch(error => { console.error(error.message); process.exitCode = failureExitCode(error); });
 module.exports = { executeWithEnvironment, command, ensureWorktree, assertVersionOnly, applyVersion, prepare, harnessFiles, installerFiles, makeBuildRecipe, platformEnvironment, stage };

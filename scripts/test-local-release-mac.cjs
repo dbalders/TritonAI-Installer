@@ -4,9 +4,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const { EventEmitter } = require('node:events');
+const { spawn, execFileSync } = require('node:child_process');
 const { test } = require('node:test');
+const { failureExitCode } = require('./local-release.cjs');
 const { findKeptStage, getNotaryConfig, verifyPluginPayload, isolatedBootEnvironment,
-  withMountedDmg, verifyPackagedBoot, finalizeMacRelease } = require('./local-release-mac.cjs');
+  withMountedDmg, verifyPackagedBoot, finalizeMacRelease, processSnapshot, trackBootProcesses } = require('./local-release-mac.cjs');
 
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-release-mac-test-')));
@@ -19,7 +22,7 @@ function fixture(t) {
   fs.mkdirSync(path.join(app, 'Contents', 'Resources'), { recursive: true });
   fs.mkdirSync(release);
   fs.writeFileSync(path.join(app, 'Contents', 'Resources', 'app.asar'), 'fixture-archive');
-  fs.writeFileSync(path.join(stageApp, 'package.json'), JSON.stringify({ version: '0.3.4', t3codeCommitHash: 'b'.repeat(12), build: { productName: 'TritonAI Harness' } }));
+  fs.writeFileSync(path.join(stageApp, 'package.json'), JSON.stringify({ version: '0.3.4', t3codeCommitHash: 'b'.repeat(12), build: { productName: 'TritonAI Harness', mac: { target: ['zip'] } } }));
   const bytes = Buffer.from('plugin implementation');
   const file = { path: 'index.js', size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
   const digest = crypto.createHash('sha256').update(file.path).update('\0').update(String(file.size)).update('\0').update(bytes).update('\0').digest('hex');
@@ -30,13 +33,27 @@ function fixture(t) {
   const entries = {
     'package.json': Buffer.from(JSON.stringify({ version: '0.3.4' })),
     'apps/server/dist/bin.mjs': Buffer.from('github production-integrations tritonai-harness-plugin-composition'),
-    [`${pluginsPath}/manifest.json`]: Buffer.from(JSON.stringify(composition)),
     [`${pluginsPath}/packages/github/index.js`]: bytes,
   };
+  const archivePaths = () => {
+    const names = new Set(Object.keys(entries));
+    for (const name of Object.keys(entries)) {
+      for (let parent = path.posix.dirname(name); parent !== '.'; parent = path.posix.dirname(parent)) names.add(parent);
+    }
+    return [...names];
+  };
   const asar = {
-    extractFile: (_archive, entry) => { assert(entries[entry], `Missing entry ${entry}`); return entries[entry]; },
-    listPackage: () => Object.keys(entries).map((entry) => `/${entry}`),
-    statFile: (_archive, entry) => ({ size: entries[entry].length }),
+    extractFile: (_archive, entry) => {
+      entry = entry.replaceAll('\\', '/');
+      assert(entries[entry], `Missing entry ${entry}`);
+      return entries[entry];
+    },
+    listPackage: () => archivePaths().map((entry) => `/${entry}`),
+    statFile: (_archive, entry) => {
+      entry = entry.replaceAll('\\', '/');
+      assert(archivePaths().includes(entry), `Missing entry ${entry}`);
+      return entries[entry] ? { size: entries[entry].length } : { files: {} };
+    },
   };
   const snapshot = path.join(path.dirname(stageApp), 'plugin-composition-input');
   fs.mkdirSync(snapshot);
@@ -64,19 +81,21 @@ test('resolves partial notary overrides without including key bytes', (t) => {
   assert.throws(() => getNotaryConfig({}, path.join(f.root, 'absent')), /Set APPLE_API_KEY/);
 });
 
-test('checks actual ASAR bytes, inventories and package digests against the frozen selection', (t) => {
+test('checks ASAR plugin bytes against the external proof without requiring an embedded manifest', (t) => {
   const f = fixture(t);
   assert.equal(verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4').fileCount, 1);
   const pluginFile = 'apps/server/dist/production-integrations/packages/github/index.js';
   f.entries[pluginFile] = Buffer.from('corrupted implementation');
-  assert.throws(() => verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4'), /bytes differ/);
+  assert.throws(() => verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4'), /file differs/);
 });
 
 test('rejects unlisted packaged plugin files and different manifests', (t) => {
   const f = fixture(t);
   f.entries['apps/server/dist/production-integrations/packages/github/unlisted.js'] = Buffer.from('extra');
-  assert.throws(() => verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4'), /unlisted or missing/);
+  assert.throws(() => verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4'), /Unexpected packaged plugin entry/);
   delete f.entries['apps/server/dist/production-integrations/packages/github/unlisted.js'];
+  f.entries['apps/server/dist/production-integrations/manifest.json'] = Buffer.from(JSON.stringify(f.composition));
+  assert.equal(verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4').fileCount, 1);
   f.entries['apps/server/dist/production-integrations/manifest.json'] = Buffer.from('{}');
   assert.throws(() => verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4'), /manifest differs/);
 });
@@ -102,18 +121,105 @@ test('retains an attached mountpoint on failed detach', async (t) => {
   assert(fs.existsSync(mount), 'mounted volume must not be recursively removed');
 });
 
-function bootMocks(f, { unsafeUserData = false } = {}) {
+test('process snapshots parse explicit PID ancestry, group and start time fields without matching names', () => {
+  const records = processSnapshot((command, args, options) => {
+    assert.equal(command, '/bin/ps');
+    assert.deepEqual(args, ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=']);
+    assert.equal(options.timeout, 2000);
+    return { stdout: '  100 50 100 Ss Wed Sep  9 16:00:00 2026\n  200 100 200 S Wed Sep  9 16:00:01 2026\n' };
+  });
+  assert.deepEqual(records[1], { pid: 200, ppid: 100, pgid: 200, status: 'S', started: 'Wed Sep 9 16:00:01 2026' });
+  assert.throws(() => processSnapshot(() => ({ stdout: 'not a process record' })), /ownership snapshot/);
+});
+
+test('macOS process fixture freezes and discovers a detached child spawned during cleanup',
+  { skip: process.platform !== 'darwin', timeout: 10_000 }, async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'local-release-process-test-'));
+    const control = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const lateReceipt = path.join(root, 'late-child.json');
+    const source = `const { spawn } = require('node:child_process');
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+      child.once('spawn', () => process.send({ descendantPid: child.pid }));
+      process.once('message', () => {
+        const late = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+        late.once('spawn', () => require('node:fs').writeFileSync(${JSON.stringify(lateReceipt)}, JSON.stringify({ pid: late.pid })));
+      });
+      setInterval(() => {}, 1000);`;
+    const parent = spawn(process.execPath, ['-e', source], { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const read = () => processSnapshot((command, args) => ({ stdout: execFileSync(command, args, { encoding: 'utf8', timeout: 2000 }) }));
+    const killed = [];
+    let requestedLateChild = false;
+    const tracker = trackBootProcesses(parent, read, (pgid, signal) => {
+      if (signal === 'SIGSTOP' && pgid === parent.pid && !requestedLateChild) {
+        requestedLateChild = true;
+        parent.send('fork-before-freeze');
+        const deadline = Date.now() + 2000;
+        while (!fs.existsSync(lateReceipt)) {
+          if (Date.now() >= deadline) throw new Error('Late detached child fixture did not become ready');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+      }
+      if (signal === 'SIGKILL') killed.push(pgid);
+      process.kill(-pgid, signal);
+    }, path.join(root, 'owned-processes.json'));
+    t.after(async () => {
+      try { tracker.forceStop(); await tracker.waitForExit(3000); }
+      finally {
+        if (control.exitCode === null && control.signalCode === null) control.kill('SIGKILL');
+        if (tracker.stopped) fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+    let timer;
+    const { descendantPid } = await new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Owned process fixture did not become ready')), 3000);
+      parent.once('message', resolve);
+      parent.once('error', reject);
+    }).finally(() => clearTimeout(timer));
+    const owned = tracker.capture();
+    assert(owned.some(p => p.pid === descendantPid && p.ppid === parent.pid && p.pgid === descendantPid));
+    assert(!owned.some(p => p.pid === control.pid));
+    tracker.forceStop();
+    await tracker.waitForExit(3000);
+    const latePid = JSON.parse(fs.readFileSync(lateReceipt)).pid;
+    assert.deepEqual(new Set(killed), new Set([descendantPid, latePid, parent.pid]));
+    assert.equal(killed.at(-1), parent.pid);
+    assert(JSON.parse(fs.readFileSync(path.join(root, 'owned-processes.json'))).some(p => p.pid === latePid));
+    assert.equal(control.exitCode, null);
+    assert.equal(control.signalCode, null);
+    process.kill(control.pid, 0);
+  });
+
+function bootMocks(f, { unsafeUserData = false, hungEvaluation = false, hungClose = false, stuckBackend = false, reusedBackend = false, forkDuringCleanup = false, closeSignal } = {}) {
   let launchOptions;
   let closed = false;
+  const child = Object.assign(new EventEmitter(), { pid: 100, exitCode: null, signalCode: null });
+  const signals = new EventEmitter();
+  const killedGroups = [];
+  const signaledGroups = [];
+  let processes = [
+    { pid: 100, ppid: 50, pgid: 100, status: 'S', started: 'Wed Sep 9 16:00:00 2026' },
+    { pid: 200, ppid: 100, pgid: 200, status: 'S', started: 'Wed Sep 9 16:00:01 2026' },
+    { pid: 201, ppid: 200, pgid: 200, status: 'S', started: 'Wed Sep 9 16:00:02 2026' },
+    { pid: 300, ppid: 100, pgid: 100, status: 'S', started: 'Wed Sep 9 16:00:02 2026' },
+    { pid: 900, ppid: 50, pgid: 900, status: 'S', started: 'Wed Sep 9 16:00:00 2026' },
+  ];
   const page = { url: () => 't3code://app/', evaluate: async () => true };
   const application = {
-    process: () => ({ pid: 100, exitCode: 0 }),
-    evaluate: async (_callback, argument) => argument ? true : {
+    process: () => child,
+    evaluate: async (_callback, argument) => hungEvaluation ? new Promise(() => {}) : argument ? true : {
       version: '0.3.4', packaged: true,
       userData: unsafeUserData ? '/Users/live/Library/Application Support/tritonai-harness' : path.join(launchOptions.env.HOME, 'Library', 'Application Support', 'tritonai-harness'),
       windows: [{ visible: true, rendererPid: 300, url: page.url() }],
     },
-    windows: () => [page], close: async () => { closed = true; },
+    windows: () => [page], close: async () => {
+      closed = true;
+      if (closeSignal) signals.emit(closeSignal);
+      if (reusedBackend) processes = processes.filter(p => p.pid !== 201).map(p => p.pid === 200 ? { ...p, ppid: 1, started: 'Wed Sep 9 16:05:00 2026' } : p);
+      if (hungClose) return new Promise(() => {});
+      processes = processes.filter(p => p.pid === 900);
+      child.exitCode = 0;
+      child.emit('exit', 0);
+    },
   };
   return {
     electron: { launch: async (options) => { launchOptions = options; return application; } },
@@ -123,7 +229,33 @@ function bootMocks(f, { unsafeUserData = false } = {}) {
     },
     wait: async () => {}, selectPort: async () => 43123, assertAlive: () => {},
     fetchResponse: async (url) => { assert.equal(url, 'http://127.0.0.1:43123/.well-known/t3/environment'); return { ok: true }; },
-    getState: () => ({ launchOptions, closed }),
+    readProcessSnapshot: () => structuredClone(processes),
+    killGroup: (pid, signal) => {
+      assert([100, 200, 400, 500].includes(pid), 'must never signal an unrelated process group');
+      signaledGroups.push([pid, signal]);
+      if (signal === 'SIGSTOP') {
+        // Simulate a detached fork after the snapshot, just before its parent
+        // receives SIGSTOP. The new group must be found on the next pass.
+        if (forkDuringCleanup && [200, 400].includes(pid)) {
+          const next = pid === 200 ? 400 : 500;
+          if (!processes.some(p => p.pid === next)) processes.push({ pid: next, ppid: pid, pgid: next, status: 'S', started: `Wed Sep 9 16:00:0${next / 100} 2026` });
+        }
+        processes = processes.map(p => p.pgid === pid ? { ...p, status: 'T' } : p);
+        return;
+      }
+      if (signal === 'SIGCONT') {
+        processes = processes.map(p => p.pgid === pid ? { ...p, status: 'S' } : p);
+        return;
+      }
+      assert.equal(signal, 'SIGKILL');
+      assert(processes.filter(p => p.pid !== 900 && p.pid !== (reusedBackend ? 200 : -1)).every(p => p.status.startsWith('T')), 'must freeze every owned process before the first kill');
+      killedGroups.push(pid);
+      if (pid === 200 && stuckBackend) return;
+      processes = processes.filter(p => p.pgid !== pid);
+      if (pid === child.pid) { child.signalCode = 'SIGKILL'; child.emit('exit', null, 'SIGKILL'); }
+    },
+    signals,
+    getState: () => ({ launchOptions, closed, child, signals, killedGroups, signaledGroups, processes }),
   };
 }
 
@@ -134,8 +266,114 @@ test('boot gate verifies the custom-protocol renderer and an owned backend in is
   assert.equal(result.backendPid, 200);
   assert.equal(result.healthyForMs, 5000);
   assert.equal(mock.getState().launchOptions.env.T3CODE_PORT, '43123');
+  assert(mock.getState().launchOptions.args.includes('--use-mock-keychain'));
+  assert(mock.getState().launchOptions.args.includes(`--user-data-dir=${path.join(mock.getState().launchOptions.env.HOME, 'Library', 'Application Support', 'tritonai-harness')}`));
+  assert.equal(result.credentialStorage, 'not-verified');
   assert.equal(mock.getState().closed, true);
   assert(!fs.existsSync(mock.getState().launchOptions.env.HOME));
+});
+
+test('boot gate kills captured detached backend groups before the main group when close stalls', async (t) => {
+  const f = fixture(t);
+  const mock = bootMocks(f, { hungEvaluation: true, hungClose: true });
+  await assert.rejects(verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
+    ...mock, operationTimeoutMs: 10, closeTimeoutMs: 10 }), /main-process evaluation timed out/);
+  assert.equal(mock.getState().closed, true);
+  assert.equal(mock.getState().child.signalCode, 'SIGKILL');
+  assert.deepEqual(mock.getState().killedGroups, [200, 100]);
+  assert.deepEqual(mock.getState().processes.map(p => p.pid), [900]);
+  assert(!fs.existsSync(mock.getState().launchOptions.env.HOME));
+});
+
+test('forced cleanup repeatedly freezes detached descendants born between discovery and signaling', async (t) => {
+  const f = fixture(t);
+  const mock = bootMocks(f, { hungEvaluation: true, hungClose: true, forkDuringCleanup: true });
+  await assert.rejects(verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
+    ...mock, operationTimeoutMs: 10, closeTimeoutMs: 10 }), /main-process evaluation timed out/);
+  assert.deepEqual(mock.getState().killedGroups, [500, 400, 200, 100]);
+  assert.deepEqual(mock.getState().processes.map(p => p.pid), [900]);
+  assert(!fs.existsSync(mock.getState().launchOptions.env.HOME));
+});
+
+test('cleanup refuses to kill when owned processes cannot be frozen and resumes groups it paused', async (t) => {
+  const f = fixture(t);
+  const child = { pid: 100, exitCode: null, signalCode: null };
+  const processes = [{ pid: 100, ppid: 50, pgid: 100, status: 'S', started: 'Wed Sep 9 16:00:00 2026' }];
+  const signals = [];
+  const tracker = trackBootProcesses(child, () => structuredClone(processes), (pid, signal) => signals.push([pid, signal]), path.join(f.root, 'unfrozen.json'), 10);
+  assert.throws(() => tracker.forceStop(), /Could not freeze/);
+  assert(signals.some(([, signal]) => signal === 'SIGSTOP'));
+  assert.equal(signals.at(-1)[1], 'SIGCONT');
+  assert(!signals.some(([, signal]) => signal === 'SIGKILL'));
+  assert.equal(tracker.stopped, false);
+});
+
+for (const [signal, exitCode] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  const assertCancellation = error => {
+    assert.equal(error.code, 'EINTR');
+    assert.equal(error.signal, signal);
+    assert.equal(error.exitCode, exitCode);
+    assert.equal(failureExitCode(error), exitCode);
+    return true;
+  };
+  test(`${signal} during evaluation preserves cancellation through shutdown and removes signal handlers`, async (t) => {
+    const f = fixture(t);
+    const mock = bootMocks(f, { hungEvaluation: true, hungClose: true });
+    const result = verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
+      ...mock, operationTimeoutMs: 20, closeTimeoutMs: 10 });
+    const rejected = assert.rejects(result, assertCancellation);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    mock.signals.emit(signal);
+    assert.equal(mock.getState().child.signalCode, 'SIGKILL');
+    assert.deepEqual(mock.getState().killedGroups, [200, 100]);
+    await rejected;
+    assert.equal(mock.signals.listenerCount('SIGINT'), 0);
+    assert.equal(mock.signals.listenerCount('SIGTERM'), 0);
+  });
+
+  test(`${signal} during cleanup cancels a pending successful boot result`, async (t) => {
+    const f = fixture(t);
+    const mock = bootMocks(f, { hungClose: true, closeSignal: signal });
+    await assert.rejects(verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
+      ...mock, operationTimeoutMs: 20, closeTimeoutMs: 10 }), assertCancellation);
+    assert.deepEqual(mock.getState().killedGroups, [200, 100]);
+    assert(!fs.existsSync(mock.getState().launchOptions.env.HOME));
+    assert.equal(mock.signals.listenerCount('SIGINT'), 0);
+    assert.equal(mock.signals.listenerCount('SIGTERM'), 0);
+  });
+}
+
+test('cancellation exit status survives a failed cleanup and the retained fixture remains available', async (t) => {
+  const f = fixture(t);
+  const mock = bootMocks(f, { unsafeUserData: true, hungClose: true, closeSignal: 'SIGTERM', stuckBackend: true });
+  await assert.rejects(verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
+    ...mock, operationTimeoutMs: 10, closeTimeoutMs: 10 }), error => {
+      assert.equal(error.signal, 'SIGTERM');
+      assert.equal(failureExitCode(error), 143);
+      return true;
+    });
+  assert(fs.existsSync(mock.getState().launchOptions.env.HOME));
+  assert.equal(mock.signals.listenerCount('SIGINT'), 0);
+  assert.equal(mock.signals.listenerCount('SIGTERM'), 0);
+});
+
+test('forced cleanup rejects reused backend PIDs and preserves unrelated process groups', async (t) => {
+  const f = fixture(t);
+  const mock = bootMocks(f, { hungEvaluation: true, hungClose: true, reusedBackend: true });
+  await assert.rejects(verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
+    ...mock, operationTimeoutMs: 10, closeTimeoutMs: 10 }), /main-process evaluation timed out/);
+  assert.deepEqual(mock.getState().killedGroups, [100]);
+  assert.deepEqual(mock.getState().processes.map(p => p.pid), [200, 900]);
+});
+
+test('retains the fixture if a detached backend survives forced cleanup after the main exits', async (t) => {
+  const f = fixture(t);
+  const mock = bootMocks(f, { hungEvaluation: true, hungClose: true, stuckBackend: true });
+  await assert.rejects(verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version: '0.3.4', env: f.env,
+    ...mock, operationTimeoutMs: 10, closeTimeoutMs: 10 }), /main-process evaluation timed out/);
+  assert.equal(mock.getState().child.signalCode, 'SIGKILL');
+  assert(fs.existsSync(mock.getState().launchOptions.env.HOME));
+  assert.deepEqual(mock.getState().killedGroups, [200, 100]);
 });
 
 test('boot gate fails closed if Electron resolves the live user-data directory', async (t) => {
