@@ -84,7 +84,7 @@ const EXPECTED_CODEX_MODELS = Object.keys(UCSD.codexModels);
 const EXPECTED_RESTRICTED_CODEX_MODELS = [
   "api-deepseek-v4-flash",
   "api-glm-5.3",
-  "api-gemma-4-31b"
+  "onyx-muse-glimmer-30b"
 ];
 
 function expectedCodexModelMetadata(modelSlugs) {
@@ -310,10 +310,10 @@ function assertManagedModelDefaultsUseApiGlm() {
       currentValue: "high"
     }
   ]);
-  assert.strictEqual(UCSD.codexModels["api-gemma-4-31b"].name, "Gemma 4 31B");
-  assert.strictEqual(UCSD.codexModels["api-gemma-4-31b"].shortName, "Gemma");
-  assert.strictEqual(UCSD.codexModels["api-gemma-4-31b"].availableToRestrictedKeys, true);
-  assert.deepStrictEqual(UCSD.codexModels["api-gemma-4-31b"].capabilities.inputModalities, [
+  assert.strictEqual(UCSD.codexModels["onyx-muse-glimmer-30b"].name, "Glimmer 30B");
+  assert.strictEqual(UCSD.codexModels["onyx-muse-glimmer-30b"].shortName, "Glimmer");
+  assert.strictEqual(UCSD.codexModels["onyx-muse-glimmer-30b"].availableToRestrictedKeys, true);
+  assert.deepStrictEqual(UCSD.codexModels["onyx-muse-glimmer-30b"].capabilities.inputModalities, [
     "text",
     "image"
   ]);
@@ -1425,6 +1425,10 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
         "thread-glm-5-2",
         JSON.stringify(legacyGlmSelection)
       );
+      db.prepare("INSERT INTO projection_threads (thread_id, model_selection_json) VALUES (?, ?)").run(
+        "thread-gemma",
+        JSON.stringify({ ...legacyGlmSelection, model: "api-gemma-4-31b" })
+      );
       db.close();
 
       execFileSync(process.execPath, [paths.t3DefaultsPatcher], { stdio: "ignore" });
@@ -1450,6 +1454,16 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
           "SELECT model_selection_json FROM projection_threads WHERE thread_id = ?"
         ).get("thread-glm-5-2").model_selection_json
       );
+      const migratedGemmaSelection = JSON.parse(
+        patched.prepare(
+          "SELECT model_selection_json FROM projection_threads WHERE thread_id = ?"
+        ).get("thread-gemma").model_selection_json
+      );
+      assert.deepStrictEqual(migratedGemmaSelection, {
+        ...legacyGlmSelection,
+        instanceId: "codex",
+        model: "onyx-muse-glimmer-30b"
+      });
       patched.close();
       assert.deepStrictEqual(selection, {
         ...legacySelection,
@@ -1514,7 +1528,7 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
     assert.deepStrictEqual(customModels, [
       "api-deepseek-v4-flash",
       "api-glm-5.3",
-      "api-gemma-4-31b",
+      "onyx-muse-glimmer-30b",
       "gpt-5.6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
