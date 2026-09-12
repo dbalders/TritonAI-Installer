@@ -163,9 +163,11 @@ function createSignedDmg(sourceApp, targetDmg, stageRoot, runCommand) {
     runCommand('hdiutil', ['create', '-size', `${diskImageCapacityMib(sourceApp)}m`, '-fs', 'HFS+', '-volname', productName, '-ov', writable], { label: 'Create writable candidate DMG' });
     runCommand('hdiutil', ['attach', writable, '-nobrowse', '-noverify', '-noautoopen', '-mountpoint', mountPoint], { label: 'Mount writable candidate DMG' });
     mounted = true;
+    // This private build volume must not be indexed while its payload is copied.
+    fs.writeFileSync(path.join(mountPoint, '.metadata_never_index'), '');
     runCommand('/usr/bin/ditto', ['--noextattr', '--noqtn', sourceApp, path.join(mountPoint, `${productName}.app`)], { label: 'Copy signed Harness into candidate DMG' });
     fs.symlinkSync('/Applications', path.join(mountPoint, 'Applications'));
-    runCommand('hdiutil', ['detach', mountPoint], { label: 'Detach writable candidate DMG' });
+    runCommand('hdiutil', ['detach', mountPoint, '-force'], { label: 'Detach writable candidate DMG' });
     mounted = false;
     runCommand('hdiutil', ['convert', writable, '-format', 'UDZO', '-ov', '-o', compressed], { label: 'Compress signed candidate DMG' });
     fs.renameSync(compressed, targetDmg);
