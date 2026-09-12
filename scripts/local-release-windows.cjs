@@ -247,13 +247,14 @@ async function resolveWineServer({ wine, wineserver, env = process.env, log = ()
 }
 
 /** Prepare an isolated Windows cross-build lane. Never changes process.env or shared caches.
- * root is the candidate-owned toolchains/win directory; installerRoot has npm ci completed.
+ * root is candidate-owned; Harness (or legacy Installer) dependencies must be installed.
  * Return only the environment overlay (safe to save) and deterministic input receipt.
  */
-async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, wine, wineserver, env = process.env, log = console.log }) {
+async function prepareWindowsToolchain({ root, harnessRoot, installerRoot, candidateRoot, wine, wineserver, env = process.env, log = console.log }) {
   if (process.platform !== 'darwin') throw new Error('This local cross-build toolchain requires macOS.');
-  if (!path.isAbsolute(root || '') || !path.isAbsolute(installerRoot || '')) {
-    throw new Error('Windows toolchain root and installerRoot must be absolute paths.');
+  const packagingRoot = harnessRoot || installerRoot;
+  if (!path.isAbsolute(root || '') || !path.isAbsolute(packagingRoot || '')) {
+    throw new Error('Windows toolchain root and packaging source must be absolute paths.');
   }
   if (fs.existsSync(root) && fs.lstatSync(root).isSymbolicLink()) throw new Error('Windows toolchain root must not be a symlink.');
   fs.mkdirSync(root, { recursive: true });
@@ -273,9 +274,9 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
   const winePath = findWine(wine, env);
   let packageFile, downloader;
   try {
-    packageFile = require.resolve('app-builder-lib/package.json', { paths: [installerRoot] });
-    downloader = require.resolve('app-builder-lib/out/util/electronGet', { paths: [installerRoot] });
-  } catch { throw new Error(`Run npm ci in ${installerRoot} before preparing the Windows toolchain.`); }
+    packageFile = require('./local-release-packaging.cjs').packagingLibrary({ harnessRoot, installerRoot });
+    downloader = path.join(path.dirname(packageFile), 'out/util/electronGet.js');
+  } catch { throw new Error(`Install dependencies in ${packagingRoot} before preparing the Windows toolchain.`); }
   const version = JSON.parse(fs.readFileSync(packageFile, 'utf8')).version;
   if (version !== BUILDER_VERSION) throw new Error(`Windows toolchain expects app-builder-lib ${BUILDER_VERSION}, found ${version}. Validate the pinned NSIS integration before changing the release toolchain version.`);
   const templateSource = path.join(path.dirname(packageFile), 'templates', 'nsis');
@@ -288,7 +289,7 @@ async function prepareWindowsToolchain({ root, installerRoot, candidateRoot, win
   childEnv.WINESERVER = wineTools.server.path;
   log('Preparing pinned Windows NSIS compiler and resources in the candidate cache.');
   const code = `const {downloadBuilderToolset} = require(${JSON.stringify(downloader)}); (async () => { const result = []; for (const [releaseName, sha256] of ${JSON.stringify([['nsis-' + NSIS_VERSION, NSIS_ARCHIVE_SHA256], ['nsis-resources-3.4.1', RESOURCES_ARCHIVE_SHA256]])}) {const filenameWithExt=releaseName+'.7z';result.push(await downloadBuilderToolset({releaseName,filenameWithExt,checksums:{[filenameWithExt]:sha256},overrideUrl:'https://github.com/electron-userland/electron-builder-binaries/releases/download/'+releaseName}));} console.log(JSON.stringify(result)); })().catch(error => { console.error(error.message); process.exitCode=1; });`;
-  const output = await run(process.execPath, ['-e', code], { env: childEnv, cwd: installerRoot, timeout: 300000, label: 'Download pinned NSIS tools', log });
+  const output = await run(process.execPath, ['-e', code], { env: childEnv, cwd: packagingRoot, timeout: 300000, label: 'Download pinned NSIS tools', log });
   const [nsisRoot, resources] = JSON.parse(output.split('\n').at(-1));
   ownPath(root, nsisRoot);
   ownPath(root, resources);

@@ -13,6 +13,27 @@ preserved: work happens in isolated detached worktrees. Only release version fil
 committed locally in those worktrees. No tags, pushes, workflow dispatches, uploads, or
 GitHub releases occur.
 
+For a Harness-only candidate, use:
+
+```sh
+npm run release:local -- 0.3.4 --scope harness
+```
+
+`--scope full` is the default. `--scope harness` builds and verifies both Harness platforms,
+but excludes Installer dependency installs, tests, app compilation, packaging, and skills
+checkout/validation. It still pins the Installer repository as the owner of the reviewed
+plugin catalog and composition producer. Only that small producer is compiled, using
+Harness's installed TypeScript compiler and Node types. Windows packaging tools also
+resolve from Harness's Electron Builder dependency, so Installer dependencies are unnecessary.
+
+The intended cadence is Harness nightlies plus full releases, with Installer only on full
+releases alongside the matching verified Harness. This local scope switch does not create a
+nightly schedule or GitHub workflow; the local candidate command still accepts stable versions.
+
+Select Harness and Installer commits containing these changes together when testing before
+merge: `--harness FULL_SHA --installer FULL_SHA`. Older Harness scripts do not support the
+new source-only staging flag; older Installer sources lack the small producer configuration.
+
 Choose another plugin or skills version with a remote tag, branch, or full commit:
 
 ```sh
@@ -48,7 +69,7 @@ Keep credentials out of Git. The runner loads this file, validates the selected 
 configuration before packaging, and stores its hash in the candidate record. It never
 searches transcripts, old apps, or unrelated files for missing configuration.
 
-`installerConfiguration.baseUrl` is required and sets the Installer's managed API URL.
+For full candidates, `installerConfiguration.baseUrl` is required and sets the Installer's managed API URL.
 Optional `apiDocsUrl`, `codexModel`, `restrictedCodexModel`, and `externalModelProbe` fields
 override the corresponding Installer settings. Omit optional fields to use the selected
 Installer source's defaults. These values come only from the profile and are frozen in
@@ -92,7 +113,9 @@ After configuration and source gates, Mac and Windows build concurrently. Each I
 starts when its own Harness artifact is ready. `--jobs 1` serializes stages on a constrained
 machine. Preflight reports missing prerequisites and insufficient space before builds start.
 
-Repeat the same command to resume an interrupted candidate. It keeps the original source
+Repeat the same command, including `--scope harness` when applicable, to resume an interrupted
+candidate. Scope is frozen and cannot change on resume. Default output locations are separate:
+`local-VERSION` for full releases and `local-harness-VERSION` for Harness-only candidates. It keeps the original source
 commits even if main moved. Completed stages are reused only while input, source, environment,
 recipe, and output hashes match. Failed stages restart their own commands. `--fresh` creates
 a new timestamped candidate with newly resolved sources; `--output /absolute/new-directory`
@@ -118,6 +141,14 @@ status, never command arguments or credentials. Some phases contain timed subste
 their durations overlap and must not be summed. Stage receipts preserve prior attempts
 and failed-stage durations when a candidate is resumed.
 
+Mac Harness preparation uses `build-desktop-artifact.ts --platform mac --target zip
+--keep-stage --stage-only` to compile and stage its source and pinned runtime dependencies.
+It writes the composition input proof and returns before Electron Builder. The release
+finalizer runs Electron Builder once to package/sign the app and produce the updater ZIP,
+then checks the final app's update configuration and native binaries before creating the
+DMG. Signing, notarization, packaged boot, payload checks, and final artifact proofs remain
+required. No unsigned Harness ZIP is generated and discarded.
+
 The Mac Installer packages a signed, notarized app directory directly, then creates,
 signs, notarizes, and verifies the final DMG. It does not generate a discarded Installer
 ZIP. Harness's updater ZIP remains a required release artifact.
@@ -127,7 +158,7 @@ helper checks the final signed/notarized DMG and updater ZIP, actual plugin byte
 isolated packaged boot. Windows extraction verifies actual plugin payload bytes; native
 Windows installation/boot remains explicitly unverified until `verify:win-installer:native`
 runs against the exact outputs on Windows.
-Both Windows Installer EXEs are also extracted and checked for the exact bundled Harness,
+For full candidates, both Windows Installer EXEs are also extracted and checked for the exact bundled Harness,
 skills, Codex CLI, Node runtime, and managed configuration. The handoff retains that proof.
 
 Candidate worktrees carry a persistent local-candidate marker. The public publishing commands

@@ -482,6 +482,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   const signingEnv = { ...env, CSC_IDENTITY_AUTO_DISCOVERY: 'true', CSC_NAME: identity };
   for (const key of ['CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER']) delete signingEnv[key];
   exec('vp', ['exec', '--filter', '@t3tools/desktop', '--', 'electron-builder', '--projectDir', stageApp, '--mac', '--arm64', '--publish', 'never'], { env: signingEnv, label: 'Sign staged Harness and build updater ZIP' });
+  exec(process.execPath, ['scripts/verify-macos-desktop-package.ts', dist, APP_NAME], { label: 'Verify signed Harness update configuration and native binaries' });
   const signedApp = path.join(dist, 'mac-arm64', `${APP_NAME}.app`);
   verifySignedApp(signedApp, identity, exec);
   const stagedProof = verifyPluginPayload(signedApp, composition, tools.asar, version);

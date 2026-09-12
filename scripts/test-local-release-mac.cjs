@@ -405,7 +405,7 @@ function packagingMocks(f, status = 'Accepted') {
     }
     if (program === 'xcrun' && args[0] === 'notarytool') return { stdout: JSON.stringify({ status, id: 'notary-job' }) };
     if (program === 'xcrun' && args[1] === 'staple') fs.appendFileSync(args[2], '-stapled');
-    if (program === process.execPath) {
+    if (program === process.execPath && args.includes('--artifact')) {
       const dmg = args[args.indexOf('--artifact') + 1];
       const bytes = fs.readFileSync(dmg);
       fs.writeFileSync(path.join(f.release, 'tritonai-plugin-composition-mac-arm64.json'), JSON.stringify({ ...f.composition, artifacts: [{ fileName: path.basename(dmg), size: bytes.length, sha512: crypto.createHash('sha512').update(bytes).digest('base64') }] }));
@@ -434,7 +434,11 @@ test('full finalization binds metadata after stapling, verifies payload and boot
   const signing = mock.calls.find((call) => call.program === 'vp');
   assert.equal(signing.options.env.CSC_NAME, 'Fixture (TEAM)');
   assert.equal(signing.options.env.APPLE_API_KEY, undefined);
-  const finalizer = mock.calls.find((call) => call.program === process.execPath);
+  assert.equal(mock.calls.filter(call => call.program === 'vp').length, 1);
+  const validation = mock.calls.findIndex(call => call.args[0] === 'scripts/verify-macos-desktop-package.ts');
+  const notarization = mock.calls.findIndex(call => call.program === 'xcrun' && call.args[0] === 'notarytool');
+  assert(validation > 0 && validation < notarization);
+  const finalizer = mock.calls.find((call) => call.args.includes('--artifact'));
   assert.equal(finalizer.args.at(-1), f.release);
 });
 
@@ -444,5 +448,17 @@ test('rejected notarization cannot emit successful proof or updater metadata', a
   await assert.rejects(finalizeMacRelease({ harnessRoot: f.root, stageRoot: f.stageRoot, version: '0.3.4', outputDir: f.release,
     env: f.env, platform: 'darwin', runCommand: mock.command, packagingTools: mock.tools }), /did not accept/);
   assert(!fs.existsSync(path.join(f.release, 'harness-mac-verification.json')));
-  assert(!mock.calls.some((call) => call.program === process.execPath));
+  assert(!mock.calls.some((call) => call.args.includes('--artifact')));
+});
+
+test('signed payload validation failure stops before ZIP copying, notarization, or success proof', async t => {
+  const f = fixture(t), mock = packagingMocks(f);
+  await assert.rejects(finalizeMacRelease({ harnessRoot: f.root, stageRoot: f.stageRoot, version: '0.3.4', outputDir: f.release,
+    env: f.env, platform: 'darwin', packagingTools: mock.tools, runCommand: (program, args, options) => {
+      if (args[0] === 'scripts/verify-macos-desktop-package.ts') throw new Error('fixture: native binary missing');
+      return mock.command(program, args, options);
+    } }), /native binary missing/);
+  assert(!mock.calls.some(call => call.args[0] === 'notarytool'));
+  assert(!fs.existsSync(path.join(f.release, 'TritonAI-Harness-0.3.4-arm64.zip')));
+  assert(!fs.existsSync(path.join(f.release, 'harness-mac-verification.json')));
 });

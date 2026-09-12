@@ -26,7 +26,7 @@ const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encodi
 
 function parseArgs(args) {
   const options = {};
-  const values = new Set(['profile', 'output', 'plugins', 'skills', 'harness', 'installer', 'jobs']);
+  const values = new Set(['profile', 'output', 'plugins', 'skills', 'harness', 'installer', 'jobs', 'scope']);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (['--help', '--check', '--plan', '--status', '--fresh'].includes(arg)) options[arg.slice(2)] = true;
@@ -39,6 +39,8 @@ function parseArgs(args) {
   }
   if (!options.help && !VERSION.test(options.version || '')) throw new Error('Supply the release version, e.g. npm run release:local -- 0.3.4');
   if (options.jobs !== undefined && !['1', '2'].includes(options.jobs)) throw new Error('--jobs must be 1 or 2');
+  if (options.scope !== undefined && !['harness', 'full'].includes(options.scope)) throw new Error('--scope must be harness or full');
+  if (options.scope === 'harness' && options.skills !== undefined) throw new Error('--skills applies only to --scope full');
   return options;
 }
 
@@ -174,6 +176,7 @@ function installerConfigurationEnvironment(configuration) {
 }
 
 function frozenInstallerEnvironment(candidate) {
+  if (candidate.scope === 'harness') return {};
   const env = candidate.installerEnvironment;
   if (!env || typeof env !== 'object' || Array.isArray(env)) throw new Error('Candidate predates frozen Installer configuration; use --fresh.');
   for (const name of Object.keys(env)) if (!Object.values(INSTALLER_CONFIGURATION_ENV).includes(name)) throw new Error(`Unexpected frozen Installer environment field: ${name}.`);
@@ -223,11 +226,11 @@ function inspectHostCommands(tools, { platform = process.platform, find = execut
   return problems;
 }
 
-async function preflight(settings, { disk = true, directory, frozenCandidate } = {}) {
+async function preflight(settings, { disk = true, directory, frozenCandidate, scope = frozenCandidate?.scope || 'full' } = {}) {
   const { profile, tools, repos } = settings;
   const problems = [];
   let installerEnvironment;
-  try { installerEnvironment = frozenCandidate ? frozenInstallerEnvironment(frozenCandidate) : installerConfigurationEnvironment(profile.installerConfiguration); }
+  try { installerEnvironment = scope === 'harness' ? {} : frozenCandidate ? frozenInstallerEnvironment(frozenCandidate) : installerConfigurationEnvironment(profile.installerConfiguration); }
   catch (error) { problems.push(error.message); }
   if (/\s/.test(directory || profile.outputRoot || '')) problems.push('The local Windows native cross-build requires an output path without spaces. Choose a path such as ~/Documents/TritonAI-builds.');
   if (process.platform !== 'darwin') problems.push('The Mac/Windows local recipe runs on the configured Mac release host.');
@@ -238,6 +241,7 @@ async function preflight(settings, { disk = true, directory, frozenCandidate } =
     if (!/^v24\./.test(version)) problems.push(`Node 24 is required; selected ${version}. Set profile.node.`);
   }
   for (const [name, repo] of Object.entries(repos)) {
+    if (scope === 'harness' && name === 'skills') continue;
     try { if (git(repo, 'rev-parse', '--show-toplevel') !== fs.realpathSync(repo)) throw new Error(); }
     catch { problems.push(`Missing ${name} repository: ${repo}`); }
   }
@@ -297,9 +301,16 @@ async function assertToolIdentities(candidate) {
 }
 
 async function freeze(options, settings, ready) {
-  const installerEnvironment = frozenInstallerEnvironment({ installerEnvironment: ready.installerEnvironment });
+  const scope = options.scope || 'full';
+  const installerEnvironment = frozenInstallerEnvironment({ scope, installerEnvironment: ready.installerEnvironment });
   const sources = {};
-  for (const name of ['harness', 'installer', 'skills']) sources[name] = { repo: settings.repos[name], ...resolveRef(settings.repos[name], options[name] || 'main') };
+  for (const name of (scope === 'harness' ? ['harness', 'installer'] : ['harness', 'installer', 'skills'])) sources[name] = { repo: settings.repos[name], ...resolveRef(settings.repos[name], options[name] || 'main') };
+  const requireSourceFile = (name, file, message) => {
+    try { git(sources[name].repo, 'cat-file', '-e', `${sources[name].commit}:${file}`); }
+    catch { throw new Error(message); }
+  };
+  requireSourceFile('harness', 'scripts/verify-macos-desktop-package.ts', 'Selected Harness predates single-pass local Mac packaging. Select its matching commit with --harness.');
+  if (scope === 'harness') requireSourceFile('installer', 'tsconfig.plugin-producer.json', 'Selected Installer predates Harness-only composition preparation. Select its matching commit with --installer.');
   const installerPackage = JSON.parse(git(sources.installer.repo, 'show', `${sources.installer.commit}:package.json`));
   if (!installerPackage.scripts?.['release:local']) throw new Error('Selected Installer commit predates the local release workflow. Merge the workflow changes, or select their exact local commit with --installer.');
   const catalog = JSON.parse(git(sources.installer.repo, 'show', `${sources.installer.commit}:config/managed-plugin-catalog.json`));
@@ -307,7 +318,7 @@ async function freeze(options, settings, ready) {
   const pluginIds = catalog.packages.map(p => p.pluginId);
   for (const id of pluginIds) if (!ready.configuration[id] || Array.isArray(ready.configuration[id]) || typeof ready.configuration[id] !== 'object') throw new Error(`Plugin configuration is missing '${id}' in ${settings.profile.pluginConfigurationFile}`);
   const configuration = Object.fromEntries(pluginIds.map(id => [id, ready.configuration[id]]));
-  return { schemaVersion: 1, version: options.version, sources, pluginIds, catalogSelection: !options.plugins,
+  return { schemaVersion: 1, scope, version: options.version, sources, pluginIds, catalogSelection: !options.plugins,
     ...await freezeTools(settings.tools), profileFile: settings.profileFile, configurationFile: settings.profile.pluginConfigurationFile,
     configurationSha256: hash(JSON.stringify(configuration)), installerEnvironment, developerId: ready.identity,
     notary: { ...ready.notary, keySha256: await treeHash(ready.notary.keyFile) },
@@ -328,22 +339,23 @@ function macSigningEnvironment(candidate) {
 }
 
 function assertResumeSelections(candidate, options) {
+  if ((candidate.scope || 'full') !== (options.scope || 'full')) throw new Error('Candidate scope differs; repeat --scope or use another --output.');
   if (candidate.version !== options.version) throw new Error('Candidate version differs; use another --output.');
-  for (const name of ['harness', 'installer', 'plugins', 'skills']) if (options[name] && options[name] !== candidate.sources[name].selection) throw new Error(`${name} selection differs from this frozen candidate. Use --fresh.`);
+  for (const name of ['harness', 'installer', 'plugins', 'skills']) if (options[name] && options[name] !== candidate.sources[name]?.selection) throw new Error(`${name} selection differs from this frozen candidate. Use --fresh.`);
 }
 
 async function main(args = process.argv.slice(2)) {
   const options = parseArgs(args);
   if (options.help) {
-    console.log('Usage: npm run release:local -- VERSION [--plugins TAG|BRANCH|SHA] [--skills TAG|BRANCH|SHA]\n  --harness REF / --installer REF   Default: latest remote main\n  --profile FILE                   Default: ~/.config/tritonai/release.json\n  --check / --plan / --status       Inspect without building\n  --output DIR / --fresh            New candidate location; otherwise resume same version\n  --jobs 1|2                       Default: parallel Mac and Windows\nNo tags, uploads, releases, or publication. Plugin default: Installer catalog; skills default: main.');
+    console.log('Usage: npm run release:local -- VERSION [--plugins TAG|BRANCH|SHA] [--skills TAG|BRANCH|SHA]\n  --scope harness|full             Default: full; Harness-only skips Installer and skills\n  --harness REF / --installer REF   Default: latest remote main\n  --profile FILE                   Default: ~/.config/tritonai/release.json\n  --check / --plan / --status       Inspect without building\n  --output DIR / --fresh            New candidate location; otherwise resume same version\n  --jobs 1|2                       Default: parallel Mac and Windows\nNo tags, uploads, releases, or publication. Plugin default: Installer catalog; skills default: main.');
     return;
   }
   const settings = profileFor(options);
-  const directory = path.resolve(options.output || path.join(settings.profile.outputRoot || path.join(os.homedir(), 'Documents/TritonAI-builds'), `local-${options.version}${options.fresh ? '-' + new Date().toISOString().replace(/[:.]/g, '-') : ''}`));
+  const directory = path.resolve(options.output || path.join(settings.profile.outputRoot || path.join(os.homedir(), 'Documents/TritonAI-builds'), `local-${options.scope === 'harness' ? 'harness-' : ''}${options.version}${options.fresh ? '-' + new Date().toISOString().replace(/[:.]/g, '-') : ''}`));
   const candidateFile = path.join(directory, 'candidate.json');
   if (options.status) {
     if (!fs.existsSync(candidateFile)) throw new Error(`No candidate at ${directory}`);
-    const c = read(candidateFile); console.log(JSON.stringify({ version: c.version, sources: c.sources, directory,
+    const c = read(candidateFile); console.log(JSON.stringify({ version: c.version, scope: c.scope || 'full', sources: c.sources, directory,
       preparation: fs.existsSync(path.join(directory, 'prepare.run/state.json')) ? read(path.join(directory, 'prepare.run/state.json')).steps : {},
       stages: fs.existsSync(path.join(directory, 'build.run/state.json')) ? read(path.join(directory, 'build.run/state.json')).steps : {} }, null, 2)); return;
   }
@@ -355,12 +367,12 @@ async function main(args = process.argv.slice(2)) {
     const ready = await preflight({ ...settings, tools: candidate.tools, repos: Object.fromEntries(Object.entries(candidate.sources).map(([name, source]) => [name, source.repo])), profile: { ...settings.profile, pluginConfigurationFile: candidate.configurationFile, developerId: candidate.developerId, notarizationConfig: candidate.notary.configFile } }, { directory, frozenCandidate: candidate });
     if (ready.problems.length) throw new Error('Release preflight:\n- ' + ready.problems.join('\n- '));
   } else {
-    const ready = await preflight(settings, { directory });
+    const ready = await preflight(settings, { directory, scope: options.scope || 'full' });
     if (ready.problems.length) throw new Error('Release preflight:\n- ' + ready.problems.join('\n- '));
     candidate = await freeze(options, settings, ready);
   }
   const env = candidateEnvironment(candidate);
-  if (options.check || options.plan) { console.log(JSON.stringify({ version: candidate.version, directory, sources: candidate.sources, pluginIds: candidate.pluginIds, stages: ['prepare', 'validate-inputs', 'source-checks', 'harness-mac + harness-win', 'installer-mac + installer-win', 'handoff'], published: false }, null, 2)); return; }
+  if (options.check || options.plan) { console.log(JSON.stringify({ version: candidate.version, scope: candidate.scope || 'full', directory, sources: candidate.sources, pluginIds: candidate.pluginIds, stages: ['prepare', 'validate-inputs', 'source-checks', 'harness-mac + harness-win', ...(candidate.scope === 'harness' ? [] : ['installer-mac + installer-win']), 'handoff'], published: false }, null, 2)); return; }
   if (!fs.existsSync(candidateFile)) {
     if (fs.existsSync(directory)) throw new Error(`Unrecognized existing directory: ${directory}; select another --output.`);
     save(candidateFile, candidate);

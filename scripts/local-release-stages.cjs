@@ -74,55 +74,64 @@ async function applyVersion(cwd, source, kind, version, node) {
 
 async function prepare(candidateFile) {
   const candidate = read(candidateFile), root = path.dirname(candidateFile), { sources, tools } = candidate;
-  const dirs = Object.fromEntries(['harness-mac', 'harness-win', 'installer-mac', 'installer-win', 'plugins', 'skills'].map(id => [id, path.join(root, 'worktrees', id)]));
+  const kinds = candidate.scope === 'harness' ? ['harness'] : ['harness', 'installer'];
+  const inputs = candidate.scope === 'harness' ? ['plugins'] : ['plugins', 'skills'];
+  const dirs = Object.fromEntries([...kinds.flatMap(kind => [`${kind}-mac`, `${kind}-win`]), ...inputs, ...(candidate.scope === 'harness' ? ['composition-producer'] : [])].map(id => [id, path.join(root, 'worktrees', id)]));
   fs.mkdirSync(path.join(root, 'inputs'), { recursive: true });
   fs.mkdirSync(path.join(root, 'proof'), { recursive: true });
-  for (const kind of ['plugins', 'skills']) {
+  for (const kind of inputs) {
     ensureWorktree(sources[kind], dirs[kind]);
     if (git(dirs[kind], 'rev-parse', 'HEAD') !== sources[kind].commit || git(dirs[kind], 'status', '--porcelain')) throw new Error(`${kind} input checkout changed; inspect before resuming.`);
   }
-  for (const kind of ['harness', 'installer']) {
+  for (const kind of kinds) {
     ensureWorktree(sources[kind], dirs[`${kind}-mac`]);
     assertVersionOnly(dirs[`${kind}-mac`], sources[kind], kind, candidate.version);
   }
   // These installs intentionally run repository hooks, including effect-tsgo patch.
   await Promise.all([
     command(dirs['harness-mac'], [tools.vp, 'i', '--frozen-lockfile']),
-    command(dirs['installer-mac'], ['npm', 'ci', '--no-audit', '--no-fund'])
+    ...(candidate.scope === 'harness' ? [] : [command(dirs['installer-mac'], ['npm', 'ci', '--no-audit', '--no-fund'])])
   ]);
   await command(dirs.plugins, ['corepack', 'pnpm', 'install', '--frozen-lockfile', '--ignore-scripts']);
   const commits = {};
-  for (const kind of ['harness', 'installer']) {
+  for (const kind of kinds) {
     commits[kind] = await applyVersion(dirs[`${kind}-mac`], sources[kind], kind, candidate.version, tools.node);
     ensureWorktree(sources[kind], dirs[`${kind}-win`], commits[kind]);
     if (git(dirs[`${kind}-win`], 'rev-parse', 'HEAD') !== commits[kind] || git(dirs[`${kind}-win`], 'status', '--porcelain')) throw new Error(`${kind} Windows worktree differs from frozen version commit.`);
   }
-  await command(dirs['installer-mac'], ['npm', 'run', 'build']);
-  const vendor = require(path.join(dirs['installer-mac'], 'dist/scripts/prepare-plugins-vendor.js'));
+  const producerRoot = dirs['composition-producer'] || dirs['installer-mac'];
+  if (candidate.scope === 'harness') {
+    ensureWorktree(sources.installer, producerRoot);
+    if (git(producerRoot, 'rev-parse', 'HEAD') !== sources.installer.commit || git(producerRoot, 'status', '--porcelain')) throw new Error('Plugin composition producer checkout changed; inspect before resuming.');
+    // Compile only the pinned composition producer, using Harness's installed
+    // compiler and Node types. No Installer dependencies or app build are needed.
+    await command(dirs['harness-mac'], [tools.vp, 'exec', 'tsgo', '--project', path.join(producerRoot, 'tsconfig.plugin-producer.json'), '--typeRoots', path.join(dirs['harness-mac'], 'node_modules/@types')]);
+  } else await command(producerRoot, ['npm', 'run', 'build']);
+  const vendor = require(path.join(producerRoot, 'dist/scripts/prepare-plugins-vendor.js'));
   if (!vendor.createLocalCandidatePluginCatalog) throw new Error('Selected Installer lacks local candidate support. Select a version containing the release workflow changes.');
   const pluginInput = path.join(root, 'inputs/plugins');
   const catalogPath = path.join(root, 'inputs/plugin-catalog.json');
   if (!fs.existsSync(catalogPath)) {
-    await command(dirs['installer-mac'], [tools.node, 'dist/scripts/prepare-plugins-vendor.js'], {
+    await command(producerRoot, [tools.node, 'dist/scripts/prepare-plugins-vendor.js'], {
       ...process.env, TRITONAI_LOCAL_RELEASE_CANDIDATE: '', TRITONAI_PLUGIN_CATALOG_PATH: '',
       TRITONAI_PLUGINS_SOURCE: dirs.plugins, TRITONAI_PLUGINS_REF: sources.plugins.commit,
       TRITONAI_PLUGINS_COMMIT: sources.plugins.commit, TRITONAI_PLUGIN_IDS: candidate.pluginIds.join(',')
     });
-    const manifest = read(path.join(dirs['installer-mac'], 'vendor/plugins/manifest.json'));
+    const manifest = read(path.join(producerRoot, 'vendor/plugins/manifest.json'));
     if (candidate.catalogSelection) {
-      const catalog = read(path.join(dirs['installer-mac'], 'config/managed-plugin-catalog.json'));
+      const catalog = read(path.join(producerRoot, 'config/managed-plugin-catalog.json'));
       // The commit pin is immutable; compare package bytes independently of branch spelling.
       const actual = vendor.createLocalCandidatePluginCatalog(manifest);
       if (JSON.stringify(actual.packages) !== JSON.stringify(catalog.packages) || actual.source.commit !== catalog.source.commit) throw new Error('Selected default plugin bytes differ from the reviewed catalog.');
     }
-    const generated = path.join(dirs['installer-mac'], 'vendor/plugins');
+    const generated = path.join(producerRoot, 'vendor/plugins');
     if (fs.existsSync(pluginInput)) {
       if (await treeHash(pluginInput) !== await treeHash(generated)) throw new Error(`Incomplete plugin input differs at ${pluginInput}; inspect before resuming preparation.`);
     } else fs.cpSync(generated, pluginInput, { recursive: true, dereference: false });
     save(catalogPath, vendor.createLocalCandidatePluginCatalog(manifest));
   }
   const frozen = read(path.join(pluginInput, 'manifest.json'));
-  require(path.join(dirs['installer-mac'], 'dist/src/installer/plugin-catalog.js')).assertCatalogComposition(read(catalogPath), frozen);
+  require(path.join(producerRoot, 'dist/src/installer/plugin-catalog.js')).assertCatalogComposition(read(catalogPath), frozen);
   save(path.join(root, 'prepared.json'), { dirs, commits, pluginInput, catalogPath,
     pluginHash: await treeHash(pluginInput), catalogHash: await treeHash(catalogPath) });
 }
@@ -141,34 +150,36 @@ function installerFiles(version, platform) {
 
 function makeBuildRecipe(candidateFile, prepared) {
   const c = read(candidateFile), root = path.dirname(candidateFile), { dirs, commits } = prepared;
+  const kinds = c.scope === 'harness' ? ['harness'] : ['harness', 'installer'];
+  const inputSources = [{ path: dirs.plugins, commit: c.sources.plugins.commit }, ...(c.scope === 'harness' ? [{ path: dirs['composition-producer'], commit: c.sources.installer.commit }] : [{ path: dirs.skills, commit: c.sources.skills.commit }])];
   const inputFiles = [candidateFile, path.join(root, 'prepared.json'), ...fs.readdirSync(__dirname).filter(n => /^local-release.*\.cjs$/.test(n)).map(n => path.join(__dirname, n)),
     { path: prepared.pluginInput, sha256: prepared.pluginHash }, { path: prepared.catalogPath, sha256: prepared.catalogHash }, { path: c.notary.keyFile, sha256: c.notary.keySha256 }, ...Object.values(c.toolIdentities)];
   const steps = [];
   function step(id, cwd, needs, outputs, commit) {
     steps.push({ id, cwd, needs, outputs, ...(commit ? { commit } : { git: false }),
-      inputs: inputFiles, sources: [{ path: dirs.plugins, commit: c.sources.plugins.commit }, { path: dirs.skills, commit: c.sources.skills.commit }],
+      inputs: inputFiles, sources: inputSources,
       commands: [[c.tools.node, path.join(__dirname, 'local-release-stages.cjs'), id, candidateFile]] });
   }
   step('validate-inputs', dirs['harness-mac'], [], [path.join(root, 'proof/plugin-validation.json')], commits.harness);
   step('harness-checks', dirs['harness-mac'], ['validate-inputs'], [path.join(root, 'proof/harness-checks.json')], commits.harness);
-  step('installer-checks', dirs['installer-mac'], ['validate-inputs'], [path.join(root, 'proof/installer-checks.json')], commits.installer);
+  if (c.scope !== 'harness') step('installer-checks', dirs['installer-mac'], ['validate-inputs'], [path.join(root, 'proof/installer-checks.json')], commits.installer);
   step('plugins-checks', dirs.plugins, ['validate-inputs'], [path.join(root, 'proof/plugins-checks.json')], c.sources.plugins.commit);
-  for (const kind of ['harness', 'installer']) step(`${kind}-win-dependencies`, dirs[`${kind}-win`], ['validate-inputs'], ['node_modules/.modules.yaml'].map(f => kind === 'installer' ? 'node_modules/.package-lock.json' : f), commits[kind]);
-  step('windows-tools', dirs['installer-mac'], ['installer-checks'], [path.join(root, 'proof/windows-tools.json')], commits.installer);
-  const gates = ['harness-checks', 'installer-checks', 'plugins-checks'];
+  for (const kind of kinds) step(`${kind}-win-dependencies`, dirs[`${kind}-win`], ['validate-inputs'], ['node_modules/.modules.yaml'].map(f => kind === 'installer' ? 'node_modules/.package-lock.json' : f), commits[kind]);
+  step('windows-tools', dirs['harness-mac'], ['harness-checks'], [path.join(root, 'proof/windows-tools.json')], commits.harness);
+  const gates = ['harness-checks', 'plugins-checks', ...(c.scope === 'harness' ? [] : ['installer-checks'])];
   for (const platform of ['mac', 'win']) {
     const out = path.join(root, 'harness', platform);
     step(`harness-${platform}`, dirs[`harness-${platform}`], [...gates, ...(platform === 'win' ? ['harness-win-dependencies', 'windows-tools'] : [])], harnessFiles(c.version, platform).map(f => path.join(out, f)), commits.harness);
-    step(`installer-${platform}`, dirs[`installer-${platform}`], [`harness-${platform}`, ...(platform === 'win' ? ['installer-win-dependencies'] : [])], installerFiles(c.version, platform).map(f => path.join(dirs[`installer-${platform}`], 'artifacts', platform === 'mac' ? 'macos-release' : 'windows-installer', f)), commits.installer);
+    if (c.scope !== 'harness') step(`installer-${platform}`, dirs[`installer-${platform}`], [`harness-${platform}`, ...(platform === 'win' ? ['installer-win-dependencies'] : [])], installerFiles(c.version, platform).map(f => path.join(dirs[`installer-${platform}`], 'artifacts', platform === 'mac' ? 'macos-release' : 'windows-installer', f)), commits.installer);
   }
-  step('handoff', path.join(root, 'proof'), ['installer-mac', 'installer-win'], [path.join(root, 'handoff/report.json'), path.join(root, 'handoff/SHA256SUMS.txt')]);
+  step('handoff', path.join(root, 'proof'), (c.scope === 'harness' ? ['harness-mac', 'harness-win'] : ['installer-mac', 'installer-win']), [path.join(root, 'handoff/report.json'), path.join(root, 'handoff/SHA256SUMS.txt')]);
   // Explicit outputs make the handoff immutable too, including its copied binaries.
-  for (const platform of ['mac', 'win']) for (const [kind, files] of [['harness', harnessFiles(c.version, platform)], ['installer', installerFiles(c.version, platform)]]) steps.at(-1).outputs.push(...files.map(file => path.join(root, 'handoff', platform, kind, file)));
+  for (const platform of ['mac', 'win']) for (const kind of kinds) steps.at(-1).outputs.push(...(kind === 'harness' ? harnessFiles(c.version, platform) : installerFiles(c.version, platform)).map(file => path.join(root, 'handoff', platform, kind, file)));
   return { schemaVersion: 1, steps };
 }
 
 async function platformEnvironment(root, platform, c, p) {
-  const env = { ...candidateEnvironment(c), TRITONAI_LOCAL_RELEASE_CANDIDATE: '1', UCSD_SKILLS_SOURCE: p.dirs.skills, TRITONAI_PLUGIN_COMPOSITION_SOURCE: p.pluginInput,
+  const env = { ...candidateEnvironment(c), TRITONAI_LOCAL_RELEASE_CANDIDATE: '1', ...(p.dirs.skills ? { UCSD_SKILLS_SOURCE: p.dirs.skills } : {}), TRITONAI_PLUGIN_COMPOSITION_SOURCE: p.pluginInput,
     TRITONAI_RELEASE_TIMING_FILE: process.env.TRITONAI_RELEASE_TIMING_FILE,
     TRITONAI_RELEASE_TIMING_STAGE: process.env.TRITONAI_RELEASE_TIMING_STAGE,
     TRITONAI_PLUGIN_CATALOG_PATH: p.catalogPath, TRITONAI_PLUGINS_SOURCE: p.dirs.plugins,
@@ -178,7 +189,7 @@ async function platformEnvironment(root, platform, c, p) {
   env.ELECTRON_CACHE = path.join(root, 'toolchains', platform, 'electron');
   if (platform === 'win') {
     const { prepareWindowsToolchain } = require('./local-release-windows.cjs');
-    const toolchain = await prepareWindowsToolchain({ root: path.join(root, 'toolchains/win'), candidateRoot: root, installerRoot: p.dirs['installer-mac'], wine: c.tools.wine, env });
+    const toolchain = await prepareWindowsToolchain({ root: path.join(root, 'toolchains/win'), candidateRoot: root, harnessRoot: p.dirs['harness-mac'], wine: c.tools.wine, env });
     if (!isDeepStrictEqual(toolchain.receipt, read(path.join(root, 'proof/windows-tools.json')))) throw new Error('Windows toolchain changed from its prepared receipt; use --fresh.');
     Object.assign(env, toolchain.env);
     // Mac credentials never participate in the explicitly unsigned Windows lane.
@@ -194,6 +205,7 @@ async function stage(id, candidateFile) {
   if (id === 'prepare') return prepare(candidateFile);
   const c = read(candidateFile), root = path.dirname(candidateFile), p = read(path.join(root, 'prepared.json'));
   const { dirs } = p;
+  if (c.scope === 'harness' && id.startsWith('installer-')) throw new Error('Installer stages are excluded from a Harness-only candidate.');
   const stamp = name => save(path.join(root, `proof/${name}.json`), { completedAt: new Date().toISOString(), sources: c.sources });
   if (id === 'validate-inputs') {
     const receipt = path.join(root, 'proof/plugin-validation.json');
@@ -215,7 +227,7 @@ async function stage(id, candidateFile) {
   }
   if (id.endsWith('-dependencies')) return command(dirs[id.replace('-dependencies', '')], id.startsWith('harness') ? [c.tools.vp, 'i', '--frozen-lockfile'] : ['npm', 'ci', '--no-audit', '--no-fund']);
   if (id === 'windows-tools') {
-    const result = await require('./local-release-windows.cjs').prepareWindowsToolchain({ root: path.join(root, 'toolchains/win'), candidateRoot: root, installerRoot: dirs['installer-mac'], wine: c.tools.wine, env: process.env });
+    const result = await require('./local-release-windows.cjs').prepareWindowsToolchain({ root: path.join(root, 'toolchains/win'), candidateRoot: root, harnessRoot: dirs['harness-mac'], wine: c.tools.wine, env: process.env });
     save(path.join(root, 'proof/windows-tools.json'), result.receipt); return;
   }
   if (/^(harness|installer)-(mac|win)$/.test(id)) {
@@ -234,15 +246,15 @@ async function stage(id, candidateFile) {
       // A failed attempt may have left a kept stage. This directory belongs only
       // to this locked candidate lane; completed stages are never rerun here.
       fs.rmSync(env.TMPDIR, { recursive: true, force: true }); fs.mkdirSync(env.TMPDIR, { recursive: true });
-      // The Mac finalizer signs the kept app and creates the final DMG. Building
-      // an unsigned DMG here duplicates that work and adds a global mount path.
+      // Prepare source only on Mac; the finalizer performs the sole packaging
+      // pass, then verifies the signed ZIP, DMG, and their actual payloads.
       const args = [c.tools.node, 'scripts/build-desktop-artifact.ts', '--platform', platform, '--target', platform === 'mac' ? 'zip' : 'nsis', '--arch', platform === 'mac' ? 'arm64' : 'x64', '--output-dir', out];
-      if (platform === 'mac') args.push('--keep-stage');
+      if (platform === 'mac') args.push('--keep-stage', '--stage-only');
       await command(cwd, args, env);
       if (platform === 'mac') await command(cwd, [c.tools.node, path.join(__dirname, 'local-release-mac.cjs'), cwd, env.TMPDIR, c.version, out], { ...env, ...macSigningEnvironment(c) });
       else {
         const artifact = path.join(out, `TritonAI-Harness-${c.version}-x64.exe`);
-        const proof = await require('./local-release-payload.cjs').verifyWindowsHarness({ artifact, outputDirectory: out, composition: read(path.join(p.pluginInput, 'manifest.json')), version: c.version, installerRoot: dirs['installer-mac'] });
+        const proof = await require('./local-release-payload.cjs').verifyWindowsHarness({ artifact, outputDirectory: out, composition: read(path.join(p.pluginInput, 'manifest.json')), version: c.version, harnessRoot: dirs['harness-mac'] });
         await command(cwd, [c.tools.node, 'scripts/finalize-managed-plugin-proof.ts', '--platform', 'win', '--arch', 'x64', '--artifact', artifact, '--output-dir', out], env);
         save(path.join(out, 'harness-win-verification.json'), proof);
       }
@@ -260,7 +272,7 @@ async function stage(id, candidateFile) {
   }
   if (id === 'handoff') {
     const copies = [];
-    for (const platform of ['mac', 'win']) for (const kind of ['harness', 'installer']) {
+    for (const platform of ['mac', 'win']) for (const kind of (c.scope === 'harness' ? ['harness'] : ['harness', 'installer'])) {
       const files = kind === 'harness' ? harnessFiles(c.version, platform) : installerFiles(c.version, platform);
       const source = kind === 'harness' ? path.join(root, 'harness', platform) : path.join(dirs[`${kind}-${platform}`], 'artifacts', platform === 'mac' ? 'macos-release' : 'windows-installer');
       for (const file of files) copies.push({ source: path.join(source, file), destination: path.join(root, 'handoff', platform, kind, file) });
@@ -268,8 +280,8 @@ async function stage(id, candidateFile) {
     await collect(copies);
     const artifacts = await Promise.all(copies.map(async copy => ({ path: path.relative(path.join(root, 'handoff'), copy.destination), sha256: await treeHash(copy.destination), bytes: fs.statSync(copy.destination).size })));
     fs.writeFileSync(path.join(root, 'handoff/SHA256SUMS.txt'), artifacts.map(a => `${a.sha256}  ${a.path}`).join('\n') + '\n');
-    save(path.join(root, 'handoff/report.json'), { schemaVersion: 1, version: c.version, sources: c.sources, releaseCommits: p.commits,
-      plugins: read(p.catalogPath), artifacts, published: false, windows: { signed: false, nativeBoot: 'not-verified', note: 'Run verify:win-installer:native on these exact artifacts on Windows.' } });
+    save(path.join(root, 'handoff/report.json'), { schemaVersion: 1, scope: c.scope || 'full', version: c.version, sources: c.sources, releaseCommits: p.commits,
+      plugins: read(p.catalogPath), artifacts, published: false, windows: { signed: false, nativeBoot: 'not-verified', note: c.scope === 'harness' ? 'Native Windows boot must be verified on these exact Harness artifacts.' : 'Run verify:win-installer:native on these exact artifacts on Windows.' } });
     return;
   }
   throw new Error(`Unknown release stage: ${id}`);

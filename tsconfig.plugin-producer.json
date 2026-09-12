@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [],
+  "files": [
+    "scripts/prepare-plugins-vendor.ts",
+    "src/installer/file-digest.ts",
+    "src/installer/plugin-provenance.ts",
+    "src/installer/plugin-bundle-manifest.ts",
+    "src/installer/plugin-catalog.ts"
+  ]
+}

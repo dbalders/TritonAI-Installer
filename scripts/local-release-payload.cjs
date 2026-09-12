@@ -148,9 +148,8 @@ function verifyWindowsPluginArchives(resources, asar, composition) {
   return verifyPluginArchive(server, asar, composition, 'apps/server/dist/production-integrations/packages');
 }
 
-async function verifyWindowsHarness({ artifact, outputDirectory, composition, version, installerRoot }) {
-  const installerRequire = createRequire(path.join(installerRoot, 'package.json'));
-  const builderRequire = createRequire(installerRequire.resolve('app-builder-lib/package.json'));
+async function verifyWindowsHarness({ artifact, outputDirectory, composition, version, harnessRoot, installerRoot }) {
+  const builderRequire = createRequire(require('./local-release-packaging.cjs').packagingLibrary({ harnessRoot, installerRoot }));
   const asar = builderRequire('@electron/asar');
   const sevenZip = await builderRequire('./out/toolsets/7zip.js').getPath7za();
   const header = Buffer.alloc(64), fd = fs.openSync(artifact, 'r');

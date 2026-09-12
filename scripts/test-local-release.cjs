@@ -25,6 +25,9 @@ test('simple version command and explicit plugin/skills refs have strict argumen
   assert.throws(() => parseArgs(['0.3.4', '--plugins']), /requires/);
   assert.throws(() => parseArgs(['0.3.4', '--jobs', '9']), /1 or 2/);
   assert.throws(() => parseArgs(['0.3.4', '--publish']), /Unknown/);
+  assert.equal(parseArgs(['0.3.4', '--scope', 'harness']).scope, 'harness');
+  assert.throws(() => parseArgs(['0.3.4', '--scope', 'nightly']), /harness or full/);
+  assert.throws(() => parseArgs(['0.3.4', '--scope', 'harness', '--skills', 'main']), /only to --scope full/);
 });
 test('main comes from fresh remote; tag and full SHA selection never use stale local main', t => {
   const root = fixture(t), origin = repo(root, 'origin'), checkout = path.join(root, 'checkout');
@@ -85,6 +88,8 @@ test('freeze persists Installer configuration and resume ignores changed profile
   const original = git(origin, 'rev-parse', 'HEAD');
   save(path.join(origin, 'package.json'), { version: '0.3.3', scripts: { 'release:local': 'node scripts/local-release.cjs' } });
   save(path.join(origin, 'config/managed-plugin-catalog.json'), { source: { commit: original }, packages: [{ pluginId: 'github' }] });
+  save(path.join(origin, 'scripts/verify-macos-desktop-package.ts'), {});
+  save(path.join(origin, 'tsconfig.plugin-producer.json'), {});
   git(origin, 'add', '.'); git(origin, 'commit', '-m', 'release configuration fixture');
   execFileSync('git', ['clone', origin, checkout], { stdio: 'pipe' });
   const configurationFile = path.join(root, 'plugin-config.json'), keyFile = path.join(root, 'notary-key');
@@ -92,7 +97,17 @@ test('freeze persists Installer configuration and resume ignores changed profile
   const settings = { profileFile: path.join(root, 'profile.json'), profile: { pluginConfigurationFile: configurationFile, installerConfiguration: { baseUrl: 'https://api.example.test/v1' } },
     repos: Object.fromEntries(['harness', 'installer', 'plugins', 'skills'].map(name => [name, checkout])), tools: { node: process.execPath } };
   const ready = { configuration: { github: {} }, identity: 'Fixture', notary: { keyFile }, installerEnvironment: installerConfigurationEnvironment(settings.profile.installerConfiguration) };
+  await assert.rejects(freeze({ version: '0.3.4', plugins: 'main', harness: original }, settings, ready), /predates single-pass/);
   const candidate = await freeze({ version: '0.3.4', plugins: 'main' }, settings, ready);
+  // Harness-only selection succeeds without a skills repository or Installer configuration.
+  const harnessCandidate = await freeze({ version: '0.3.4', plugins: 'main', scope: 'harness' },
+    { ...settings, repos: { ...settings.repos, skills: '/nonexistent/skills' } }, { ...ready, installerEnvironment: undefined });
+  assert.equal(harnessCandidate.scope, 'harness');
+  assert.equal(harnessCandidate.sources.skills, undefined);
+  assert(harnessCandidate.sources.installer.commit, 'the composition producer remains pinned');
+  assert.deepEqual(frozenInstallerEnvironment(harnessCandidate), {});
+  assert.throws(() => assertResumeSelections(harnessCandidate, { version: '0.3.4' }), /scope differs/);
+  assert.doesNotThrow(() => assertResumeSelections(harnessCandidate, { version: '0.3.4', scope: 'harness' }));
   const candidateFile = path.join(root, 'candidate.json'); save(candidateFile, candidate);
   settings.profile.installerConfiguration.baseUrl = 'https://changed.example.test';
   ready.installerEnvironment.UCSD_AI_BASE_URL = 'https://also-changed.example.test';
@@ -283,4 +298,34 @@ test('production stage CLI preserves cancellation status through its child and r
       });
     }
   } finally { fs.closeSync(log); }
+});
+
+test('Harness-only recipe has no Installer or skills work and handoff preserves verified outputs', async t => {
+  const root = fixture(t), file = path.join(root, 'candidate.json');
+  const sources = Object.fromEntries(['harness', 'installer', 'plugins'].map(k => [k, { commit: 'a'.repeat(40) }]));
+  save(file, { scope: 'harness', version: '0.3.4', sources, tools: { node: process.execPath }, toolIdentities: {}, notary: { keyFile: '/fixture/key' } });
+  const dirs = Object.fromEntries(['harness-mac', 'harness-win', 'plugins', 'composition-producer'].map(k => [k, path.join(root, k)]));
+  const prepared = { dirs, commits: { harness: 'a'.repeat(40) }, pluginInput: '/fixture/plugins', pluginHash: 'c'.repeat(64), catalogPath: path.join(root, 'catalog.json'), catalogHash: 'd'.repeat(64) };
+  save(path.join(root, 'prepared.json'), prepared); save(prepared.catalogPath, { packages: [] });
+  const recipe = makeBuildRecipe(file, prepared);
+  assert(!recipe.steps.some(step => step.id.startsWith('installer-')));
+  assert(!recipe.steps.some(step => step.sources.some(source => source.path?.endsWith('/skills'))));
+  const ids = new Set(recipe.steps.map(step => step.id));
+  for (const step of recipe.steps) for (const need of step.needs) assert(ids.has(need));
+  const handoff = recipe.steps.find(step => step.id === 'handoff');
+  assert.deepEqual(handoff.needs, ['harness-mac', 'harness-win']);
+  assert(recipe.steps.every(step => step.sources.some(source => source.path === dirs['composition-producer'])));
+  const { stage, harnessFiles } = require('./local-release-stages.cjs');
+  for (const platform of ['mac', 'win']) for (const name of harnessFiles('0.3.4', platform)) {
+    const artifact = path.join(root, 'harness', platform, name);
+    fs.mkdirSync(path.dirname(artifact), { recursive: true }); fs.writeFileSync(artifact, `fixture ${name}`);
+  }
+  await stage('handoff', file);
+  const report = JSON.parse(fs.readFileSync(path.join(root, 'handoff/report.json')));
+  assert.equal(report.scope, 'harness');
+  assert.equal(report.artifacts.length, harnessFiles('0.3.4', 'mac').length + harnessFiles('0.3.4', 'win').length);
+  assert(report.artifacts.every(artifact => artifact.path.includes('/harness/')));
+  assert(report.artifacts.every(artifact => /^[a-f0-9]{64}$/.test(artifact.sha256)));
+  assert(handoff.outputs.every(output => fs.existsSync(output)));
+  await assert.rejects(stage('installer-mac', file), /excluded/);
 });
