@@ -324,7 +324,7 @@ test('Harness-only recipe has no Installer or skills work and handoff preserves 
   const report = JSON.parse(fs.readFileSync(path.join(root, 'handoff/report.json')));
   assert.equal(report.scope, 'harness');
   assert.equal(report.artifacts.length, harnessFiles('0.3.4', 'mac').length + harnessFiles('0.3.4', 'win').length);
-  assert(report.artifacts.every(artifact => artifact.path.includes('/harness/')));
+  assert(report.artifacts.every(artifact => artifact.path.includes(`${path.sep}harness${path.sep}`)));
   assert(report.artifacts.every(artifact => /^[a-f0-9]{64}$/.test(artifact.sha256)));
   assert(handoff.outputs.every(output => fs.existsSync(output)));
   await assert.rejects(stage('installer-mac', file), /excluded/);
