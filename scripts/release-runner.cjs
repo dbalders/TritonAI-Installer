@@ -138,7 +138,11 @@ async function run(plan, stateDir, { jobs = 2, dryRun = false, executeCommand, e
       if (state.steps[step.id]?.inputHash && state.steps[step.id].inputHash !== inputHash) throw new Error(`Inputs changed since the previous attempt: ${step.id}`);
       const logPath = path.join(stateDir, `${step.id}.log`);
       const log = fs.openSync(logPath, 'a', 0o600);
-      state.steps[step.id] = { status: 'running', inputHash, startedAt: new Date().toISOString(), logPath };
+      const previous = state.steps[step.id];
+      const attempts = previous ? [...(previous.attempts || []),
+        Object.fromEntries(Object.entries(previous).filter(([key]) => key !== 'attempts'))] : [];
+      const started = process.hrtime.bigint();
+      state.steps[step.id] = { status: 'running', inputHash, startedAt: new Date().toISOString(), logPath, attempts };
       save(stateFile, state);
       console.log(`[${step.id}] started; ${logPath}`);
       try {
@@ -150,7 +154,11 @@ async function run(plan, stateDir, { jobs = 2, dryRun = false, executeCommand, e
       } catch (error) {
         state.steps[step.id] = { ...state.steps[step.id], status: 'failed', error: error.message };
         throw error;
-      } finally { fs.closeSync(log); save(stateFile, state); }
+      } finally {
+        state.steps[step.id].completedAt = new Date().toISOString();
+        state.steps[step.id].durationMs = Math.round(Number(process.hrtime.bigint() - started) / 1e6);
+        fs.closeSync(log); save(stateFile, state);
+      }
     }
     while (done.size < plan.steps.length) {
       for (const step of plan.steps) {

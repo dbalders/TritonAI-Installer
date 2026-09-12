@@ -13,6 +13,7 @@ const { isDeepStrictEqual } = require('node:util');
 const net = require('node:net');
 const { verifyPluginArchive } = require('./local-release-payload.cjs');
 const { failureExitCode } = require('./local-release.cjs');
+const { measureSync } = require('./local-release-timing.cjs');
 
 const APP_NAME = 'TritonAI Harness';
 const PROOF_NAME = 'tritonai-plugin-composition-mac-arm64.json';
@@ -21,16 +22,18 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function run(command, args, options = {}) {
   const { label = path.basename(command), capture = false, ...spawnOptions } = options;
   process.stdout.write(`[harness-mac] ${label}\n`);
-  const result = spawnSync(command, args, {
-    encoding: 'utf8', stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
-    maxBuffer: 8 * 1024 * 1024, ...spawnOptions,
+  return measureSync(label, () => {
+    const result = spawnSync(command, args, {
+      encoding: 'utf8', stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+      maxBuffer: 8 * 1024 * 1024, ...spawnOptions,
+    });
+    // Do not interpolate arguments or environment: notary arguments contain
+    // credential references and must not leak into the release report.
+    if (result.error || result.status !== 0) {
+      throw new Error(`${label} failed (${result.error?.code || `exit ${result.status}`}). See the stage log.`);
+    }
+    return result;
   });
-  // Do not interpolate arguments or environment: notary arguments contain
-  // credential references and must not leak into the release report.
-  if (result.error || result.status !== 0) {
-    throw new Error(`${label} failed (${result.error?.code || `exit ${result.status}`}). See the stage log.`);
-  }
-  return result;
 }
 
 function regularFile(file) {

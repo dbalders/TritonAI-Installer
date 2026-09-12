@@ -5,6 +5,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const root = path.resolve(__dirname, "..", "..");
+const { measureSync } = require(path.join(root, "scripts", "local-release-timing.cjs"));
 const pkg = require(path.join(root, "package.json"));
 const outputDir = path.join(root, "artifacts", "macos-release");
 const configPath = path.join(root, "electron-builder.mac.json");
@@ -29,14 +30,17 @@ function main() {
 
   const notary = getNotaryEnv();
   fs.rmSync(outputDir, { recursive: true, force: true });
+  process.env.TRITONAI_RELEASE_TIMING_FILE ||= path.join(outputDir, "timings.jsonl");
+  process.env.TRITONAI_RELEASE_TIMING_STAGE ||= "installer-mac";
   fs.rmSync(path.join(root, "artifacts", "SHA256SUMS.txt"), { force: true });
-  prepareManagedConfig();
-  prepareVendorArtifacts();
+  measureSync("Prepare managed configuration", prepareManagedConfig);
+  measureSync("Prepare bundled artifacts", prepareVendorArtifacts);
 
-  run(process.execPath, [
+  measureSync("Package, sign and notarize Installer app", () => run(process.execPath, [
     builderCli,
     "--mac",
     "--arm64",
+    "--dir",
     "--config",
     configPath,
     "--publish",
@@ -47,14 +51,13 @@ function main() {
     APPLE_API_KEY: notary.appleApiKey,
     APPLE_API_KEY_ID: notary.appleApiKeyId,
     APPLE_API_ISSUER: notary.appleApiIssuer
-  });
+  }));
 
   run(process.execPath, [path.join(root, "dist", "scripts", "verify-macos-bundled-resources.js"), appPath]);
-  verifyApp(appPath);
-  createDmgFromApp();
-  for (const zip of releaseFiles(".zip")) fs.rmSync(zip, { force: true });
-  signDmgs(identity);
-  notarizeAndStapleDmgs(notary);
+  measureSync("Verify packaged Installer app", () => verifyApp(appPath));
+  measureSync("Create Installer DMG", createDmgFromApp);
+  measureSync("Sign Installer DMG", () => signDmgs(identity));
+  measureSync("Notarize and verify final Installer DMG", () => notarizeAndStapleDmgs(notary));
 
   console.log(`macOS release artifacts ready: ${path.relative(root, outputDir)}`);
   console.log("Build Windows artifacts, then run npm run release:contract for the combined checksum manifest.");
@@ -245,9 +248,9 @@ function notarizeDmg(dmg, notary, {
 } = {}) {
   const digest = sha256(dmg);
   const auth = ["--key", notary.appleApiKey, "--key-id", notary.appleApiKeyId, "--issuer", notary.appleApiIssuer];
-  const invoke = (args, timeout) => execute("xcrun", ["notarytool", ...args, ...auth, "--output-format", "json"], {
+  const invoke = (args, timeout) => measureSync(args[0] === "submit" ? "Upload Installer DMG to Apple" : "Wait for Apple DMG notarization", () => execute("xcrun", ["notarytool", ...args, ...auth, "--output-format", "json"], {
     cwd: root, env: process.env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout, maxBuffer: 1024 * 1024
-  });
+  }));
   const receipt = (result) => {
     try { return JSON.parse(result.stdout || ""); } catch { return null; }
   };
@@ -294,7 +297,7 @@ function verifyMountedDmgApp(dmg) {
     run("hdiutil", ["attach", dmg, "-nobrowse", "-readonly", "-mountpoint", mountPoint]);
     const mountedApp = path.join(mountPoint, "TritonAI Installer.app");
     verifyApp(mountedApp);
-    const marker = runPackagedBootSmoke(mountedApp);
+    const marker = measureSync("Boot final mounted Installer", () => runPackagedBootSmoke(mountedApp));
     return {
       id: "macos-dmg",
       path: path.relative(root, dmg).split(path.sep).join("/"),
@@ -376,15 +379,17 @@ function releaseFiles(...extensions) {
 }
 
 function run(command, args, env = process.env) {
-  const result = spawnSync(command, args, {
-    cwd: root,
-    env,
-    stdio: "inherit"
+  return measureSync(path.basename(command) === "node" ? path.basename(args[0]) : path.basename(command), () => {
+    const result = spawnSync(command, args, {
+      cwd: root,
+      env,
+      stdio: "inherit"
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      throw new Error(`${command} failed with exit code ${result.status}`);
+    }
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`${command} failed with exit code ${result.status}`);
-  }
 }
 
 if (require.main === module) main();

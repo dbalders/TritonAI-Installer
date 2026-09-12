@@ -33,6 +33,13 @@ test('retries failure without repeating completed dependencies; does not launch 
   assert.equal(counts.c, undefined);
   fail = false; await run(plan, f.state, { executeCommand });
   assert.deepEqual(counts, { a: 1, b: 2, c: 1 });
+  const receipt = JSON.parse(fs.readFileSync(path.join(f.state, 'state.json'))).steps.b;
+  assert.equal(receipt.attempts.length, 1);
+  assert.equal(receipt.attempts[0].status, 'failed');
+  assert.ok(receipt.attempts[0].completedAt);
+  assert.ok(receipt.attempts[0].durationMs >= 0);
+  assert.equal(receipt.status, 'complete');
+  assert.ok(receipt.durationMs >= 0);
 });
 test('overlaps independent work and waits for running work before reporting a failure', async t => {
   const f = fixture(t), a = f.step('a'), b = f.step('b');

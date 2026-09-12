@@ -7,6 +7,7 @@ const { isDeepStrictEqual } = require('node:util');
 const { read, save, git, candidateEnvironment, macSigningEnvironment, failureExitCode } = require('./local-release.cjs');
 const { treeHash } = require('./release-runner.cjs');
 const { collect } = require('./collect-release-artifacts.cjs');
+const { measure } = require('./local-release-timing.cjs');
 const childExitCode = (code, signal) => signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : code || 1;
 
 function executeWithEnvironment(environment) {
@@ -26,13 +27,15 @@ function executeWithEnvironment(environment) {
 }
 
 function command(cwd, argv, env = process.env) {
-  return new Promise((resolve, reject) => {
+  const label = [path.basename(argv[0]), path.basename(argv[1] || ''),
+    ['run', 'test'].includes(argv[1]) ? argv[2] : ''].filter(Boolean).join(' ');
+  return measure(label, () => new Promise((resolve, reject) => {
     const child = spawn(argv[0], argv.slice(1), { cwd, env, stdio: 'inherit', shell: false });
     child.once('error', reject);
     child.once('exit', (code, signal) => code === 0 ? resolve() : reject(Object.assign(
       new Error(`${path.basename(argv[0])} ${argv[1] || ''} failed (${code ?? signal})`),
       { exitCode: childExitCode(code, signal) })));
-  });
+  }));
 }
 
 function ensureWorktree(source, destination, commit = source.commit) {
@@ -166,6 +169,8 @@ function makeBuildRecipe(candidateFile, prepared) {
 
 async function platformEnvironment(root, platform, c, p) {
   const env = { ...candidateEnvironment(c), TRITONAI_LOCAL_RELEASE_CANDIDATE: '1', UCSD_SKILLS_SOURCE: p.dirs.skills, TRITONAI_PLUGIN_COMPOSITION_SOURCE: p.pluginInput,
+    TRITONAI_RELEASE_TIMING_FILE: process.env.TRITONAI_RELEASE_TIMING_FILE,
+    TRITONAI_RELEASE_TIMING_STAGE: process.env.TRITONAI_RELEASE_TIMING_STAGE,
     TRITONAI_PLUGIN_CATALOG_PATH: p.catalogPath, TRITONAI_PLUGINS_SOURCE: p.dirs.plugins,
     TRITONAI_HARNESS_VERSION: c.version, TRITONAI_ALLOW_UNSIGNED_WINDOWS_RELEASE: '1' };
   const tmp = path.join(root, 'tmp', platform); fs.mkdirSync(tmp, { recursive: true }); env.TMPDIR = tmp + path.sep;
@@ -184,6 +189,8 @@ async function platformEnvironment(root, platform, c, p) {
 }
 
 async function stage(id, candidateFile) {
+  process.env.TRITONAI_RELEASE_TIMING_FILE = path.join(path.dirname(candidateFile), `${id === 'prepare' ? 'prepare' : 'build'}.run`, 'timings.jsonl');
+  process.env.TRITONAI_RELEASE_TIMING_STAGE = id;
   if (id === 'prepare') return prepare(candidateFile);
   const c = read(candidateFile), root = path.dirname(candidateFile), p = read(path.join(root, 'prepared.json'));
   const { dirs } = p;

@@ -106,7 +106,17 @@ or Windows compiler receipt requires a fresh candidate. Notarization credentials
 only to macOS signing/package commands.
 
 The output folder contains `candidate.json`, `release.json`, per-stage logs and receipts,
-and `handoff/` with platform artifacts, SHA-256 checksums and `report.json`. The Mac Harness
+and `prepare.run/timings.jsonl` / `build.run/timings.jsonl` with timestamped command and
+macOS packaging measurements. Timing records contain labels, duration, and completion
+status, never command arguments or credentials. Some phases contain timed substeps;
+their durations overlap and must not be summed. Stage receipts preserve prior attempts
+and failed-stage durations when a candidate is resumed.
+
+The Mac Installer packages a signed, notarized app directory directly, then creates,
+signs, notarizes, and verifies the final DMG. It does not generate a discarded Installer
+ZIP. Harness's updater ZIP remains a required release artifact.
+
+The output folder also contains `handoff/` with platform artifacts, SHA-256 checksums and `report.json`. The Mac Harness
 helper checks the final signed/notarized DMG and updater ZIP, actual plugin bytes, and an
 isolated packaged boot. Windows extraction verifies actual plugin payload bytes; native
 Windows installation/boot remains explicitly unverified until `verify:win-installer:native`
