@@ -87,7 +87,7 @@ async function prepare(candidateFile) {
   }
   // These installs intentionally run repository hooks, including effect-tsgo patch.
   await Promise.all([
-    command(dirs['harness-mac'], [tools.vp, 'i']),
+    command(dirs['harness-mac'], [tools.vp, 'i', '--frozen-lockfile']),
     command(dirs['installer-mac'], ['npm', 'ci', '--no-audit', '--no-fund'])
   ]);
   await command(dirs.plugins, ['corepack', 'pnpm', 'install', '--frozen-lockfile', '--ignore-scripts']);
@@ -212,7 +212,7 @@ async function stage(id, candidateFile) {
     for (const argv of commands) await command(cwd, argv, { ...process.env, TRITONAI_HARNESS_ROOT: dirs['harness-mac'], TRITONAI_HARNESS_COMMIT: p.commits.harness });
     stamp(id); return;
   }
-  if (id.endsWith('-dependencies')) return command(dirs[id.replace('-dependencies', '')], id.startsWith('harness') ? [c.tools.vp, 'i'] : ['npm', 'ci', '--no-audit', '--no-fund']);
+  if (id.endsWith('-dependencies')) return command(dirs[id.replace('-dependencies', '')], id.startsWith('harness') ? [c.tools.vp, 'i', '--frozen-lockfile'] : ['npm', 'ci', '--no-audit', '--no-fund']);
   if (id === 'windows-tools') {
     const result = await require('./local-release-windows.cjs').prepareWindowsToolchain({ root: path.join(root, 'toolchains/win'), candidateRoot: root, installerRoot: dirs['installer-mac'], wine: c.tools.wine, env: process.env });
     save(path.join(root, 'proof/windows-tools.json'), result.receipt); return;
