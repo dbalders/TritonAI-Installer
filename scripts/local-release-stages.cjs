@@ -204,10 +204,11 @@ async function stage(id, candidateFile) {
     const kind = id.split('-')[0], cwd = dirs[kind === 'plugins' ? kind : `${kind}-mac`];
     // Honor the server's serial SQLite/Git test configuration. The root runner
     // otherwise discovers those files without loading apps/server/vite.config.ts.
+    // Platform packaging compiles desktop/server/web with the frozen managed
+    // configuration. A generic workspace build here is discarded by those builds.
     const commands = kind === 'harness' ? [[c.tools.vp, 'check'], [c.tools.vp, 'run', 'typecheck'],
       [c.tools.vp, 'test', 'run', '--maxWorkers=2', '--exclude', 'apps/server/**'],
-      [c.tools.vp, 'test', 'run', '--root', 'apps/server', '--maxWorkers=1'],
-      [c.tools.vp, 'run', 'build']]
+      [c.tools.vp, 'test', 'run', '--root', 'apps/server', '--maxWorkers=1']]
       : kind === 'installer' ? [['npm', 'test']] : [['corepack', 'pnpm', 'readiness:local']];
     for (const argv of commands) await command(cwd, argv, { ...process.env, TRITONAI_HARNESS_ROOT: dirs['harness-mac'], TRITONAI_HARNESS_COMMIT: p.commits.harness });
     stamp(id); return;

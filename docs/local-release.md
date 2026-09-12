@@ -101,6 +101,12 @@ PID and children have stopped before removing that candidate's lock.
 
 The source test gate runs non-server tests with two workers, then runs the server
 suite with its own serial SQLite/Git test configuration. Both groups must pass.
+Source checks run lint and typecheck as well. Compilation happens in each platform's
+packaging stage using its exact managed configuration; source checks do not run an
+additional workspace build that packaging would discard.
+The Installer's npm publication-date check deduplicates package/version lookups within
+one invocation and queries at most six at a time. Every invocation still queries npm;
+missing dates and registry errors still fail the gate.
 Node, Vite+, and Wine resolve to immutable executable paths and hashes; a changed executable
 or Windows compiler receipt requires a fresh candidate. Notarization credentials are added
 only to macOS signing/package commands.
