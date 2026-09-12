@@ -154,26 +154,19 @@ function detachAndClean(mountPoint, scratch, runCommand) {
 function createSignedDmg(sourceApp, targetDmg, stageRoot, runCommand) {
   const productName = path.basename(sourceApp, '.app');
   const scratch = fs.mkdtempSync(path.join(stageRoot, 'signed-dmg-'));
-  const mountPoint = path.join(scratch, 'mount');
-  const writable = path.join(scratch, 'writable.dmg');
+  const contents = path.join(scratch, 'contents');
   const compressed = path.join(scratch, 'compressed.dmg');
-  fs.mkdirSync(mountPoint);
-  let mounted = false;
+  fs.mkdirSync(contents);
   try {
-    runCommand('hdiutil', ['create', '-size', `${diskImageCapacityMib(sourceApp)}m`, '-fs', 'HFS+', '-volname', productName, '-ov', writable], { label: 'Create writable candidate DMG' });
-    runCommand('hdiutil', ['attach', writable, '-nobrowse', '-noverify', '-noautoopen', '-mountpoint', mountPoint], { label: 'Mount writable candidate DMG' });
-    mounted = true;
-    // This private build volume must not be indexed while its payload is copied.
-    fs.writeFileSync(path.join(mountPoint, '.metadata_never_index'), '');
-    runCommand('/usr/bin/ditto', ['--noextattr', '--noqtn', sourceApp, path.join(mountPoint, `${productName}.app`)], { label: 'Copy signed Harness into candidate DMG' });
-    fs.symlinkSync('/Applications', path.join(mountPoint, 'Applications'));
-    runCommand('hdiutil', ['detach', mountPoint, '-force'], { label: 'Detach writable candidate DMG' });
-    mounted = false;
-    runCommand('hdiutil', ['convert', writable, '-format', 'UDZO', '-ov', '-o', compressed], { label: 'Compress signed candidate DMG' });
+    // Build from a plain directory so CI does not hold a writable mounted volume
+    // while copying the large app. Final read-only mounts still verify the image.
+    fs.writeFileSync(path.join(contents, '.metadata_never_index'), '');
+    runCommand('/usr/bin/ditto', ['--noextattr', '--noqtn', sourceApp, path.join(contents, `${productName}.app`)], { label: 'Stage signed Harness for candidate DMG' });
+    fs.symlinkSync('/Applications', path.join(contents, 'Applications'));
+    runCommand('hdiutil', ['create', '-srcfolder', contents, '-fs', 'HFS+', '-volname', productName, '-format', 'UDZO', '-ov', compressed], { label: 'Create compressed signed candidate DMG' });
     fs.renameSync(compressed, targetDmg);
   } finally {
-    if (mounted) detachAndClean(mountPoint, scratch, runCommand);
-    else fs.rmSync(scratch, { recursive: true, force: true });
+    fs.rmSync(scratch, { recursive: true, force: true });
   }
 }
 
