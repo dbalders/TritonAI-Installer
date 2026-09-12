@@ -8,21 +8,22 @@ const { EventEmitter } = require('node:events');
 const { spawn, execFileSync } = require('node:child_process');
 const { test } = require('node:test');
 const { failureExitCode } = require('./local-release.cjs');
-const { findKeptStage, getNotaryConfig, verifyPluginPayload, isolatedBootEnvironment,
+const { macReleaseIdentity, findKeptStage, getNotaryConfig, verifyPluginPayload, isolatedBootEnvironment,
   withMountedDmg, verifyPackagedBoot, finalizeMacRelease, processSnapshot, trackBootProcesses } = require('./local-release-mac.cjs');
 
-function fixture(t) {
+function fixture(t, version = '0.3.4') {
+  const { productName } = macReleaseIdentity(version);
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-release-mac-test-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const stageRoot = path.join(root, 'stage');
   const stageApp = path.join(stageRoot, 't3code-desktop-mac-stage-fixture', 'app');
-  const app = path.join(root, 'TritonAI Harness.app');
+  const app = path.join(root, `${productName}.app`);
   const release = path.join(root, 'custom-output');
   fs.mkdirSync(stageApp, { recursive: true });
   fs.mkdirSync(path.join(app, 'Contents', 'Resources'), { recursive: true });
   fs.mkdirSync(release);
   fs.writeFileSync(path.join(app, 'Contents', 'Resources', 'app.asar'), 'fixture-archive');
-  fs.writeFileSync(path.join(stageApp, 'package.json'), JSON.stringify({ version: '0.3.4', t3codeCommitHash: 'b'.repeat(12), build: { productName: 'TritonAI Harness', mac: { target: ['zip'] } } }));
+  fs.writeFileSync(path.join(stageApp, 'package.json'), JSON.stringify({ version, t3codeCommitHash: 'b'.repeat(12), build: { productName, mac: { target: ['zip'] } } }));
   const bytes = Buffer.from('plugin implementation');
   const file = { path: 'index.js', size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
   const digest = crypto.createHash('sha256').update(file.path).update('\0').update(String(file.size)).update('\0').update(bytes).update('\0').digest('hex');
@@ -31,7 +32,7 @@ function fixture(t) {
   }, packages: [{ id: 'github', name: '@tritonai/plugin-github', version: '0.1.0', digest, files: [file] }] };
   const pluginsPath = 'apps/server/dist/production-integrations';
   const entries = {
-    'package.json': Buffer.from(JSON.stringify({ version: '0.3.4' })),
+    'package.json': Buffer.from(JSON.stringify({ version })),
     'apps/server/dist/bin.mjs': Buffer.from('github production-integrations tritonai-harness-plugin-composition'),
     [`${pluginsPath}/packages/github/index.js`]: bytes,
   };
@@ -62,7 +63,7 @@ function fixture(t) {
   const key = path.join(root, 'AuthKey.p8');
   fs.writeFileSync(key, 'test-key');
   const env = { DEVELOPER_ID_APPLICATION: 'Developer ID Application: Fixture (TEAM)', APPLE_API_KEY: key, APPLE_API_KEY_ID: 'KEY', APPLE_API_ISSUER: 'ISSUER' };
-  return { root, stageRoot, stageApp, app, release, composition, entries, asar, env };
+  return { version, productName, root, stageRoot, stageApp, app, release, composition, entries, asar, env };
 }
 
 test('selects only the unique exact candidate stage with matching version', (t) => {
@@ -385,23 +386,23 @@ test('boot gate fails closed if Electron resolves the live user-data directory',
 
 function packagingMocks(f, status = 'Accepted') {
   const calls = [];
-  const signedApp = path.join(f.stageApp, 'dist', 'mac-arm64', 'TritonAI Harness.app');
+  const signedApp = path.join(f.stageApp, 'dist', 'mac-arm64', `${f.productName}.app`);
   const command = (program, args, options = {}) => {
     calls.push({ program, args, options });
     if (program === 'git') return { stdout: 'b'.repeat(40) };
     if (program === 'codesign' && args[0] === '--display') return { stderr: 'Authority=Developer ID Application: Fixture (TEAM)\n' };
     if (program === 'vp') {
       fs.cpSync(f.app, signedApp, { recursive: true });
-      fs.writeFileSync(path.join(f.stageApp, 'dist', 'TritonAI-Harness-0.3.4-arm64.zip'), 'zip');
-      fs.writeFileSync(path.join(f.stageApp, 'dist', 'TritonAI-Harness-0.3.4-arm64.zip.blockmap'), 'zip-blockmap');
+      fs.writeFileSync(path.join(f.stageApp, 'dist', `TritonAI-Harness-${f.version}-arm64.zip`), 'zip');
+      fs.writeFileSync(path.join(f.stageApp, 'dist', `TritonAI-Harness-${f.version}-arm64.zip.blockmap`), 'zip-blockmap');
     }
     if (program.endsWith('ditto')) {
-      const target = args[0] === '-x' ? path.join(args.at(-1), 'TritonAI Harness.app') : args.at(-1);
+      const target = args[0] === '-x' ? path.join(args.at(-1), `${f.productName}.app`) : args.at(-1);
       fs.cpSync(args[0] === '-x' ? signedApp : args.at(-2), target, { recursive: true });
     }
     if (program === 'hdiutil') {
       if (args[0] === 'create' || args[0] === 'convert') fs.writeFileSync(args.at(-1), 'dmg');
-      if (args[0] === 'attach' && args.includes('-readonly')) fs.cpSync(signedApp, path.join(args.at(-1), 'TritonAI Harness.app'), { recursive: true });
+      if (args[0] === 'attach' && args.includes('-readonly')) fs.cpSync(signedApp, path.join(args.at(-1), `${f.productName}.app`), { recursive: true });
     }
     if (program === 'xcrun' && args[0] === 'notarytool') return { stdout: JSON.stringify({ status, id: 'notary-job' }) };
     if (program === 'xcrun' && args[1] === 'staple') fs.appendFileSync(args[2], '-stapled');
@@ -461,4 +462,20 @@ test('signed payload validation failure stops before ZIP copying, notarization, 
   assert(!mock.calls.some(call => call.args[0] === 'notarytool'));
   assert(!fs.existsSync(path.join(f.release, 'TritonAI-Harness-0.3.4-arm64.zip')));
   assert(!fs.existsSync(path.join(f.release, 'harness-mac-verification.json')));
+});
+
+
+test('nightly finalization preserves product identity and writes only the nightly updater', async (t) => {
+  const version = '0.3.4-nightly.20260912.42';
+  const f = fixture(t, version);
+  const mock = packagingMocks(f);
+  const report = await finalizeMacRelease({ harnessRoot: f.root, stageRoot: f.stageRoot, version, outputDir: f.release,
+    env: f.env, platform: 'darwin', runCommand: mock.command, packagingTools: mock.tools,
+    verifyBoot: async ({ appPath }) => { assert.equal(path.basename(appPath), 'TritonAI Harness (Nightly).app'); return { healthyForMs: 5000 }; },
+  });
+  assert.equal(report.version, version);
+  assert.match(fs.readFileSync(path.join(f.release, 'nightly-mac.yml'), 'utf8'), /0\.3\.4-nightly\.20260912\.42/);
+  assert.equal(fs.existsSync(path.join(f.release, 'latest-mac.yml')), false);
+  assert(mock.calls.some(c => c.args.includes('TritonAI Harness (Nightly)')));
+  for (const invalid of ['0.3.4-nightly', '0.3.4-nightly.20260912', '0.3.4-rc.1']) assert.throws(() => macReleaseIdentity(invalid), /release version/);
 });

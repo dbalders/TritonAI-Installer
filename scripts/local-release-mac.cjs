@@ -16,6 +16,13 @@ const { failureExitCode } = require('./local-release.cjs');
 const { measureSync } = require('./local-release-timing.cjs');
 
 const APP_NAME = 'TritonAI Harness';
+function macReleaseIdentity(version) {
+  const core = '(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)';
+  const nightly = new RegExp(`^${core}-nightly\\.\\d{8}\\.[1-9]\\d*$`).test(version);
+  if (!nightly && !new RegExp(`^${core}$`).test(version)) throw new Error('A stable or dated nightly release version is required.');
+  return { productName: nightly ? `${APP_NAME} (Nightly)` : APP_NAME, updaterFile: nightly ? 'nightly-mac.yml' : 'latest-mac.yml' };
+}
+
 const PROOF_NAME = 'tritonai-plugin-composition-mac-arm64.json';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -52,7 +59,7 @@ function findKeptStage(stageRoot, version) {
   const appRoot = candidates[0];
   if (!fs.lstatSync(appRoot).isDirectory()) throw new Error('Kept macOS stage app must be a real directory.');
   const metadata = JSON.parse(fs.readFileSync(regularFile(path.join(appRoot, 'package.json')), 'utf8'));
-  if (metadata.version !== version || metadata.build?.productName !== APP_NAME) {
+  if (metadata.version !== version || metadata.build?.productName !== macReleaseIdentity(version).productName) {
     throw new Error('Kept macOS stage does not match the requested Harness version/product.');
   }
   return appRoot;
@@ -145,6 +152,7 @@ function detachAndClean(mountPoint, scratch, runCommand) {
 }
 
 function createSignedDmg(sourceApp, targetDmg, stageRoot, runCommand) {
+  const productName = path.basename(sourceApp, '.app');
   const scratch = fs.mkdtempSync(path.join(stageRoot, 'signed-dmg-'));
   const mountPoint = path.join(scratch, 'mount');
   const writable = path.join(scratch, 'writable.dmg');
@@ -152,10 +160,10 @@ function createSignedDmg(sourceApp, targetDmg, stageRoot, runCommand) {
   fs.mkdirSync(mountPoint);
   let mounted = false;
   try {
-    runCommand('hdiutil', ['create', '-size', `${diskImageCapacityMib(sourceApp)}m`, '-fs', 'HFS+', '-volname', APP_NAME, '-ov', writable], { label: 'Create writable candidate DMG' });
+    runCommand('hdiutil', ['create', '-size', `${diskImageCapacityMib(sourceApp)}m`, '-fs', 'HFS+', '-volname', productName, '-ov', writable], { label: 'Create writable candidate DMG' });
     runCommand('hdiutil', ['attach', writable, '-nobrowse', '-noverify', '-noautoopen', '-mountpoint', mountPoint], { label: 'Mount writable candidate DMG' });
     mounted = true;
-    runCommand('/usr/bin/ditto', ['--noextattr', '--noqtn', sourceApp, path.join(mountPoint, `${APP_NAME}.app`)], { label: 'Copy signed Harness into candidate DMG' });
+    runCommand('/usr/bin/ditto', ['--noextattr', '--noqtn', sourceApp, path.join(mountPoint, `${productName}.app`)], { label: 'Copy signed Harness into candidate DMG' });
     fs.symlinkSync('/Applications', path.join(mountPoint, 'Applications'));
     runCommand('hdiutil', ['detach', mountPoint], { label: 'Detach writable candidate DMG' });
     mounted = false;
@@ -167,13 +175,13 @@ function createSignedDmg(sourceApp, targetDmg, stageRoot, runCommand) {
   }
 }
 
-async function withMountedDmg(dmg, stageRoot, runCommand, action) {
+async function withMountedDmg(dmg, stageRoot, runCommand, action, productName = APP_NAME) {
   const mountPoint = fs.mkdtempSync(path.join(stageRoot, 'verify-dmg-'));
   let mounted = false;
   try {
     runCommand('hdiutil', ['attach', dmg, '-nobrowse', '-readonly', '-mountpoint', mountPoint], { label: 'Mount final candidate DMG' });
     mounted = true;
-    return await action(path.join(mountPoint, `${APP_NAME}.app`));
+    return await action(path.join(mountPoint, `${productName}.app`));
   } finally {
     if (mounted) detachAndClean(mountPoint, mountPoint, runCommand);
     else fs.rmSync(mountPoint, { recursive: true, force: true });
@@ -333,9 +341,10 @@ async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, 
   selectPort = availablePort, fetchResponse = fetch, assertAlive = (pid) => process.kill(pid, 0),
   operationTimeoutMs = 10_000, closeTimeoutMs = 5000, killGroup = (pid, signal) => process.kill(-pid, signal),
   readProcessSnapshot = () => processSnapshot(runCommand), signals = process }) {
+  const productName = path.basename(appPath, '.app');
   const scratch = fs.mkdtempSync(path.join(stageRoot, 'packaged-boot-'));
   const home = path.join(scratch, 'home');
-  const installedApp = path.join(scratch, `${APP_NAME}.app`);
+  const installedApp = path.join(scratch, `${productName}.app`);
   const bootLog = `${scratch}.log`;
   fs.mkdirSync(home);
   let application;
@@ -365,7 +374,7 @@ async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, 
     const backendPort = await selectPort();
     runCommand('/usr/bin/ditto', ['--noextattr', '--noqtn', appPath, installedApp], { label: 'Install exact candidate in isolated boot directory' });
     application = await electron.launch({
-      executablePath: path.join(installedApp, 'Contents', 'MacOS', APP_NAME),
+      executablePath: path.join(installedApp, 'Contents', 'MacOS', productName),
       env: { ...isolatedBootEnvironment(home, env), T3CODE_PORT: String(backendPort) }, cwd: home, timeout: 60_000,
       // executablePath skips Playwright's Electron loader, including its normal
       // mock-keychain switch. This credential-free fixture must not initialize
@@ -456,7 +465,7 @@ async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, 
 async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = process.env, runCommand = run,
   packagingTools, verifyBoot = verifyPackagedBoot, platform = process.platform, configPath, outputDir }) {
   if (platform !== 'darwin') throw new Error('Harness macOS finalization must run on macOS.');
-  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) throw new Error('A stable release version is required.');
+  const { productName, updaterFile } = macReleaseIdentity(version);
   harnessRoot = fs.realpathSync(harnessRoot);
   stageRoot = fs.realpathSync(stageRoot);
   const stageApp = findKeptStage(stageRoot, version);
@@ -482,8 +491,8 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   const signingEnv = { ...env, CSC_IDENTITY_AUTO_DISCOVERY: 'true', CSC_NAME: identity };
   for (const key of ['CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER']) delete signingEnv[key];
   exec('vp', ['exec', '--filter', '@t3tools/desktop', '--', 'electron-builder', '--projectDir', stageApp, '--mac', '--arm64', '--publish', 'never'], { env: signingEnv, label: 'Sign staged Harness and build updater ZIP' });
-  exec(process.execPath, ['scripts/verify-macos-desktop-package.ts', dist, APP_NAME], { label: 'Verify signed Harness update configuration and native binaries' });
-  const signedApp = path.join(dist, 'mac-arm64', `${APP_NAME}.app`);
+  exec(process.execPath, ['scripts/verify-macos-desktop-package.ts', dist, productName], { label: 'Verify signed Harness update configuration and native binaries' });
+  const signedApp = path.join(dist, 'mac-arm64', `${productName}.app`);
   verifySignedApp(signedApp, identity, exec);
   const stagedProof = verifyPluginPayload(signedApp, composition, tools.asar, version);
   const zipName = `TritonAI-Harness-${version}-arm64.zip`;
@@ -495,7 +504,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   await withMountedDmg(dmg, stageRoot, exec, (app) => {
     verifySignedApp(app, identity, exec);
     verifyPluginPayload(app, composition, tools.asar, version);
-  });
+  }, productName);
   exec('codesign', ['--force', '--sign', `Developer ID Application: ${identity}`, '--timestamp', dmg], { label: 'Sign candidate DMG' });
   const notarization = exec('xcrun', ['notarytool', 'submit', dmg, '--key', notary.key, '--key-id', notary.keyId, '--issuer', notary.issuer, '--wait', '--output-format', 'json'], { capture: true, label: 'Notarize candidate DMG and wait for Apple' });
   let receipt;
@@ -509,11 +518,11 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
     verifySignedApp(app, identity, exec);
     verifyPluginPayload(app, composition, tools.asar, version);
     return verifyBoot({ appPath: app, stageRoot, version, electron: tools.electron, env, runCommand: exec });
-  });
+  }, productName);
   const zipScratch = fs.mkdtempSync(path.join(stageRoot, 'verify-zip-'));
   try {
     exec('/usr/bin/ditto', ['-x', '-k', zip, zipScratch], { label: 'Extract final updater ZIP for verification' });
-    const zipApp = path.join(zipScratch, `${APP_NAME}.app`);
+    const zipApp = path.join(zipScratch, `${productName}.app`);
     verifySignedApp(zipApp, identity, exec);
     verifyPluginPayload(zipApp, composition, tools.asar, version);
     const [zipAsar, signedAsar] = await Promise.all([zipApp, signedApp].map((app) => fileInfo(path.join(app, 'Contents', 'Resources', 'app.asar'))));
@@ -522,7 +531,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   await tools.buildBlockMap(dmg, 'gzip', `${dmg}.blockmap`);
   const [zipInfo, dmgInfo] = await Promise.all([fileInfo(zip), fileInfo(dmg)]);
   const latest = `version: ${version}\nfiles:\n  - url: ${zipInfo.fileName}\n    sha512: ${zipInfo.sha512}\n    size: ${zipInfo.size}\n  - url: ${dmgInfo.fileName}\n    sha512: ${dmgInfo.sha512}\n    size: ${dmgInfo.size}\npath: ${zipInfo.fileName}\nsha512: ${zipInfo.sha512}\nreleaseDate: '${new Date().toISOString()}'\n`;
-  fs.writeFileSync(path.join(output, 'latest-mac.yml'), latest);
+  fs.writeFileSync(path.join(output, updaterFile), latest);
   exec(process.execPath, ['scripts/finalize-managed-plugin-proof.ts', '--platform', 'mac', '--arch', 'arm64', '--artifact', dmg, '--output-dir', output], { label: 'Bind plugin proof to final DMG bytes' });
   const proof = JSON.parse(fs.readFileSync(path.join(output, PROOF_NAME), 'utf8'));
   const { artifacts, ...boundComposition } = proof;
@@ -537,7 +546,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   return report;
 }
 
-module.exports = { findKeptStage, getNotaryConfig, resolvePackagingTools, fileInfo, verifyPluginPayload, processSnapshot, trackBootProcesses,
+module.exports = { macReleaseIdentity, findKeptStage, getNotaryConfig, resolvePackagingTools, fileInfo, verifyPluginPayload, processSnapshot, trackBootProcesses,
   createSignedDmg, withMountedDmg, isolatedBootEnvironment, ownsProcess, verifyPackagedBoot, finalizeMacRelease };
 
 if (require.main === module) {
