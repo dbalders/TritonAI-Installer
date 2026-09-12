@@ -22,6 +22,7 @@ function fixture(t, version = '0.3.4') {
   fs.mkdirSync(stageApp, { recursive: true });
   fs.mkdirSync(path.join(app, 'Contents', 'Resources'), { recursive: true });
   fs.mkdirSync(release);
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({packageManager: 'pnpm@11.10.0'}));
   fs.writeFileSync(path.join(app, 'Contents', 'Resources', 'app.asar'), 'fixture-archive');
   fs.writeFileSync(path.join(stageApp, 'package.json'), JSON.stringify({ version, t3codeCommitHash: 'b'.repeat(12), build: { productName, mac: { target: ['zip'] } } }));
   const bytes = Buffer.from('plugin implementation');
@@ -434,6 +435,8 @@ test('full finalization binds metadata after stapling, verifies payload and boot
   assert.match(fs.readFileSync(path.join(f.release, 'latest-mac.yml'), 'utf8'), new RegExp(`size: ${'dmg-stapled'.length}`));
   const signing = mock.calls.find((call) => call.program === 'vp');
   assert.equal(signing.options.env.CSC_NAME, 'Fixture (TEAM)');
+  assert.equal(signing.options.env.npm_config_user_agent, 'pnpm/11.10.0');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.stageApp, 'package.json'))).build.mac.sign, path.join(f.root, 'scripts/sign-macos.ts'));
   assert.equal(signing.options.env.APPLE_API_KEY, undefined);
   assert.equal(mock.calls.filter(call => call.program === 'vp').length, 1);
   const validation = mock.calls.findIndex(call => call.args[0] === 'scripts/verify-macos-desktop-package.ts');

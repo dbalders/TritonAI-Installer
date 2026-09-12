@@ -488,7 +488,11 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   const dist = path.join(stageApp, 'dist');
   // These are generated outputs of the unique candidate stage, never source or another candidate.
   fs.rmSync(dist, { recursive: true, force: true });
-  const signingEnv = { ...env, CSC_IDENTITY_AUTO_DISCOVERY: 'true', CSC_NAME: identity };
+  const packageManager = JSON.parse(fs.readFileSync(path.join(harnessRoot, 'package.json'), 'utf8')).packageManager;
+  if (!/^pnpm@\d+\.\d+\.\d+$/.test(packageManager)) throw new Error('Expected the pinned Harness pnpm version.');
+  stageMetadata.build.mac.sign = path.join(harnessRoot, 'scripts/sign-macos.ts');
+  fs.writeFileSync(path.join(stageApp, 'package.json'), JSON.stringify(stageMetadata, null, 2) + '\n');
+  const signingEnv = { ...env, CSC_IDENTITY_AUTO_DISCOVERY: 'true', CSC_NAME: identity, npm_config_user_agent: packageManager.replace('@', '/') };
   for (const key of ['CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER']) delete signingEnv[key];
   exec('vp', ['exec', '--filter', '@t3tools/desktop', '--', 'electron-builder', '--projectDir', stageApp, '--mac', '--arm64', '--publish', 'never'], { env: signingEnv, label: 'Sign staged Harness and build updater ZIP' });
   exec(process.execPath, ['scripts/verify-macos-desktop-package.ts', dist, productName], { label: 'Verify signed Harness update configuration and native binaries' });
