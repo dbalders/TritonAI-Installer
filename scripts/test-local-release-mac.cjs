@@ -191,7 +191,7 @@ test('macOS process fixture freezes and discovers a detached child spawned durin
     process.kill(control.pid, 0);
   });
 
-function bootMocks(f, { unsafeUserData = false, hungEvaluation = false, hungClose = false, stuckBackend = false, reusedBackend = false, forkDuringCleanup = false, closeSignal } = {}) {
+function bootMocks(f, { version = '0.3.4', rendererUrl = 't3code://app/', unsafeUserData = false, hungEvaluation = false, hungClose = false, stuckBackend = false, reusedBackend = false, forkDuringCleanup = false, closeSignal } = {}) {
   let launchOptions;
   let closed = false;
   const child = Object.assign(new EventEmitter(), { pid: 100, exitCode: null, signalCode: null });
@@ -205,11 +205,11 @@ function bootMocks(f, { unsafeUserData = false, hungEvaluation = false, hungClos
     { pid: 300, ppid: 100, pgid: 100, status: 'S', started: 'Wed Sep 9 16:00:02 2026' },
     { pid: 900, ppid: 50, pgid: 900, status: 'S', started: 'Wed Sep 9 16:00:00 2026' },
   ];
-  const page = { url: () => 't3code://app/', evaluate: async () => true };
+  const page = { url: () => rendererUrl, evaluate: async () => true };
   const application = {
     process: () => child,
     evaluate: async (_callback, argument) => hungEvaluation ? new Promise(() => {}) : argument ? true : {
-      version: '0.3.4', packaged: true,
+      version, packaged: true,
       userData: unsafeUserData ? '/Users/live/Library/Application Support/tritonai-harness' : path.join(launchOptions.env.HOME, 'Library', 'Application Support', 'tritonai-harness'),
       windows: [{ visible: true, rendererPid: 300, url: page.url() }],
     },
@@ -274,6 +274,33 @@ test('boot gate verifies the custom-protocol renderer and an owned backend in is
   assert.equal(mock.getState().closed, true);
   assert(!fs.existsSync(mock.getState().launchOptions.env.HOME));
 });
+
+test('nightly boot gate verifies its isolated protocol renderer and owned backend', async (t) => {
+  const version = '0.3.4-nightly.20260915.42';
+  const f = fixture(t, version);
+  const mock = bootMocks(f, { version, rendererUrl: 'tritonai-harness-nightly://app/' });
+  const result = await verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version, env: f.env, ...mock });
+  assert.equal(result.visibleWindow, true);
+  assert.equal(result.rendererReady, true);
+  assert.equal(result.backendPid, 200);
+  assert.equal(result.healthyForMs, 5000);
+  assert.equal(mock.getState().closed, true);
+  assert.equal(macReleaseIdentity('0.3.4').rendererUrl, 't3code://app/');
+});
+
+for (const [version, rendererUrl] of [
+  ['0.3.4-nightly.20260915.42', 't3code://app/'],
+  ['0.3.4', 'tritonai-harness-nightly://app/'],
+]) {
+  test(`boot gate rejects the other channel protocol for ${version}`, async (t) => {
+    const f = fixture(t, version);
+    const mock = bootMocks(f, { version, rendererUrl });
+    await assert.rejects(verifyPackagedBoot({ appPath: f.app, stageRoot: f.stageRoot, version, env: f.env, ...mock,
+      wait: async (ms) => { assert.equal(ms, 500, 'must keep polling instead of accepting the renderer'); throw new Error('stop rejected renderer polling'); },
+      fetchResponse: async () => { assert.fail('wrong-channel renderer must not reach backend verification'); },
+    }), /stop rejected renderer polling/);
+  });
+}
 
 test('boot gate kills captured detached backend groups before the main group when close stalls', async (t) => {
   const f = fixture(t);
