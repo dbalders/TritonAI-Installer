@@ -75,3 +75,15 @@ flowchart TD
 - Decide whether API keys should be stored in shell env, OS keychain, or exchanged for short-lived UCSD tokens.
 - Provision and maintain the Azure Trusted Signing release identity and its seven required secret/configuration values on the dedicated Windows release host.
 - Add richer UCSD gateway status messaging without leaking key material into logs.
+
+## Shared Codex update coordination
+
+Harness and Installer use `.tritonai-codex.lock.sqlite` under the user's Codex runtime root.
+An exclusive SQLite transaction covers managed Node prerequisites, engine inspection, installation,
+launcher rewriting, and verification. Competing operations fail with a retry message. The OS releases the lock if a process
+crashes; the lock file must never be unlinked. Installer recovers Harness's
+`.tritonai-codex-update.json` journal under that lock before starting its own transaction. Uncommitted
+activation restores the backup; committed activation only needs cleanup. Invalid recovery records
+preserve all evidence and stop installation. Installer's own activation journal remains managed by
+its existing directory transaction recovery. Older Harness and Installer releases need updating to
+participate in this shared protocol.

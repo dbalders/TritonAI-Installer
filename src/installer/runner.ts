@@ -10,6 +10,7 @@ const { checkInstallCapacity } = require("./install-preflight");
 const { installT3CodeDesktop } = require("./t3code-desktop");
 const { installBundledSkills } = require("./skills");
 const { installBundledCodexCli, writeManagedCodexLauncher } = require("./codex-vendor");
+const { withCodexRuntimeLock } = require("./codex-runtime-lock");
 const { checkTritonAiConnection } = require("./tritonai-connection");
 const { getTritonAiEnvironment } = require("./codex-environment");
 const configWriters = require("./config-writers");
@@ -111,32 +112,34 @@ async function runInstall(payload, runtime) {
       configWriters.seedOnboardingWorkspace(paths);
     }
 
-    emit("Checking installer prerequisites...");
-    const prerequisiteProvider = runtime.ensurePrerequisites || ensurePrerequisites;
-    nodeRuntime = await prerequisiteProvider({
-      paths,
-      platform,
-      arch,
-      emit,
-      resourcesPath: runtime.resourcesPath,
-      appRoot: runtime.appRoot,
-      packaged: runtime.packaged
-    });
-
-    emit("Saving TritonAI access key environment...");
-    const environmentSaver = runtime.saveEnvironment || saveEnvironment;
-    environmentMigration = await environmentSaver({
-      credentials,
-      paths,
-      platform,
-      nodeRuntime,
-      emit,
-      windowsEnvironmentMigrationRuntime: runtime.windowsEnvironmentMigrationRuntime
-    });
-
-    diagnostics.setStep("tools");
     const tool = getTool("t3code");
-    await ensureCodexCliForT3({ credentials, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
+    await withCodexRuntimeLock(paths.codexRoot, async () => {
+      emit("Checking installer prerequisites...");
+      const prerequisiteProvider = runtime.ensurePrerequisites || ensurePrerequisites;
+      nodeRuntime = await prerequisiteProvider({
+        paths,
+        platform,
+        arch,
+        emit,
+        resourcesPath: runtime.resourcesPath,
+        appRoot: runtime.appRoot,
+        packaged: runtime.packaged
+      });
+
+      emit("Saving TritonAI access key environment...");
+      const environmentSaver = runtime.saveEnvironment || saveEnvironment;
+      environmentMigration = await environmentSaver({
+        credentials,
+        paths,
+        platform,
+        nodeRuntime,
+        emit,
+        windowsEnvironmentMigrationRuntime: runtime.windowsEnvironmentMigrationRuntime
+      });
+
+      diagnostics.setStep("tools");
+      await ensureCodexCliForT3({ credentials, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
+    });
 
     diagnostics.setStep("shortcut");
     const desktopInstaller = runtime.installT3CodeDesktop || installT3CodeDesktop;
