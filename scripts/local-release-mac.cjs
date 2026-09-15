@@ -20,7 +20,7 @@ function macReleaseIdentity(version) {
   const core = '(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)';
   const nightly = new RegExp(`^${core}-nightly\\.\\d{8}\\.[1-9]\\d*$`).test(version);
   if (!nightly && !new RegExp(`^${core}$`).test(version)) throw new Error('A stable or dated nightly release version is required.');
-  return { productName: nightly ? `${APP_NAME} (Nightly)` : APP_NAME, updaterFile: nightly ? 'nightly-mac.yml' : 'latest-mac.yml' };
+  return { productName: nightly ? `${APP_NAME} (Nightly)` : APP_NAME, updaterFile: nightly ? 'nightly-mac.yml' : 'latest-mac.yml', rendererUrl: nightly ? 'tritonai-harness-nightly://app/' : 't3code://app/' };
 }
 
 const PROOF_NAME = 'tritonai-plugin-composition-mac-arm64.json';
@@ -337,6 +337,7 @@ async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, 
   operationTimeoutMs = 10_000, closeTimeoutMs = 5000, killGroup = (pid, signal) => process.kill(-pid, signal),
   readProcessSnapshot = () => processSnapshot(runCommand), signals = process }) {
   const productName = path.basename(appPath, '.app');
+  const { rendererUrl } = macReleaseIdentity(version);
   const scratch = fs.mkdtempSync(path.join(stageRoot, 'packaged-boot-'));
   const home = path.join(scratch, 'home');
   const installedApp = path.join(scratch, `${productName}.app`);
@@ -399,11 +400,11 @@ async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, 
       })), operationTimeoutMs, 'Packaged Harness main-process evaluation');
       if (state.version !== version || !state.packaged ||
           !state.userData.startsWith(`${home}${path.sep}`)) throw new Error('Packaged Harness boot did not use the isolated candidate version/user-data directory.');
-      const window = state.windows.find((entry) => entry.visible && entry.url.startsWith('t3code://app/') && entry.rendererPid > 0);
+      const window = state.windows.find((entry) => entry.visible && entry.url.startsWith(rendererUrl) && entry.rendererPid > 0);
       if (window) {
         const page = application.windows().find((entry) => entry.url() === window.url);
         if (page && await bounded(page.evaluate(() => document.readyState === 'complete' && Boolean(document.body?.innerText.trim())), operationTimeoutMs, 'Packaged Harness renderer evaluation')) {
-          // Current Harness serves the client through t3code://app and exposes
+          // Harness serves the client through its channel-specific protocol and exposes
           // this unauthenticated readiness descriptor on its separate backend.
           const response = await fetchResponse(`http://127.0.0.1:${backendPort}/.well-known/t3/environment`, { signal: AbortSignal.timeout(5000), redirect: 'error' });
           if (!response.ok) throw new Error('Packaged Harness backend did not return a healthy renderer response.');
