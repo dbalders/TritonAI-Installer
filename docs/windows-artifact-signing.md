@@ -11,7 +11,12 @@ GitHub OIDC login. It never falls back to the unsigned lane.
 `main`. It requires explicit Installer/Harness stable versions, the exact Harness
 commit and successful tag-triggered `release.yml` run ID, and a reviewed secure
 skills commit. It checks that the Harness tag still resolves to that commit and
-that the stable release is published with all required Windows assets. A nightly,
+that the stable release is published with all required Windows assets. It separately
+downloads `desktop-win-x64` from that exact workflow run and compares all three
+consumed release inputs (manifest, executable, plugin proof) byte-for-byte using
+SHA-512 and size before activating the vendor payload. Replaced release assets
+fail even if they are internally consistent and carry a valid signature. Expired
+or missing run artifacts fail closed; there is no release-only fallback. A nightly,
 draft, failed run, unrelated workflow, or missing asset stops packaging. Dispatch
 only after Harness finishes; this workflow does not create or publish Harness.
 
@@ -33,7 +38,7 @@ Native Setup and portable boot verification must also pass. Missing configuratio
 signing failures, invalid signatures and failed boot checks fail the workflow.
 
 Successful runs retain only `latest.yml`, `authenticode-signatures.json` and
-`packaged-boot.json` for seven days as Actions artifacts. This repository is public:
+`packaged-boot.json`, plus `harness-run-binding.json` for seven days as Actions artifacts. This repository is public:
 never upload the candidate executables, archives or private secure-skills source.
 The reports contain hashes and verification metadata, not private skill content.
 Candidates remain on the ephemeral runner and are discarded when it is destroyed;
@@ -80,7 +85,9 @@ proven. The separate cross-platform `release:contract`/publication process still
    | `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME` | `tritonai-public` |
    | `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME` | `The Regents of the University of California` |
 
-   Add environment secret `SECURE_SKILLS_READ_TOKEN`, a fine-grained token with
+   Add environment secret `HARNESS_ACTIONS_READ_TOKEN`, a fine-grained token with
+   read-only Actions access to `dbalders/TritonAI-Harness`, for downloading that
+   repository's selected run artifact. Also add `SECURE_SKILLS_READ_TOKEN`, a fine-grained token with
    read-only contents access to `dbalders/UCSD-Skills-Library-Secure`. The default
    repository token cannot read that private repository. Checkout disables
    credential persistence. Do not set `AZURE_CLIENT_SECRET` for the OIDC lane.

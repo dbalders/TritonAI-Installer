@@ -1,3 +1,4 @@
+import { verifyHarnessRunArtifacts } from "./verify-harness-run-artifacts";
 const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
@@ -160,6 +161,20 @@ function stageWindowsVendor(arch, trustMode = "authenticode") {
       selected.expected,
       publishedPluginCompositionFile("win", arch)
     );
+    const runArtifactDirectory = process.env.TRITONAI_HARNESS_RUN_ARTIFACT_DIR;
+    if (runArtifactDirectory) {
+      const files = verifyHarnessRunArtifacts(runArtifactDirectory, stagingDir, expectedHarnessVersion);
+      const proofPath = path.join(root, "artifacts", "windows-installer", "harness-run-binding.json");
+      fs.mkdirSync(path.dirname(proofPath), { recursive: true });
+      fs.writeFileSync(proofPath, `${JSON.stringify({
+        schemaVersion: 1,
+        repository: "dbalders/TritonAI-Harness",
+        runId: process.env.HARNESS_RUN_ID,
+        commit: process.env.HARNESS_COMMIT,
+        version: expectedHarnessVersion,
+        files
+      }, null, 2)}\n`, "utf8");
+    }
     const trustPolicy = createWindowsArtifactTrustPolicy({
       mode: trustMode,
       version: manifest.version,

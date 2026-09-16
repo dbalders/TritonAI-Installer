@@ -46,6 +46,7 @@ jobs:
       HARNESS_RUN_ID: ${{ inputs.harness_run_id }}
       HARNESS_COMMIT: ${{ inputs.harness_commit }}
       SKILLS_COMMIT: ${{ inputs.skills_commit }}
+      TRITONAI_HARNESS_RUN_ARTIFACT_DIR: ${{ github.workspace }}/.release-input/harness-run
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
@@ -71,11 +72,20 @@ jobs:
         shell: pwsh
         env:
           SKILLS_READ_TOKEN: ${{ secrets.SECURE_SKILLS_READ_TOKEN }}
+          HARNESS_READ_TOKEN: ${{ secrets.HARNESS_ACTIONS_READ_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($name in @('AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_SUBSCRIPTION_ID', 'AZURE_TRUSTED_SIGNING_ENDPOINT', 'AZURE_TRUSTED_SIGNING_ACCOUNT_NAME', 'AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME', 'AZURE_TRUSTED_SIGNING_PUBLISHER_NAME', 'SKILLS_READ_TOKEN')) {
+          foreach ($name in @('AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_SUBSCRIPTION_ID', 'AZURE_TRUSTED_SIGNING_ENDPOINT', 'AZURE_TRUSTED_SIGNING_ACCOUNT_NAME', 'AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME', 'AZURE_TRUSTED_SIGNING_PUBLISHER_NAME', 'SKILLS_READ_TOKEN', 'HARNESS_READ_TOKEN')) {
             if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Missing required configuration: $name" }
           }
+      - name: Download immutable inputs from the selected Harness run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          repository: dbalders/TritonAI-Harness
+          run-id: ${{ inputs.harness_run_id }}
+          name: desktop-win-x64
+          path: .release-input/harness-run
+          github-token: ${{ secrets.HARNESS_ACTIONS_READ_TOKEN }}
       - name: Checkout pinned private secure skills
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -115,3 +125,4 @@ jobs:
             artifacts/windows-installer/latest.yml
             artifacts/windows-installer/authenticode-signatures.json
             artifacts/windows-installer/packaged-boot.json
+            artifacts/windows-installer/harness-run-binding.json

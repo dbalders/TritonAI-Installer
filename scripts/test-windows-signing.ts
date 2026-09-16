@@ -45,6 +45,7 @@ const completeEnvironment: Record<string, string> = {
 };
 
 function main() {
+  assertHarnessRunBinding();
   assertUnsignedReleaseContract();
   assert.strictEqual(expectedWindowsPublisherName, completeEnvironment.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME);
   assert.throws(
@@ -364,6 +365,35 @@ function assertUnsignedReleaseContract() {
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+function assertHarnessRunBinding() {
+  const { verifyHarnessRunArtifacts } = require("./verify-harness-run-artifacts");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "harness-run-binding-"));
+  const runDir = path.join(temp, "run");
+  const stagedDir = path.join(temp, "staged");
+  fs.mkdirSync(runDir);
+  fs.mkdirSync(stagedDir);
+  const names = [
+    ["latest.yml", "latest.yml"],
+    ["TritonAI-Harness-0.3.4-x64.exe", "TritonAI-Harness-0.3.4-x64.exe"],
+    ["tritonai-plugin-composition-win-x64.json", "tritonai-plugin-composition.json"]
+  ];
+  try {
+    for (const [runName, stagedName] of names) {
+      fs.writeFileSync(path.join(runDir, runName), "approved bytes");
+      fs.writeFileSync(path.join(stagedDir, stagedName), "approved bytes");
+    }
+    assert.strictEqual(verifyHarnessRunArtifacts(runDir, stagedDir, "0.3.4").length, 3);
+    for (const [runName, stagedName] of names) {
+      // Same-size replacements still fail the byte-level binding.
+      fs.writeFileSync(path.join(stagedDir, stagedName), "replaced bytes");
+      assert.throws(() => verifyHarnessRunArtifacts(runDir, stagedDir, "0.3.4"), /differs from the selected successful run/);
+      fs.copyFileSync(path.join(runDir, runName), path.join(stagedDir, stagedName));
+    }
+    fs.rmSync(path.join(runDir, "latest.yml"));
+    assert.throws(() => verifyHarnessRunArtifacts(runDir, stagedDir, "0.3.4"), /Missing regular Harness run-binding input/);
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 }
 
 function writePeFixture(file) {
