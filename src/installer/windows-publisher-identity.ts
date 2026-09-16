@@ -1,3 +1,3 @@
-const EXPECTED_WINDOWS_PUBLISHER_NAME = "University of California San Diego";
+const EXPECTED_WINDOWS_PUBLISHER_NAME = "The Regents of the University of California";
 
 export { EXPECTED_WINDOWS_PUBLISHER_NAME };

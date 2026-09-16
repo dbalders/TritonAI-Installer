@@ -27,7 +27,7 @@ const {
 } = require("./prepare-t3code-desktop-vendor");
 
 function verifyFixtureAuthenticode({ executablePaths, expectedPublisherName }) {
-  assert.strictEqual(expectedPublisherName, "University of California San Diego");
+  assert.strictEqual(expectedPublisherName, "The Regents of the University of California");
   assert(Array.isArray(executablePaths) && executablePaths.length > 0);
   return executablePaths.map((executablePath) => {
     assert(fs.lstatSync(executablePath).isFile());
@@ -579,8 +579,8 @@ function writeWindowsAuthenticodeProof(repositoryRoot, version, artifacts) {
       path: entry.relativePath,
       sha256: crypto.createHash("sha256").update(fs.readFileSync(entry.absolutePath)).digest("hex"),
       status: "Valid",
-      publisherName: "University of California San Diego",
-      subject: "CN=University of California San Diego",
+      publisherName: "The Regents of the University of California",
+      subject: "CN=The Regents of the University of California",
       thumbprint: "ABC123",
       timestampSubject: "CN=Microsoft Time-Stamp Service"
     }));
@@ -589,7 +589,7 @@ function writeWindowsAuthenticodeProof(repositoryRoot, version, artifacts) {
   fs.writeFileSync(proofPath, JSON.stringify({
     schemaVersion: 1,
     version,
-    publisherName: "University of California San Diego",
+    publisherName: "The Regents of the University of California",
     verifiedAt: "2026-07-18T00:00:00.000Z",
     signatures
   }));

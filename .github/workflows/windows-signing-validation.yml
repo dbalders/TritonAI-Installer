@@ -1,0 +1,128 @@
+name: Windows signing validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      installer_version:
+        description: Stable Installer version to build (no tag or release is created)
+        required: true
+        type: string
+      harness_version:
+        description: Published stable Harness version from a successful tag-triggered release
+        required: true
+        type: string
+      harness_run_id:
+        description: Successful Harness release.yml run ID for that tag
+        required: true
+        type: string
+      harness_commit:
+        description: Exact 40-character Harness release commit
+        required: true
+        type: string
+      skills_commit:
+        description: Reviewed 40-character UCSD-Skills-Library-Secure commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-windows-signing-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.repository == 'dbalders/TritonAI-Installer' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    environment: windows-signing
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      INSTALLER_VERSION: ${{ inputs.installer_version }}
+      HARNESS_VERSION: ${{ inputs.harness_version }}
+      HARNESS_RUN_ID: ${{ inputs.harness_run_id }}
+      HARNESS_COMMIT: ${{ inputs.harness_commit }}
+      SKILLS_COMMIT: ${{ inputs.skills_commit }}
+      TRITONAI_HARNESS_RUN_ARTIFACT_DIR: ${{ github.workspace }}/.release-input/harness-run
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TRUSTED_SIGNING_USE_AZURE_CLI: 'true'
+      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+      AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+      AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+      AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+      - name: Require completed Harness release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/validate-windows-signing-inputs.cjs
+      - name: Check protected environment configuration
+        shell: pwsh
+        env:
+          SKILLS_READ_TOKEN: ${{ secrets.SECURE_SKILLS_READ_TOKEN }}
+          HARNESS_READ_TOKEN: ${{ secrets.HARNESS_ACTIONS_READ_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_SUBSCRIPTION_ID', 'AZURE_TRUSTED_SIGNING_ENDPOINT', 'AZURE_TRUSTED_SIGNING_ACCOUNT_NAME', 'AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME', 'AZURE_TRUSTED_SIGNING_PUBLISHER_NAME', 'SKILLS_READ_TOKEN', 'HARNESS_READ_TOKEN')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Missing required configuration: $name" }
+          }
+      - name: Download immutable inputs from the selected Harness run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          repository: dbalders/TritonAI-Harness
+          run-id: ${{ inputs.harness_run_id }}
+          name: desktop-win-x64
+          path: .release-input/harness-run
+          github-token: ${{ secrets.HARNESS_ACTIONS_READ_TOKEN }}
+      - name: Checkout pinned private secure skills
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: dbalders/UCSD-Skills-Library-Secure
+          ref: ${{ inputs.skills_commit }}
+          path: .release-input/secure-skills
+          token: ${{ secrets.SECURE_SKILLS_READ_TOKEN }}
+          persist-credentials: false
+      - run: npm ci
+      - run: npm test
+      - name: Sign in to Azure with GitHub OIDC
+        uses: azure/login@935127ca5bb3c4b02c9c2c10060028383878f33f # v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify Azure session and align candidate version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $accountJson = az account show --output json
+          if ($LASTEXITCODE -ne 0) { throw 'Azure OIDC session is unavailable.' }
+          $account = $accountJson | ConvertFrom-Json
+          if ($account.tenantId -ne $env:AZURE_TENANT_ID -or $account.id -ne $env:AZURE_SUBSCRIPTION_ID -or $account.user.name -ne $env:AZURE_CLIENT_ID) { throw 'Azure OIDC session identity does not match the protected environment.' }
+          npm version $env:INSTALLER_VERSION --no-git-tag-version --allow-same-version
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate version update failed.' }
+          "UCSD_SKILLS_SOURCE=$env:GITHUB_WORKSPACE/.release-input/secure-skills" >> $env:GITHUB_ENV
+      - name: Package and verify signed application, Setup, portable and native boot
+        run: npm run package:win-installer:signed
+      - name: Retain verification reports only (public repository)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: installer-windows-signing-proof-${{ inputs.installer_version }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            artifacts/windows-installer/latest.yml
+            artifacts/windows-installer/authenticode-signatures.json
+            artifacts/windows-installer/packaged-boot.json
+            artifacts/windows-installer/harness-run-binding.json

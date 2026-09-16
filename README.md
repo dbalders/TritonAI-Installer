@@ -142,8 +142,9 @@ installed app for five seconds, uninstalls it, verifies cleanup, and writes `pac
 These artifacts are intentionally unsigned and may trigger Microsoft Defender SmartScreen. Do not
 describe them as publisher-verified.
 
-When Azure Trusted Signing becomes available, use `npm run package:win-installer:signed`. That future
-lane requires all seven signing values, enables Electron Builder `forceCodeSigning`, requires the
+Use `npm run package:win-installer:signed` on native Windows for Azure Artifact Signing.
+The [non-publishing OIDC validation workflow and provisioning prerequisites](docs/windows-artifact-signing.md)
+are separate from the local unsigned lane. Signed packaging enables Electron Builder `forceCodeSigning`, requires the
 nested Harness to carry the pinned UCSD publisher and a trusted timestamp, re-verifies the staged
 payload and installed Harness, and writes publisher-bound proof. `npm run release:contract` remains
 the stricter signed cross-platform publication gate and is not satisfied by unsigned proof.
@@ -155,7 +156,8 @@ Required release environment variables:
 
 - `AZURE_TENANT_ID`
 - `AZURE_CLIENT_ID`
-- `AZURE_CLIENT_SECRET`
+- `AZURE_TRUSTED_SIGNING_USE_AZURE_CLI=true` for an OIDC-authenticated Azure CLI session,
+  or `AZURE_CLIENT_SECRET` for the legacy service-principal mode (never both)
 - `AZURE_TRUSTED_SIGNING_ENDPOINT`
 - `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`
 - `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`
@@ -166,7 +168,7 @@ Release builds stage TritonAI Harness, the pinned Node.js and Codex runtimes, se
 Every packaged Windows build includes an artifact-bound trust policy. Current unsigned releases
 skip only Authenticode checks and emit a visible warning; version, size, SHA-512, plugin-composition,
 installed-version, and upgrade-replacement checks remain mandatory. Signed builds require the nested
-Harness NSIS publisher `University of California San Diego` and trusted timestamp, then repeat that
+Harness NSIS publisher `The Regents of the University of California` and trusted timestamp, then repeat that
 identity check on the staged NSIS payload and installed Harness executable before creating a launcher.
 Missing, malformed, or artifact-mismatched policy files fail closed.
 

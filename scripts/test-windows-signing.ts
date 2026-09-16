@@ -40,11 +40,12 @@ const completeEnvironment: Record<string, string> = {
   AZURE_TRUSTED_SIGNING_ENDPOINT: "https://eus.codesigning.azure.net",
   AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: "ucsd-tritonai",
   AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: "tritonai-release",
-  AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: "University of California San Diego",
+  AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: "The Regents of the University of California",
   ...Object.fromEntries([["AZURE_CLIENT_SECRET", "test-client-secret"]])
 };
 
 function main() {
+  assertHarnessRunBinding();
   assertUnsignedReleaseContract();
   assert.strictEqual(expectedWindowsPublisherName, completeEnvironment.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME);
   assert.throws(
@@ -70,8 +71,14 @@ function main() {
       ...completeEnvironment,
       AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: "Caller Selected Publisher"
     }),
-    /must be 'University of California San Diego'/
+    /must be 'The Regents of the University of California'/
   );
+
+  const oidcEnvironment = { ...completeEnvironment, AZURE_CLIENT_SECRET: "", AZURE_TRUSTED_SIGNING_USE_AZURE_CLI: "true" };
+  assert.deepStrictEqual(resolveAzureTrustedSigningConfiguration(oidcEnvironment), resolveAzureTrustedSigningConfiguration(completeEnvironment));
+  assert.throws(() => resolveAzureTrustedSigningConfiguration({ ...oidcEnvironment, AZURE_TRUSTED_SIGNING_USE_AZURE_CLI: "false" }), /AZURE_CLIENT_SECRET/);
+  assert.throws(() => resolveAzureTrustedSigningConfiguration({ ...oidcEnvironment, AZURE_TRUSTED_SIGNING_USE_AZURE_CLI: "yes" }), /must be true or false/);
+  assert.throws(() => resolveAzureTrustedSigningConfiguration({ ...completeEnvironment, AZURE_TRUSTED_SIGNING_USE_AZURE_CLI: "true" }), /refuses AZURE_CLIENT_SECRET/);
 
   const baseConfiguration = JSON.parse(fs.readFileSync(path.join(repoRoot, "electron-builder.win.json"), "utf8"));
   const config = createSignedWindowsBuilderConfiguration(baseConfiguration, completeEnvironment);
@@ -162,11 +169,11 @@ function main() {
     platform: "win32",
     execute: (_command, args) => {
       assert(args.includes("-ExpectedPublisherName"));
-      assert(args.includes("University of California San Diego"));
+      assert(args.includes("The Regents of the University of California"));
       return JSON.stringify([{
         path: fixtureHarnessPath,
         status: "Valid",
-        publisherName: "University of California San Diego",
+        publisherName: "The Regents of the University of California",
         thumbprint: "ABC123",
         timestampSubject: "CN=Trusted Timestamp"
       }]);
@@ -358,6 +365,35 @@ function assertUnsignedReleaseContract() {
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+function assertHarnessRunBinding() {
+  const { verifyHarnessRunArtifacts } = require("./verify-harness-run-artifacts");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "harness-run-binding-"));
+  const runDir = path.join(temp, "run");
+  const stagedDir = path.join(temp, "staged");
+  fs.mkdirSync(runDir);
+  fs.mkdirSync(stagedDir);
+  const names = [
+    ["latest.yml", "latest.yml"],
+    ["TritonAI-Harness-0.3.4-x64.exe", "TritonAI-Harness-0.3.4-x64.exe"],
+    ["tritonai-plugin-composition-win-x64.json", "tritonai-plugin-composition.json"]
+  ];
+  try {
+    for (const [runName, stagedName] of names) {
+      fs.writeFileSync(path.join(runDir, runName), "approved bytes");
+      fs.writeFileSync(path.join(stagedDir, stagedName), "approved bytes");
+    }
+    assert.strictEqual(verifyHarnessRunArtifacts(runDir, stagedDir, "0.3.4").length, 3);
+    for (const [runName, stagedName] of names) {
+      // Same-size replacements still fail the byte-level binding.
+      fs.writeFileSync(path.join(stagedDir, stagedName), "replaced bytes");
+      assert.throws(() => verifyHarnessRunArtifacts(runDir, stagedDir, "0.3.4"), /differs from the selected successful run/);
+      fs.copyFileSync(path.join(runDir, runName), path.join(stagedDir, stagedName));
+    }
+    fs.rmSync(path.join(runDir, "latest.yml"));
+    assert.throws(() => verifyHarnessRunArtifacts(runDir, stagedDir, "0.3.4"), /Missing regular Harness run-binding input/);
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 }
 
 function writePeFixture(file) {
