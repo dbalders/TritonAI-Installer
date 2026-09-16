@@ -7,7 +7,8 @@ const DEFAULT_BASE_URL = "https://example.invalid/v1";
 const DEFAULT_RESTRICTED_CODEX_MODEL = "api-glm-5.3";
 const DEFAULT_CODEX_MODEL = DEFAULT_RESTRICTED_CODEX_MODEL;
 const LEGACY_CODEX_MODEL_REPLACEMENTS = {
-  "api-gemma-4-31b": "onyx-muse-glimmer-30b",
+  "api-gemma-4-31b": "api-muse-glimmer-30b",
+  "onyx-muse-glimmer-30b": "api-muse-glimmer-30b",
   "api-glm-5.2": "api-glm-5.3",
   "gpt-5.5": "gpt-5.6-sol",
   "claude-opus-4-8": "claude-opus-5"
@@ -59,8 +60,8 @@ const DEFAULT_CODEX_MODELS = {
     capabilities: GLM_CODEX_MODEL_CAPABILITIES,
     availableToRestrictedKeys: true
   },
-  "onyx-muse-glimmer-30b": {
-    id: "onyx-muse-glimmer-30b",
+  "api-muse-glimmer-30b": {
+    id: "api-muse-glimmer-30b",
     name: "Glimmer 30B",
     shortName: "Glimmer",
     capabilities: withInputModalities(["text", "image"]),
