@@ -40,7 +40,7 @@ const completeEnvironment: Record<string, string> = {
   AZURE_TRUSTED_SIGNING_ENDPOINT: "https://eus.codesigning.azure.net",
   AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: "ucsd-tritonai",
   AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: "tritonai-release",
-  AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: "University of California San Diego",
+  AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: "The Regents of the University of California",
   ...Object.fromEntries([["AZURE_CLIENT_SECRET", "test-client-secret"]])
 };
 
@@ -70,8 +70,14 @@ function main() {
       ...completeEnvironment,
       AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: "Caller Selected Publisher"
     }),
-    /must be 'University of California San Diego'/
+    /must be 'The Regents of the University of California'/
   );
+
+  const oidcEnvironment = { ...completeEnvironment, AZURE_CLIENT_SECRET: "", AZURE_TRUSTED_SIGNING_USE_AZURE_CLI: "true" };
+  assert.deepStrictEqual(resolveAzureTrustedSigningConfiguration(oidcEnvironment), resolveAzureTrustedSigningConfiguration(completeEnvironment));
+  assert.throws(() => resolveAzureTrustedSigningConfiguration({ ...oidcEnvironment, AZURE_TRUSTED_SIGNING_USE_AZURE_CLI: "false" }), /AZURE_CLIENT_SECRET/);
+  assert.throws(() => resolveAzureTrustedSigningConfiguration({ ...oidcEnvironment, AZURE_TRUSTED_SIGNING_USE_AZURE_CLI: "yes" }), /must be true or false/);
+  assert.throws(() => resolveAzureTrustedSigningConfiguration({ ...completeEnvironment, AZURE_TRUSTED_SIGNING_USE_AZURE_CLI: "true" }), /refuses AZURE_CLIENT_SECRET/);
 
   const baseConfiguration = JSON.parse(fs.readFileSync(path.join(repoRoot, "electron-builder.win.json"), "utf8"));
   const config = createSignedWindowsBuilderConfiguration(baseConfiguration, completeEnvironment);
@@ -162,11 +168,11 @@ function main() {
     platform: "win32",
     execute: (_command, args) => {
       assert(args.includes("-ExpectedPublisherName"));
-      assert(args.includes("University of California San Diego"));
+      assert(args.includes("The Regents of the University of California"));
       return JSON.stringify([{
         path: fixtureHarnessPath,
         status: "Valid",
-        publisherName: "University of California San Diego",
+        publisherName: "The Regents of the University of California",
         thumbprint: "ABC123",
         timestampSubject: "CN=Trusted Timestamp"
       }]);

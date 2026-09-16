@@ -60,14 +60,14 @@
     "clean:release-output:compiled": "node dist/scripts/clean-release-output.js",
     "package:win-installer": "npm run build && node dist/scripts/package-windows-unsigned.js --preflight && npm run clean:release-output:compiled -- win && npm run prepare:managed-config:compiled && npm run prepare:plugins-vendor:production:compiled && npm run prepare:t3code-desktop-vendor:win:unsigned:compiled && npm run prepare:codex-cli-vendor:win:compiled && npm run prepare:node-runtime:win:compiled && node dist/scripts/prepare-skills-vendor.js --require-clean && node dist/scripts/package-windows-unsigned.js",
     "verify:win-installer:native": "npm run build && node dist/scripts/verify-windows-unsigned-release.js",
-    "package:win-installer:signed": "npm run build && npm run clean:release-output:compiled -- win && npm run prepare:managed-config:compiled && npm run prepare:plugins-vendor:production:compiled && npm run prepare:t3code-desktop-vendor:win:compiled && npm run prepare:codex-cli-vendor:win:compiled && npm run prepare:node-runtime:win:compiled && node dist/scripts/prepare-skills-vendor.js --require-clean && node dist/scripts/windows-signing.js",
+    "package:win-installer:signed": "npm run build && node dist/scripts/windows-signing.js --preflight && npm run clean:release-output:compiled -- win && npm run prepare:managed-config:compiled && npm run prepare:plugins-vendor:production:compiled && npm run prepare:t3code-desktop-vendor:win:compiled && npm run prepare:codex-cli-vendor:win:compiled && npm run prepare:node-runtime:win:compiled && node dist/scripts/prepare-skills-vendor.js --require-clean && node dist/scripts/windows-signing.js",
     "package:win-portable:unsigned-dev": "npm run build && node dist/scripts/package-windows-portable.js",
     "mac:trust-dev": "npm run build && node dist/scripts/trust-macos-dev-artifacts.js",
     "mac:open-dev": "npm run build && node dist/scripts/trust-macos-dev-artifacts.js --open",
     "test:reliability": "npm run build && node dist/scripts/test-installer-reliability.js",
     "release:prepare": "node scripts/prepare-release-run.cjs",
     "release:run": "node scripts/release-runner.cjs",
-    "test:release-runner": "node --test scripts/test-release-runner.cjs scripts/test-local-release*.cjs",
+    "test:release-runner": "node --test scripts/test-windows-signing-inputs.cjs scripts/test-release-runner.cjs scripts/test-local-release*.cjs",
     "release:local": "node scripts/local-release.cjs"
   },
   "keywords": [

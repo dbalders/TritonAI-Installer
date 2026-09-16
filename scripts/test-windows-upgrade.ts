@@ -464,7 +464,7 @@ async function assertMissingPowerShellExitCodeIsNotRetried() {
 }
 
 async function assertWindowsPublisherVerification() {
-  const expectedPublisher = "University of California San Diego";
+  const expectedPublisher = "The Regents of the University of California";
   const calls = [];
   const valid = {
     status: "Valid",

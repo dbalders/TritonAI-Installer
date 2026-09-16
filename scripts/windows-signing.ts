@@ -21,7 +21,15 @@ const requiredEnvironmentVariables = [
 ];
 
 function resolveAzureTrustedSigningConfiguration(environment = process.env) {
-  const missing = requiredEnvironmentVariables.filter((name) => !String(environment[name] || "").trim());
+  const useAzureCli = environment.AZURE_TRUSTED_SIGNING_USE_AZURE_CLI === "true";
+  if (environment.AZURE_TRUSTED_SIGNING_USE_AZURE_CLI && !["true", "false"].includes(environment.AZURE_TRUSTED_SIGNING_USE_AZURE_CLI)) {
+    throw new Error("AZURE_TRUSTED_SIGNING_USE_AZURE_CLI must be true or false.");
+  }
+  if (useAzureCli && String(environment.AZURE_CLIENT_SECRET || "").trim()) {
+    throw new Error("Azure CLI signing refuses AZURE_CLIENT_SECRET; use the OIDC-authenticated Azure CLI session.");
+  }
+  const missing = requiredEnvironmentVariables.filter((name) =>
+    !(useAzureCli && name === "AZURE_CLIENT_SECRET") && !String(environment[name] || "").trim());
   if (missing.length > 0) {
     throw new Error(`Stable Windows packaging requires Azure Trusted Signing configuration: ${missing.join(", ")}.`);
   }
@@ -211,6 +219,8 @@ async function main() {
   if (process.platform !== "win32") {
     throw new Error("Stable Windows packaging must run on Windows.");
   }
+  resolveAzureTrustedSigningConfiguration();
+  if (process.argv.includes("--preflight")) return;
   const pkg = require(path.join(root, "package.json"));
   const bundledHarness = getBundledWindowsInstaller({ appRoot: root, resourcesPath: null, arch: "x64" });
   if (!bundledHarness) throw new Error("Signed Windows packaging is missing its prepared Harness payload.");
@@ -219,6 +229,8 @@ async function main() {
     "authenticode",
     bundledHarness.installerPath
   );
+  // Recheck the actual payload immediately before it enters the signed package.
+  verifyAuthenticodeExecutables({ executablePaths: [bundledHarness.installerPath] });
   const baseConfiguration = JSON.parse(fs.readFileSync(path.join(root, "electron-builder.win.json"), "utf8"));
   const config = createSignedWindowsBuilderConfiguration(baseConfiguration);
 
@@ -228,6 +240,9 @@ async function main() {
     publish: "never"
   });
   const result = verifyWindowsReleaseSignatures({ version: pkg.version });
+  // publish:null suppresses electron-builder's latest.yml. Hash only the final,
+  // signed Setup bytes; electron-builder already emitted its blockmap after signing.
+  require("./package-windows-unsigned").writeWindowsUpdateManifest({ version: pkg.version });
   console.log(`Windows release signatures verified: ${path.relative(root, result.proofPath)}`);
   const bootProofPath = verifyWindowsPackagedBoot({ version: pkg.version });
   console.log(`Windows packaged boot verified: ${path.relative(root, bootProofPath)}`);
