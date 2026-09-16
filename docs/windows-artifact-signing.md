@@ -43,7 +43,8 @@ never upload the candidate executables, archives or private secure-skills source
 The reports contain hashes and verification metadata, not private skill content.
 Candidates remain on the ephemeral runner and are discarded when it is destroyed;
 use separately approved private storage if candidate retention is needed.
-The workflow has only `contents: read` and never invokes release publication.
+Repository contents are read-only (`contents: read`); the validation job also
+has `id-token: write` to request the Azure OIDC token. It never invokes release publication.
 Inspect all three signatures and `packaged-boot.json` before considering signing
 proven. The separate cross-platform `release:contract`/publication process still applies.
 
@@ -64,9 +65,29 @@ proven. The separate cross-platform `release:contract`/publication process still
    /subscriptions/3e0cad08-e45d-4882-a3aa-c1504d4e5017/resourceGroups/TritonAI/providers/Microsoft.CodeSigning/codeSigningAccounts/ucsd-tritonai-signing/certificateProfiles/tritonai-public
    ```
 
-   Use the role name returned by `az role definition list --name 'Artifact Signing Certificate Profile Signer'`
-   if Azure still exposes the older `Trusted Signing Certificate Profile Signer`
-   name. Do not grant subscription Owner or Contributor to the CI identity.
+   Resolve the role-definition ID, explicitly checking the legacy name if the
+   current name is absent. Run this in an authorized administrator's Azure CLI
+   session with the correct tenant/subscription selected; set
+   `INSTALLER_SIGNER_OBJECT_ID` to the service principal's **object ID**, not its
+   application client ID:
+
+   ```sh
+   role_id=$(az role definition list --name 'Artifact Signing Certificate Profile Signer' --query '[0].name' --output tsv)
+   if [ -z "$role_id" ]; then
+     role_id=$(az role definition list --name 'Trusted Signing Certificate Profile Signer' --query '[0].name' --output tsv)
+   fi
+   if [ -z "$role_id" ]; then
+     echo 'Neither signer role definition was found; stop provisioning.' >&2
+     exit 1
+   fi
+   az role assignment create \
+     --assignee-object-id "$INSTALLER_SIGNER_OBJECT_ID" \
+     --assignee-principal-type ServicePrincipal \
+     --role "$role_id" \
+     --scope '/subscriptions/3e0cad08-e45d-4882-a3aa-c1504d4e5017/resourceGroups/TritonAI/providers/Microsoft.CodeSigning/codeSigningAccounts/ucsd-tritonai-signing/certificateProfiles/tritonai-public'
+   ```
+
+   Do not grant subscription Owner or Contributor to the CI identity.
 4. Create Installer's `windows-signing` GitHub environment **before dispatch**.
    Require authorized reviewers, prevent self-review and administrator bypass,
    and configure selected deployment branches/tags to allow the `main` **branch
