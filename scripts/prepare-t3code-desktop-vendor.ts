@@ -1,3 +1,4 @@
+import { verifyPackagedCodexPolicy } from "./verify-packaged-codex-policy";
 import { verifyHarnessRunArtifacts } from "./verify-harness-run-artifacts";
 const crypto = require("crypto");
 const fs = require("fs");
@@ -161,6 +162,7 @@ function stageWindowsVendor(arch, trustMode = "authenticode") {
       selected.expected,
       publishedPluginCompositionFile("win", arch)
     );
+    execFileSync(process.execPath, [path.join(__dirname, "verify-packaged-codex-policy.js"), installerPath, expectedHarnessVersion], { stdio: "inherit" });
     const runArtifactDirectory = process.env.TRITONAI_HARNESS_RUN_ARTIFACT_DIR;
     if (runArtifactDirectory) {
       const files = verifyHarnessRunArtifacts(runArtifactDirectory, stagingDir, expectedHarnessVersion);
@@ -424,7 +426,7 @@ function tempDownloadPath(target) {
 }
 
 function verifyDmgContainsApp(file) {
-  if (process.platform !== "darwin") return;
+  if (process.platform !== "darwin") throw new Error("macOS Harness vendoring requires macOS to verify its packaged approval policy.");
 
   const mountPoint = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-desktop-vendor-"));
   try {
@@ -434,6 +436,7 @@ function verifyDmgContainsApp(file) {
       throw new Error(`Downloaded TritonAI Harness image does not contain an app bundle: ${file}`);
     }
     verifyExpectedMacHarnessPublisher(appPath);
+    verifyPackagedCodexPolicy(path.join(appPath, "Contents", "Resources"), "app.asar");
   } finally {
     spawnSync("hdiutil", ["detach", mountPoint], { stdio: "inherit" });
     fs.rmSync(mountPoint, { recursive: true, force: true });

@@ -75,3 +75,11 @@ flowchart TD
 - Decide whether API keys should be stored in shell env, OS keychain, or exchanged for short-lived UCSD tokens.
 - Provision and maintain the Azure Trusted Signing release identity and its seven required secret/configuration values on the dedicated Windows release host.
 - Add richer UCSD gateway status messaging without leaking key material into logs.
+
+## Approved Codex engine version
+
+Harness `config/tritonai-managed-config.json` is the authority for `provider.approvedCodexVersion`. Installer `CODEX_CLI_VERSION` derives from `src/installer/approved-codex-policy.ts`, generated from an explicit Harness commit. To refresh it, run `npm run build`, then `node dist/scripts/sync-approved-codex-policy.js /path/to/TritonAI-Harness <commit>` and rebuild. Commit the generated file, whose source link records the policy revision. Missing, invalid, ranged, or latest versions are rejected. Do not hand-edit a second pin.
+
+Publish the matching Harness release first, then package the Installer against it. Older Installer versions keep their original provisioning pin; the updated Harness caps maintenance using its own signed approval. Older Harness versions do not enforce the cap and must be updated first. This change keeps the existing 0.151.0 approval and does not publish or deploy an engine upgrade.
+
+Before activating a vendored Harness, packaging now extracts its actual managed policy from the app archive (macOS `app.asar`, Windows `server.asar`) and compares the approved engine version with the Installer snapshot. Missing or differing policy fails packaging. This binds the approval to the consumed artifact itself, including local builds, without relying on a source-comment claim or a mutable release label.

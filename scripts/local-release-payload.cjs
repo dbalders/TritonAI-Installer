@@ -148,7 +148,7 @@ function verifyWindowsPluginArchives(resources, asar, composition) {
   return verifyPluginArchive(server, asar, composition, 'apps/server/dist/production-integrations/packages');
 }
 
-async function verifyWindowsHarness({ artifact, outputDirectory, composition, version, harnessRoot, installerRoot }) {
+async function verifyWindowsHarness({ artifact, outputDirectory, composition, version, harnessRoot, installerRoot, verifyResources = () => {} }) {
   const builderRequire = createRequire(require('./local-release-packaging.cjs').packagingLibrary({ harnessRoot, installerRoot }));
   const asar = builderRequire('@electron/asar');
   const sevenZip = await builderRequire('./out/toolsets/7zip.js').getPath7za();
@@ -164,6 +164,7 @@ async function verifyWindowsHarness({ artifact, outputDirectory, composition, ve
     execFileSync(sevenZip, ['x', '-y', '-bd', `-o${app}`, inner], { stdio: 'inherit' });
     const resources = path.join(app, 'resources'), desktop = path.join(resources, 'app.asar');
     if (JSON.parse(asar.extractFile(desktop, 'package.json')).version !== version) throw new Error('Windows Harness payload has the wrong version.');
+    verifyResources(resources, asar);
     const plugins = verifyWindowsPluginArchives(resources, asar, composition);
     return { schemaVersion: 1, version, plugins, archiveVerified: true, nativeBoot: 'not-verified', signed: false };
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
