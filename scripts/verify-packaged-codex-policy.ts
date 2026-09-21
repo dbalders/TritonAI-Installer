@@ -5,7 +5,7 @@ import { APPROVED_CODEX_VERSION } from "../src/installer/approved-codex-policy";
 
 export function verifyPackagedCodexPolicy(resources: string, archiveName: "app.asar" | "server.asar", asar?: { extractFile: (archive: string, file: string) => Buffer }) {
   const reader = asar ?? createRequire(require.resolve("app-builder-lib/package.json"))("@electron/asar");
-  const source = reader.extractFile(path.join(resources, archiveName), "apps/server/dist/tritonai-managed-config.json");
+  const source = reader.extractFile(path.join(resources, archiveName), path.normalize("apps/server/dist/tritonai-managed-config.json"));
   const policy = JSON.parse(source.toString("utf8"));
   if (policy?.schemaVersion !== 2 || policy?.provider?.approvedCodexVersion !== APPROVED_CODEX_VERSION) {
     throw new Error("Packaged Harness approved Codex version differs from the Installer snapshot. Sync policy from the selected Harness release before packaging.");
