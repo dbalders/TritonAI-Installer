@@ -2,7 +2,7 @@ const NPM_POLICY = {
   cutoffDate: "2026-08-30T00:00:00.000Z"
 };
 
-const CODEX_CLI_VERSION = "0.151.0";
+const { APPROVED_CODEX_VERSION: CODEX_CLI_VERSION } = require("./approved-codex-policy");
 
 function guardedNpmInstall(packageSpec, paths) {
   return [
