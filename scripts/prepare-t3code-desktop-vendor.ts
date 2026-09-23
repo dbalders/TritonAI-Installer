@@ -425,7 +425,8 @@ function downloadFresh(url, target) {
 }
 
 function tempDownloadPath(target) {
-  return path.join(os.tmpdir(), `${path.basename(target)}.${process.pid}.tmp`);
+  // Atomic rename requires the temporary file to be on the destination volume.
+  return path.join(path.dirname(target), `${path.basename(target)}.${process.pid}.tmp`);
 }
 
 function verifyDmgContainsApp(file) {
@@ -582,6 +583,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  downloadManifest,
+  downloadVerified,
   activateStagedVendors,
   downloadAndVerifyPluginComposition,
   assertExplicitHarnessSource,
