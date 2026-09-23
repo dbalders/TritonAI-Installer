@@ -1,5 +1,6 @@
 'use strict';
 const { execFileSync } = require('node:child_process');
+const { lookupInstallerRelease } = require('./github-release-lookup.cjs');
 const { validateInputs } = require('./validate-windows-signing-inputs.cjs');
 
 function assertInstallerSource(version, pkg, release, tag, head) {
@@ -19,7 +20,7 @@ function main() {
   const { installerVersion } = validateInputs(process.env);
   const ref = lookup(`git/ref/tags/v${installerVersion}`);
   const tag = ref ? lookup(`commits/v${installerVersion}`) : null;
-  assertInstallerSource(installerVersion, require('../package.json'), lookup(`releases/tags/v${installerVersion}`), tag, process.env.GITHUB_SHA);
+  assertInstallerSource(installerVersion, require('../package.json'), lookupInstallerRelease(`v${installerVersion}`), tag, process.env.GITHUB_SHA);
   console.log(`Verified Installer ${installerVersion} source and unused release target.`);
 }
 if (require.main === module) main();

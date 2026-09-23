@@ -196,23 +196,8 @@ function requireRelease(release, releaseTag) {
 function createGitHubClient(spawn: any = spawnSync) {
   return {
     lookupRelease(releaseTag) {
-      const endpoint = `repos/${GITHUB_REPOSITORY}/releases/tags/${encodeURIComponent(releaseTag)}`;
-      const result = spawn("gh", ["api", "-H", "Accept: application/vnd.github+json", endpoint], {
-        cwd: root,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"]
-      });
-      if (result.error) throw result.error;
-      if (result.status === 0) {
-        try {
-          return JSON.parse(result.stdout);
-        } catch (error) {
-          throw new Error(`GitHub release lookup returned invalid JSON for ${releaseTag}: ${error.message}`);
-        }
-      }
-      const detail = String(result.stderr || "").trim();
-      if (/\bHTTP 404\b/.test(detail)) return null;
-      throw new Error(`Could not inspect GitHub release ${releaseTag}: ${detail || `gh exited ${result.status}`}`);
+      return require(path.join(root, "scripts", "github-release-lookup.cjs"))
+        .lookupInstallerRelease(releaseTag, { spawn, cwd: root });
     },
     createDraftRelease(releaseTag, head) {
       run("gh", [
