@@ -68,6 +68,10 @@ function writePackagedBootSmokeMarker(
   }
 }
 
+function writePackagedBootSmokeFailure(request: PackagedBootSmokeRequest, message: string, state: { windowReady: boolean; rendererReady: boolean; healthStarted: boolean }) {
+  fs.writeFileSync(`${request.markerPath}.failure.json`, JSON.stringify({ schemaVersion: 1, message: message.slice(0, 4096), ...state }), { flag: "wx", mode: 0o600 });
+}
+
 function assertInstallMutationAllowed(request: PackagedBootSmokeRequest | null) {
   if (request) {
     throw new Error("Packaged boot smoke mode cannot start installation or mutate managed state.");
@@ -79,5 +83,6 @@ export {
   PackagedBootSmokeRequest,
   assertInstallMutationAllowed,
   readPackagedBootSmokeRequest,
-  writePackagedBootSmokeMarker
+  writePackagedBootSmokeMarker,
+  writePackagedBootSmokeFailure
 };

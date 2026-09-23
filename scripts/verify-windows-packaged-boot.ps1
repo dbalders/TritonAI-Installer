@@ -90,6 +90,9 @@ function Invoke-PackagedBoot([string]$ExecutablePath, [string]$CandidateId, [int
       Start-Sleep -Milliseconds 250
     }
     if (-not (Test-Path -LiteralPath $MarkerPath -PathType Leaf)) {
+      if (Test-Path -LiteralPath "$MarkerPath.failure.json" -PathType Leaf) {
+        Write-Host ("Packaged boot failure: " + (Get-Content -LiteralPath "$MarkerPath.failure.json" -Raw))
+      }
       if ($Process.HasExited) {
         $Process.WaitForExit()
         throw "$CandidateId exited with code $($Process.ExitCode) before writing its packaged boot readiness marker."
@@ -116,6 +119,7 @@ function Invoke-PackagedBoot([string]$ExecutablePath, [string]$CandidateId, [int
         throw "$CandidateId process $SmokePid could not be terminated during smoke cleanup."
       }
     }
+    Remove-Item -LiteralPath "$MarkerPath.failure.json" -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $UserDataPath -Recurse -Force -ErrorAction SilentlyContinue
   }
