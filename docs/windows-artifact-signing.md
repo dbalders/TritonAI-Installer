@@ -33,7 +33,9 @@ checked out at the requested commit and staged with the existing clean-source ga
 
 Electron Builder 26.15.7 uses `win.azureSignOptions` and `forceCodeSigning` to sign
 the application, NSIS uninstaller, Setup and portable executable during packaging.
-Its NSIS target awaits Setup signing before generating the Setup blockmap. Do not
+Vendored Harness and Codex executables retain their upstream bytes and signatures;
+only Installer-owned executable names are signed. Its NSIS target awaits Setup
+signing before generating the Setup blockmap. Do not
 post-sign finished artifacts. The script verifies the final application, Setup
 and portable signatures against `The Regents of the University of California`,
 requires a signer certificate and trusted timestamp, writes `authenticode-signatures.json`

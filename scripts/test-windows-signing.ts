@@ -94,6 +94,22 @@ function main() {
     timestampRfc3161: "http://timestamp.acs.microsoft.com"
   });
   assert(!JSON.stringify(config).includes(completeEnvironment.AZURE_CLIENT_SECRET));
+  const { WinPackager } = require("app-builder-lib/out/winPackager");
+  const shouldSign = (file) => WinPackager.prototype.shouldSignFile.call({ platformSpecificBuildOptions: config.win }, file);
+  const version = require(path.join(repoRoot, "package.json")).version;
+  for (const file of ["TritonAI Installer.exe", `TritonAI-Installer-Setup-${version}-x64.exe`,
+    `TritonAI-Installer-${version}-x64-portable.exe`, `TritonAI-Installer-Setup-${version}-x64.__uninstaller.exe`]) {
+    assert(shouldSign(file), `Installer-owned executable must be signed: ${file}`);
+  }
+  for (const file of ["codex.exe", "codex-command-runner.exe", "codex-windows-sandbox-setup.exe", `TritonAI-Harness-${version}-x64.exe`]) {
+    assert(!shouldSign(file), `Vendored executable bytes must be preserved: ${file}`);
+  }
+  const failedCli = require("child_process").spawnSync(process.execPath, ["-e",
+    `const {runWindowsSigningCli}=require(${JSON.stringify(path.join(__dirname, "windows-signing.js"))}); setTimeout(()=>{process.exitCode=0},50); runWindowsSigningCli(()=>Promise.reject(new Error('fixture signing failure')));`
+  ], { encoding: "utf8" });
+  assert.strictEqual(failedCli.status, 1);
+  assert.match(failedCli.stderr, /fixture signing failure/);
+
 
   const expectedPaths = ["C:\\release\\setup.exe", "C:\\release\\portable.exe"];
   const validResults = expectedPaths.map((file) => ({
