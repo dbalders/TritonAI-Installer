@@ -2,23 +2,34 @@
 const { spawnSync } = require('node:child_process');
 
 function lookupInstallerRelease(tag, { spawn = spawnSync, cwd = process.cwd() } = {}) {
-  // The tag endpoint excludes drafts. The authenticated list includes them.
-  const result = spawn('gh', ['api', '--paginate', '--slurp', '-H', 'Accept: application/vnd.github+json',
-    'repos/dbalders/TritonAI-Installer/releases?per_page=100'], {
-    cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe']
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Could not inspect GitHub release ${tag}: ${String(result.stderr || '').trim() || `gh exited ${result.status}`}`);
+  function request(args) {
+    const result = spawn('gh', ['api', ...args], {
+      cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe']
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      throw new Error(`Could not inspect GitHub release ${tag}: ${String(result.stderr || '').trim() || `gh exited ${result.status}`}`);
+    }
+    try { return JSON.parse(result.stdout); }
+    catch { throw new Error(`GitHub release lookup returned invalid JSON for ${tag}.`); }
   }
-  let pages;
-  try { pages = JSON.parse(result.stdout); }
-  catch { throw new Error(`GitHub release lookup returned invalid JSON for ${tag}.`); }
-  if (!Array.isArray(pages) || pages.some(page => !Array.isArray(page))) {
-    throw new Error('GitHub release lookup returned an invalid paginated list.');
+  // Match gh's draft lookup: REST tag/list endpoints can omit pending drafts
+  // with Actions tokens. GraphQL resolves the pending tag to its stable ID.
+  const response = request(['graphql', '-f',
+    'query=query($tag: String!) { repository(owner: "dbalders", name: "TritonAI-Installer") { release(tagName: $tag) { databaseId } } }',
+    '-f', `tag=${tag}`]);
+  if (response.errors || !response.data?.repository || !Object.hasOwn(response.data.repository, 'release')) {
+    throw new Error('GitHub release lookup returned an invalid GraphQL response.');
   }
-  const matches = pages.flat().filter(release => release?.tag_name === tag);
-  if (matches.length > 1) throw new Error(`Multiple GitHub releases match ${tag}; inspect them before proceeding.`);
-  return matches[0] || null;
+  const match = response.data.repository.release;
+  if (match === null) return null;
+  if (!Number.isSafeInteger(match.databaseId) || match.databaseId <= 0) {
+    throw new Error('GitHub release lookup returned an invalid release ID.');
+  }
+  const release = request([`repos/dbalders/TritonAI-Installer/releases/${match.databaseId}`]);
+  if (release.id !== match.databaseId || release.tag_name !== tag) {
+    throw new Error('GitHub release lookup returned a mismatched release.');
+  }
+  return release;
 }
 module.exports = { lookupInstallerRelease };

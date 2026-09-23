@@ -128,19 +128,33 @@ function assertOperationalFailures(paths) {
 }
 
 function assertLookupStatusHandling() {
-  const clientFor = (pages) => createGitHubClient((_command, args) => {
-    assert(args.includes("--paginate"));
-    assert(args.includes("--slurp"));
-    return { status: 0, stdout: JSON.stringify(pages), stderr: "" };
-  });
-  assert.strictEqual(clientFor([[]]).lookupRelease("v0.2.5"), null);
   const draft = { id: 1, tag_name: "v0.2.5", draft: true, assets: [] };
-  assert.deepStrictEqual(clientFor([[{ tag_name: "v0.2.4" }], [draft]]).lookupRelease("v0.2.5"), draft);
-  assert.throws(() => clientFor([[draft], [draft]]).lookupRelease("v0.2.5"), /Multiple/);
-  assert.throws(() => clientFor({}).lookupRelease("v0.2.5"), /invalid paginated list/);
+  const clientFor = (match, release = draft) => createGitHubClient((_command, args) => {
+    if (args[1] === "graphql") {
+      assert(args.includes("tag=v0.2.5"));
+      return { status: 0, stdout: JSON.stringify({ data: { repository: { release: match } } }), stderr: "" };
+    }
+    assert.deepStrictEqual(args, ["api", "repos/dbalders/TritonAI-Installer/releases/1"]);
+    return { status: 0, stdout: JSON.stringify(release), stderr: "" };
+  });
+  assert.strictEqual(clientFor(null).lookupRelease("v0.2.5"), null);
+  assert.deepStrictEqual(clientFor({ databaseId: 1 }).lookupRelease("v0.2.5"), draft);
+  assert.throws(() => clientFor({ databaseId: "1" }).lookupRelease("v0.2.5"), /invalid release ID/);
+  assert.throws(() => clientFor({ databaseId: 1 }, { ...draft, tag_name: "v9" }).lookupRelease("v0.2.5"), /mismatched/);
+  for (const stdout of ['{}', '{"data":{"repository":null}}', '{"errors":[]}', 'not JSON']) {
+    const failed = createGitHubClient(() => ({ status: 0, stdout, stderr: "" }));
+    assert.throws(() => failed.lookupRelease("v0.2.5"), /invalid/);
+  }
   for (const status of [403, 404, 503]) {
-    const failed = createGitHubClient(() => ({ status: 1, stdout: "", stderr: `gh: request failed (HTTP ${status})` }));
-    assert.throws(() => failed.lookupRelease("v0.2.5"), new RegExp(`HTTP ${status}`));
+    for (const failRest of [false, true]) {
+      const failed = createGitHubClient((_command, args) => {
+        if (failRest && args[1] === "graphql") {
+          return { status: 0, stdout: JSON.stringify({ data: { repository: { release: { databaseId: 1 } } } }), stderr: "" };
+        }
+        return { status: 1, stdout: "", stderr: `gh: request failed (HTTP ${status})` };
+      });
+      assert.throws(() => failed.lookupRelease("v0.2.5"), new RegExp(`HTTP ${status}`));
+    }
   }
 }
 
