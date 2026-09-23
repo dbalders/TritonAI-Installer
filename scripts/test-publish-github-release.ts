@@ -128,11 +128,20 @@ function assertOperationalFailures(paths) {
 }
 
 function assertLookupStatusHandling() {
-  const notFound = createGitHubClient(() => ({ status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" }));
-  assert.strictEqual(notFound.lookupRelease("v0.2.5"), null);
-
-  const forbidden = createGitHubClient(() => ({ status: 1, stdout: "", stderr: "gh: Forbidden (HTTP 403)" }));
-  assert.throws(() => forbidden.lookupRelease("v0.2.5"), /HTTP 403/);
+  const clientFor = (pages) => createGitHubClient((_command, args) => {
+    assert(args.includes("--paginate"));
+    assert(args.includes("--slurp"));
+    return { status: 0, stdout: JSON.stringify(pages), stderr: "" };
+  });
+  assert.strictEqual(clientFor([[]]).lookupRelease("v0.2.5"), null);
+  const draft = { id: 1, tag_name: "v0.2.5", draft: true, assets: [] };
+  assert.deepStrictEqual(clientFor([[{ tag_name: "v0.2.4" }], [draft]]).lookupRelease("v0.2.5"), draft);
+  assert.throws(() => clientFor([[draft], [draft]]).lookupRelease("v0.2.5"), /Multiple/);
+  assert.throws(() => clientFor({}).lookupRelease("v0.2.5"), /invalid paginated list/);
+  for (const status of [403, 404, 503]) {
+    const failed = createGitHubClient(() => ({ status: 1, stdout: "", stderr: `gh: request failed (HTTP ${status})` }));
+    assert.throws(() => failed.lookupRelease("v0.2.5"), new RegExp(`HTTP ${status}`));
+  }
 }
 
 function mockGitHub(initialRelease, options: any = {}) {
