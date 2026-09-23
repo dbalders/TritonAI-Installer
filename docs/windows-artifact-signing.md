@@ -48,18 +48,19 @@ has `id-token: write` to request the Azure OIDC token. It never invokes release 
 Inspect all three signatures and `packaged-boot.json` before considering signing
 proven. The separate cross-platform `release:contract`/publication process still applies.
 
-## Required provisioning (not performed by this change)
+## Signing and release-input access
 
-1. Create a dedicated Entra application/service principal for
-   `dbalders/TritonAI-Installer` in tenant
-   `8a198873-4fec-4e76-8182-ca479edbbd60`. Do not reuse a human Azure CLI login or
-   rely on David's signer assignment. No client secret is needed for CI.
+1. Reuse the existing **TritonAI Harness GitHub Signing** Entra application
+   (`4ad54335-1df2-4084-a433-2db43efde436`) in tenant
+   `8a198873-4fec-4e76-8182-ca479edbbd60`. It already has the profile-scoped
+   signer role below. Do not create another signing account, certificate profile,
+   client secret, or human signer assignment for Installer.
 2. Add an exact federated identity credential:
    - issuer: `https://token.actions.githubusercontent.com`
    - audience: `api://AzureADTokenExchange`
    - subject: `repo:dbalders/TritonAI-Installer:environment:windows-signing`
-3. Assign **Artifact Signing Certificate Profile Signer** to that service principal
-   at this profile scope only:
+3. Verify the existing **Artifact Signing Certificate Profile Signer** assignment
+   on the shared service principal is at this profile scope only:
 
    ```text
    /subscriptions/3e0cad08-e45d-4882-a3aa-c1504d4e5017/resourceGroups/TritonAI/providers/Microsoft.CodeSigning/codeSigningAccounts/ucsd-tritonai-signing/certificateProfiles/tritonai-public
@@ -98,7 +99,7 @@ proven. The separate cross-platform `release:contract`/publication process still
 
    | Variable | Value |
    | --- | --- |
-   | `AZURE_CLIENT_ID` | Dedicated Installer application client ID |
+   | `AZURE_CLIENT_ID` | Existing Harness signing application client ID |
    | `AZURE_TENANT_ID` | `8a198873-4fec-4e76-8182-ca479edbbd60` |
    | `AZURE_SUBSCRIPTION_ID` | `3e0cad08-e45d-4882-a3aa-c1504d4e5017` |
    | `AZURE_TRUSTED_SIGNING_ENDPOINT` | `https://wus2.codesigning.azure.net/` |
@@ -106,12 +107,14 @@ proven. The separate cross-platform `release:contract`/publication process still
    | `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME` | `tritonai-public` |
    | `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME` | `The Regents of the University of California` |
 
-   Add environment secret `HARNESS_ACTIONS_READ_TOKEN`, a fine-grained token with
-   read-only Actions access to `dbalders/TritonAI-Harness`, for downloading that
-   repository's selected run artifact. Also add `SECURE_SKILLS_READ_TOKEN`, a fine-grained token with
-   read-only contents access to `dbalders/UCSD-Skills-Library-Secure`. The default
-   repository token cannot read that private repository. Checkout disables
-   credential persistence. Do not set `AZURE_CLIENT_SECRET` for the OIDC lane.
+   Use the existing TritonAI Harness GitHub App for cross-repository inputs.
+   Set `RELEASE_INPUT_APP_ID` as an environment variable and
+   `RELEASE_INPUT_APP_PRIVATE_KEY` as an environment secret. The App installation
+   must include Harness with Actions read and UCSD-Skills-Library-Secure with
+   Contents read. The workflow explicitly narrows each generated token to one
+   repository and its required read permission, then revokes it during cleanup.
+   Checkout disables credential persistence. No permanent personal token or
+   `AZURE_CLIENT_SECRET` is used.
 6. Ensure Windows runners can install PowerShell's TrustedSigning module and
    reach Azure CLI, the signing endpoint, Microsoft timestamp service, GitHub,
    npm and the existing runtime download sources. Electron Builder installs
@@ -130,11 +133,13 @@ Both modes use identical in-packaging signing and post-build verification.
 
 ## Evidence boundary
 
-The account/profile and UC Regents publisher were confirmed separately; a prior
-manual trial signed only a copy of a Harness outer installer using a human CLI
-session. That is not CI OIDC, Installer inner-app signing, or full package proof.
-This PR prepares the code. Provisioning and a successful non-publishing native
-Windows run remain required before claiming end-to-end readiness.
+Installer reuses the Harness signing application, profile and publisher. Its
+exact environment federation and seven Azure variables were configured and read
+back on September 22, 2026. The existing GitHub App was also verified with
+separate repository-scoped Actions-read and Contents-read tokens. These access
+checks do not prove Installer signing or packaged boot; a successful hosted
+release and its verification reports remain required. Actual installation and
+upgrade UAT are separate from packaged boot checks.
 
 References: [Electron Builder v26 Windows signing](https://www.electron.build/v26/docs/features/code-signing/code-signing-win/),
 [Microsoft OIDC setup](https://github.com/Azure/artifact-signing-action/blob/main/docs/OIDC.md),

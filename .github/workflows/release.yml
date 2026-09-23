@@ -103,19 +103,37 @@ jobs:
         with:
           node-version: '22.22.2'
           cache: npm
+      - name: Mint read-only Harness artifact token
+        id: harness_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.RELEASE_INPUT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_INPUT_APP_PRIVATE_KEY }}
+          owner: dbalders
+          repositories: TritonAI-Harness
+          permission-actions: read
+      - name: Mint read-only secure-skills token
+        id: skills_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.RELEASE_INPUT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_INPUT_APP_PRIVATE_KEY }}
+          owner: dbalders
+          repositories: UCSD-Skills-Library-Secure
+          permission-contents: read
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           repository: dbalders/TritonAI-Harness
           run-id: ${{ inputs.harness_run_id }}
           name: ${{ matrix.artifact }}
           path: .release-input/harness-run
-          github-token: ${{ secrets.HARNESS_ACTIONS_READ_TOKEN }}
+          github-token: ${{ steps.harness_token.outputs.token }}
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: dbalders/UCSD-Skills-Library-Secure
           ref: ${{ inputs.skills_commit }}
           path: .release-input/secure-skills
-          token: ${{ secrets.SECURE_SKILLS_READ_TOKEN }}
+          token: ${{ steps.skills_token.outputs.token }}
           persist-credentials: false
       - run: npm ci
       - run: npm test
