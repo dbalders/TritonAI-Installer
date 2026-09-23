@@ -66,7 +66,7 @@ function Test-SmokeMarker($Marker) {
   }
 }
 
-function Invoke-PackagedBoot([string]$ExecutablePath, [string]$CandidateId) {
+function Invoke-PackagedBoot([string]$ExecutablePath, [string]$CandidateId, [int]$LaunchTimeoutSeconds = 45) {
   if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) {
     throw "Packaged boot candidate does not exist: $ExecutablePath"
   }
@@ -78,7 +78,7 @@ function Invoke-PackagedBoot([string]$ExecutablePath, [string]$CandidateId) {
   try {
     $SmokeArgument = '"--tritonai-installer-smoke-marker={0}"' -f $MarkerPath
     $Process = Start-Process -FilePath $ExecutablePath -ArgumentList $SmokeArgument -PassThru
-    $Deadline = [DateTime]::UtcNow.AddSeconds(35)
+    $Deadline = [DateTime]::UtcNow.AddSeconds($LaunchTimeoutSeconds)
     while ([DateTime]::UtcNow -lt $Deadline -and -not $Process.HasExited -and -not (Test-Path -LiteralPath $MarkerPath -PathType Leaf)) {
       Start-Sleep -Milliseconds 250
     }
@@ -87,7 +87,11 @@ function Invoke-PackagedBoot([string]$ExecutablePath, [string]$CandidateId) {
         $Process.WaitForExit()
         throw "$CandidateId exited with code $($Process.ExitCode) before writing its packaged boot readiness marker."
       }
-      throw "$CandidateId did not write its packaged boot readiness marker."
+      $Processes = @(Get-CimInstance Win32_Process | Where-Object {
+        $_.ProcessId -eq $Process.Id -or $_.ParentProcessId -eq $Process.Id
+      } | Select-Object ProcessId, ParentProcessId, Name)
+      Write-Host ("Packaged boot process state: " + ($Processes | ConvertTo-Json -Compress))
+      throw "$CandidateId did not write its packaged boot readiness marker within $LaunchTimeoutSeconds seconds."
     }
     $Marker = Get-Content -LiteralPath $MarkerPath -Raw | ConvertFrom-Json
     Test-SmokeMarker $Marker
@@ -140,7 +144,9 @@ if (Test-Path -LiteralPath $ExpectedInstalledDirectory) {
 }
 
 $Candidates = @()
-$PortableMarker = Invoke-PackagedBoot $PortablePath "windows-portable"
+# The portable NSIS wrapper must unpack the bundled runtimes before Electron
+# starts its own unchanged 30-second readiness timer and 5-second health check.
+$PortableMarker = Invoke-PackagedBoot $PortablePath "windows-portable" 180
 $Candidates += [PSCustomObject]@{
   id = "windows-portable"
   path = [IO.Path]::GetRelativePath($RepositoryRoot, $PortablePath).Replace('\', '/')
