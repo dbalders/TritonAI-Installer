@@ -5,7 +5,8 @@ const path = require("path");
 const {
   assertInstallMutationAllowed,
   readPackagedBootSmokeRequest,
-  writePackagedBootSmokeMarker
+  writePackagedBootSmokeMarker,
+  writePackagedBootSmokeFailure
 } = require("../src/packaged-boot-smoke");
 
 function main() {
@@ -31,6 +32,12 @@ function main() {
     ], tempRoot);
     assert.strictEqual(request.markerPath, markerPath);
     assert.strictEqual(request.userDataPath, `${markerPath}.userdata`);
+    writePackagedBootSmokeFailure(request, "fixture failure", { windowReady: true, rendererReady: false, healthStarted: false });
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${markerPath}.failure.json`, "utf8")), {
+      schemaVersion: 1, message: "fixture failure", windowReady: true, rendererReady: false, healthStarted: false
+    });
+    assert.strictEqual(fs.existsSync(markerPath), false, "failure report is never a readiness marker");
+    assert.throws(() => writePackagedBootSmokeFailure(request, "replacement", { windowReady: false, rendererReady: false, healthStarted: false }), /EEXIST/);
     const environmentRequest = readPackagedBootSmokeRequest([], tempRoot, {
       TRITONAI_INSTALLER_SMOKE_MARKER: path.join(tempRoot, "tritonai-installer-smoke-environment.json")
     });

@@ -10,7 +10,8 @@ import { acquireSingleInstance } from "./single-instance";
 import {
   assertInstallMutationAllowed,
   readPackagedBootSmokeRequest,
-  writePackagedBootSmokeMarker
+  writePackagedBootSmokeMarker,
+  writePackagedBootSmokeFailure
 } from "./packaged-boot-smoke";
 const { runInstall } = require("./installer/runner");
 const { getInstallPreview } = require("./installer/tool-manifest");
@@ -276,9 +277,16 @@ if (ownsSingleInstanceLock) app.whenReady().then(() => {
 });
 
 function handleInstallerIpc(channel: string, handler: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => unknown) {
-  ipcMain.handle(channel, (event, ...args) => {
-    assertInstallerSender(event, mainWindow?.webContents, path.join(__dirname, "renderer", "index.html"));
-    return handler(event, ...args);
+  ipcMain.handle(channel, async (event, ...args) => {
+    try {
+      assertInstallerSender(event, mainWindow?.webContents, path.join(__dirname, "renderer", "index.html"));
+      return await handler(event, ...args);
+    } catch (error) {
+      if (packagedBootSmoke) {
+        failPackagedBootSmoke(new Error(`${channel}: ${error instanceof Error ? error.message : String(error)}; renderer=${event.senderFrame?.url}`));
+      }
+      throw error;
+    }
   });
 }
 
@@ -348,6 +356,11 @@ function failPackagedBootSmoke(reason: unknown) {
   }
   if (smokeFinished) return;
   smokeFinished = true;
+  try {
+    writePackagedBootSmokeFailure(packagedBootSmoke, error.message, {
+      windowReady: smokeWindowReady, rendererReady: smokeRendererReady, healthStarted: smokeHealthStarted
+    });
+  } catch { /* Reporting must not prevent a failed exit. */ }
   console.error(`Packaged boot smoke test failed: ${error.message}`);
   app.exit(1);
 }
