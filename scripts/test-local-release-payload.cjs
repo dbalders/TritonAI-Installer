@@ -138,3 +138,13 @@ test('malformed and duplicate ASAR inventory paths cannot alias the expected roo
     assert.throws(() => verifyPluginArchive(archive, malformed, composition), /unsafe or duplicate paths/);
   }
 });
+
+// The hosted Windows builder bundles 7za without an NSIS decoder. Ensure the
+// verifier selects a tool that can read the container, not only embedded data.
+test('Harness archive tool supports NSIS and 7z decoding', async () => {
+  const { harnessArchiveTool } = require('./local-release-payload.cjs');
+  const tool = await harnessArchiveTool(builderRequire);
+  const formats = require('node:child_process').execFileSync(tool, ['i'], { encoding: 'utf8' });
+  assert.match(formats, /\bNsis\b/);
+  assert.match(formats, /\b7z\b/);
+});

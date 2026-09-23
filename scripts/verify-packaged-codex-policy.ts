@@ -17,9 +17,15 @@ if (require.main === module) {
   if (!artifact || !version) throw new Error("Expected a Windows Harness artifact and version.");
   const root = path.resolve(__dirname, "../..");
   const { verifyWindowsHarness } = require(path.join(root, "scripts/local-release-payload.cjs"));
+  const { validateManagedPluginBundleManifest } = require("../src/installer/plugin-bundle-manifest");
+  // Published proofs include artifact bindings; the archive verifier expects the
+  // composition itself. Vendoring already verifies the binding to these bytes.
+  const { artifacts: _artifacts, ...composition } = validateManagedPluginBundleManifest(
+    JSON.parse(fs.readFileSync(path.join(path.dirname(artifact), "tritonai-plugin-composition.json"), "utf8"))
+  );
   verifyWindowsHarness({
     artifact, version, outputDirectory: path.dirname(artifact), installerRoot: root,
-    composition: JSON.parse(fs.readFileSync(path.join(path.dirname(artifact), "tritonai-plugin-composition.json"), "utf8")),
+    composition,
     verifyResources: (resources, asar) => verifyPackagedCodexPolicy(resources, "server.asar", asar),
   }).catch((error: Error) => { console.error(error.message); process.exitCode = 1; });
 }

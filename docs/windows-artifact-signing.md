@@ -4,7 +4,9 @@ The Installer has a local release runner, not the Harness release workflow. Its
 macOS/Wine local Windows lane remains explicitly unsigned. The native Windows
 `package:win-installer:signed` lane now supports Azure CLI authentication after
 GitHub OIDC login. Native signing and verification require PowerShell 7
-(`pwsh.exe`) on PATH, as provided by the hosted Windows runner. It never falls
+(`pwsh.exe`) on PATH and full 7-Zip at `Program Files/7-Zip/7z.exe`,
+as provided by the hosted Windows runner. The full 7-Zip decoder is required
+to inspect the NSIS container before verifying its embedded application. It never falls
 back to the unsigned lane.
 
 ## Packaging and validation
