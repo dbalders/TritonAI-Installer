@@ -70,14 +70,20 @@ function Invoke-PackagedBoot([string]$ExecutablePath, [string]$CandidateId, [int
   if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) {
     throw "Packaged boot candidate does not exist: $ExecutablePath"
   }
-  $MarkerPath = Join-Path ([IO.Path]::GetTempPath()) (
+  # Match Electron/Node's TEMP selection exactly (Windows supports short-path aliases).
+  $TemporaryDirectory = & node -p "require('node:os').tmpdir()"
+  if ($LASTEXITCODE -ne 0) { throw "Unable to resolve the Node temporary directory." }
+  $MarkerPath = Join-Path $TemporaryDirectory (
     "tritonai-installer-smoke-windows-{0}-{1}.json" -f $PID, [Guid]::NewGuid().ToString("N")
   )
   $UserDataPath = "$MarkerPath.userdata"
   $Process = $null
   try {
-    $SmokeArgument = '"--tritonai-installer-smoke-marker={0}"' -f $MarkerPath
-    $Process = Start-Process -FilePath $ExecutablePath -ArgumentList $SmokeArgument -PassThru
+    # The portable NSIS wrapper forwards environment variables to Electron.
+    # Use the same smoke-mode transport as macOS, without wrapper argument parsing.
+    $Process = Start-Process -FilePath $ExecutablePath -Environment @{
+      TRITONAI_INSTALLER_SMOKE_MARKER = $MarkerPath
+    } -PassThru
     $Deadline = [DateTime]::UtcNow.AddSeconds($LaunchTimeoutSeconds)
     while ([DateTime]::UtcNow -lt $Deadline -and -not $Process.HasExited -and -not (Test-Path -LiteralPath $MarkerPath -PathType Leaf)) {
       Start-Sleep -Milliseconds 250
@@ -90,7 +96,7 @@ function Invoke-PackagedBoot([string]$ExecutablePath, [string]$CandidateId, [int
       try {
         $Processes = @(Get-CimInstance Win32_Process | Where-Object {
           $_.ProcessId -eq $Process.Id -or $_.ParentProcessId -eq $Process.Id
-        } | Select-Object ProcessId, ParentProcessId, Name)
+        } | Select-Object ProcessId, ParentProcessId, Name, CommandLine)
         Write-Host ("Packaged boot process state: " + ($Processes | ConvertTo-Json -Compress))
       } catch {
         Write-Host "Packaged boot process diagnostics unavailable."
