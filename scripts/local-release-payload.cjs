@@ -148,16 +148,27 @@ function verifyWindowsPluginArchives(resources, asar, composition) {
   return verifyPluginArchive(server, asar, composition, 'apps/server/dist/production-integrations/packages');
 }
 
+async function harnessArchiveTool(builderRequire) {
+  // Builder ships reduced 7za on Windows, which skips the NSIS container and
+  // extracts the embedded 7z payload directly. Verification needs NSIS support.
+  if (process.platform === 'win32') {
+    const tool = path.join(process.env.ProgramFiles || 'C:\\Program Files', '7-Zip', '7z.exe');
+    if (!fs.existsSync(tool)) throw new Error('Harness verification requires full 7-Zip at Program Files/7-Zip/7z.exe.');
+    return tool;
+  }
+  return builderRequire('./out/toolsets/7zip.js').getPath7za();
+}
+
 async function verifyWindowsHarness({ artifact, outputDirectory, composition, version, harnessRoot, installerRoot, verifyResources = () => {} }) {
   const builderRequire = createRequire(require('./local-release-packaging.cjs').packagingLibrary({ harnessRoot, installerRoot }));
   const asar = builderRequire('@electron/asar');
-  const sevenZip = await builderRequire('./out/toolsets/7zip.js').getPath7za();
+  const sevenZip = await harnessArchiveTool(builderRequire);
   const header = Buffer.alloc(64), fd = fs.openSync(artifact, 'r');
   try { fs.readSync(fd, header, 0, 64, 0); } finally { fs.closeSync(fd); }
   if (header.toString('ascii', 0, 2) !== 'MZ') throw new Error('Harness Windows output is not a PE executable.');
   const scratch = fs.mkdtempSync(path.join(outputDirectory, '.verify-windows-'));
   try {
-    execFileSync(sevenZip, ['x', '-y', '-bd', `-o${scratch}`, artifact], { stdio: 'inherit' });
+    execFileSync(sevenZip, ['x', '-tNsis', '-y', '-bd', `-o${scratch}`, artifact], { stdio: 'inherit' });
     const inner = path.join(scratch, '$PLUGINSDIR', 'app-64.7z');
     if (!fs.statSync(inner).isFile()) throw new Error('Windows NSIS output is missing app-64.7z.');
     const app = path.join(scratch, 'app');
@@ -169,4 +180,4 @@ async function verifyWindowsHarness({ artifact, outputDirectory, composition, ve
     return { schemaVersion: 1, version, plugins, archiveVerified: true, nativeBoot: 'not-verified', signed: false };
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }
-module.exports = { findPluginPackageRoots, verifyPluginArchive, verifyWindowsPluginArchives, verifyWindowsHarness };
+module.exports = { findPluginPackageRoots, verifyPluginArchive, verifyWindowsPluginArchives, verifyWindowsHarness, harnessArchiveTool };
