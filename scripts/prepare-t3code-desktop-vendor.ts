@@ -467,7 +467,7 @@ function verifyExpectedWindowsHarnessPublisher(
   }
   const verifier = path.join(root, "scripts", "verify-windows-authenticode.ps1");
   const encodedPaths = Buffer.from(JSON.stringify([executablePath]), "utf8").toString("base64");
-  const output = execute("powershell.exe", [
+  const output = execute("pwsh.exe", [
     "-NoProfile",
     "-NonInteractive",
     "-ExecutionPolicy",
