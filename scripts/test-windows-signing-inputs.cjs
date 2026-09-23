@@ -15,11 +15,18 @@ test('only manual canonical main can request stable signing validation', () => {
 });
 test('requires successful exact stable Harness run and matching published tag', () => {
   assert.doesNotThrow(() => assertHarnessRelease(selection, run, release, tag));
-  for (const delta of [{ conclusion: 'failure' }, { status: 'in_progress' }, { head_sha: 'c'.repeat(40) }, { head_branch: 'main' }, { path: '.github/workflows/nightly.yml' }, { event: 'workflow_dispatch' }]) {
+  for (const delta of [{ conclusion: 'failure' }, { status: 'in_progress' }, { head_sha: 'c'.repeat(40) }, { head_branch: 'main' }, { path: '.github/workflows/nightly.yml' }, { event: 'pull_request' }]) {
     assert.throws(() => assertHarnessRelease(selection, { ...run, ...delta }, release, tag));
   }
   for (const delta of [{ draft: true }, { prerelease: true }, { tag_name: 'v0.3.3' }, { assets: release.assets.slice(0, 2) }]) {
     assert.throws(() => assertHarnessRelease(selection, run, { ...release, ...delta }, tag));
   }
   assert.throws(() => assertHarnessRelease(selection, run, release, { sha: 'c'.repeat(40) }));
+});
+
+test('accepts controlled manual stable releases only at the published tag commit', () => {
+  const manual = { ...run, event: 'workflow_dispatch', head_branch: 'main' };
+  assert.doesNotThrow(() => assertHarnessRelease(selection, manual, release, tag));
+  assert.throws(() => assertHarnessRelease(selection, { ...manual, head_sha: 'd'.repeat(40) }, release, tag));
+  assert.throws(() => assertHarnessRelease(selection, { ...manual, head_branch: 'feature' }, release, tag));
 });
