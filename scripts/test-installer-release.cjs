@@ -31,3 +31,37 @@ for (const platform of ['mac', 'win']) test(`${platform} payload binding rejects
     assert.throws(() => verifyHarnessRunArtifacts(run, staged, '0.3.4', platform));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('downloads stage on the destination volume and preserve existing bytes on digest failure', () => {
+  const { downloadManifest, downloadVerified } = require('../dist/scripts/prepare-t3code-desktop-vendor.js');
+  const { pathToFileURL } = require('node:url');
+  const { createHash } = require('node:crypto');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'installer-download-'));
+  const rename = fs.renameSync;
+  try {
+    const destination = path.join(root, 'other-volume');
+    fs.mkdirSync(destination);
+    const source = path.join(root, 'source');
+    const bytes = Buffer.from('verified release bytes');
+    fs.writeFileSync(source, bytes);
+    const target = path.join(destination, 'artifact');
+    fs.renameSync = (from, to) => {
+      if (path.dirname(from) !== path.dirname(to)) {
+        throw Object.assign(new Error('cross-device rename'), { code: 'EXDEV' });
+      }
+      return rename(from, to);
+    };
+    downloadManifest(pathToFileURL(source).href, target);
+    assert.deepEqual(fs.readFileSync(target), bytes);
+    fs.writeFileSync(target, 'previous candidate');
+    const expected = { size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') };
+    assert.throws(() => downloadVerified(pathToFileURL(source).href, target, { ...expected, sha512: 'invalid' }), /SHA-512 mismatch/);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'previous candidate');
+    downloadVerified(pathToFileURL(source).href, target, expected);
+    assert.deepEqual(fs.readFileSync(target), bytes);
+    assert.deepEqual(fs.readdirSync(destination), ['artifact']);
+  } finally {
+    fs.renameSync = rename;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
