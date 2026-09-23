@@ -167,7 +167,8 @@ function main() {
   );
   const verifiedHarness = verifyHarnessPublisherBeforeVendoring(fixtureHarnessPath, {
     platform: "win32",
-    execute: (_command, args) => {
+    execute: (command, args) => {
+      assert.strictEqual(command, "pwsh.exe");
       assert(args.includes("-ExpectedPublisherName"));
       assert(args.includes("The Regents of the University of California"));
       return JSON.stringify([{
@@ -194,9 +195,15 @@ function main() {
     /invalid evidence/
   );
   if (process.platform === "win32") {
+    // Exercise the security module in the same nested host used by packaging.
+    // Windows PowerShell 5.1 cannot load the inherited PowerShell 7 modules.
+    execFileSync("pwsh.exe", [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "$ErrorActionPreference='Stop'; $signature=Get-AuthenticodeSignature -LiteralPath (Join-Path $PSHOME 'pwsh.exe'); if ($signature.Status -ne 'Valid') { throw 'PowerShell Authenticode verification failed' }"
+    ], { stdio: "inherit" });
     for (const scriptName of ["verify-windows-authenticode.ps1", "verify-windows-packaged-boot.ps1"]) {
       const scriptPath = path.join(repoRoot, "scripts", scriptName);
-      execFileSync("powershell.exe", [
+      execFileSync("pwsh.exe", [
         "-NoProfile",
         "-NonInteractive",
         "-Command",

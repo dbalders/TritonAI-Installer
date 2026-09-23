@@ -153,7 +153,7 @@ function verifyWindowsPackagedBoot({ repositoryRoot = root, version }) {
   if (process.platform !== "win32") throw new Error("Windows packaged boot verification must run on Windows.");
   const [setupPath, portablePath] = expectedWindowsExecutables(repositoryRoot, version);
   const proofPath = path.join(repositoryRoot, "artifacts", "windows-installer", "packaged-boot.json");
-  execFileSync("powershell.exe", [
+  execFileSync("pwsh.exe", [
     "-NoProfile",
     "-NonInteractive",
     "-ExecutionPolicy",
@@ -197,7 +197,7 @@ function verifyAuthenticodeExecutables({
   const verifier = path.join(repositoryRoot, "scripts", "verify-windows-authenticode.ps1");
   const encodedExecutablePaths = Buffer.from(JSON.stringify(executablePaths), "utf8").toString("base64");
   const stdout = execFileSync(
-    "powershell.exe",
+    "pwsh.exe",
     [
       "-NoProfile",
       "-NonInteractive",
