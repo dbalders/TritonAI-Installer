@@ -87,10 +87,14 @@ function Invoke-PackagedBoot([string]$ExecutablePath, [string]$CandidateId, [int
         $Process.WaitForExit()
         throw "$CandidateId exited with code $($Process.ExitCode) before writing its packaged boot readiness marker."
       }
-      $Processes = @(Get-CimInstance Win32_Process | Where-Object {
-        $_.ProcessId -eq $Process.Id -or $_.ParentProcessId -eq $Process.Id
-      } | Select-Object ProcessId, ParentProcessId, Name)
-      Write-Host ("Packaged boot process state: " + ($Processes | ConvertTo-Json -Compress))
+      try {
+        $Processes = @(Get-CimInstance Win32_Process | Where-Object {
+          $_.ProcessId -eq $Process.Id -or $_.ParentProcessId -eq $Process.Id
+        } | Select-Object ProcessId, ParentProcessId, Name)
+        Write-Host ("Packaged boot process state: " + ($Processes | ConvertTo-Json -Compress))
+      } catch {
+        Write-Host "Packaged boot process diagnostics unavailable."
+      }
       throw "$CandidateId did not write its packaged boot readiness marker within $LaunchTimeoutSeconds seconds."
     }
     $Marker = Get-Content -LiteralPath $MarkerPath -Raw | ConvertFrom-Json
