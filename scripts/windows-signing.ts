@@ -65,14 +65,19 @@ function resolveAzureTrustedSigningConfiguration(environment = process.env) {
   };
 }
 
-function createSignedWindowsBuilderConfiguration(baseConfiguration, environment = process.env) {
+function createSignedWindowsBuilderConfiguration(baseConfiguration, environment = process.env, version = require(path.join(root, "package.json")).version) {
   const azureSignOptions = resolveAzureTrustedSigningConfiguration(environment);
+  const ownedExecutables = expectedWindowsExecutables(root, version).map(file => path.basename(file));
+  const setup = ownedExecutables[0];
   return {
     ...baseConfiguration,
     forceCodeSigning: true,
     win: {
       ...baseConfiguration.win,
       signAndEditExecutable: true,
+      // Preserve vendored Harness/Codex bytes and their upstream signatures.
+      // Positive suffixes take precedence over the executable exclusion.
+      signExts: ["!.exe", ...ownedExecutables, `${setup.slice(0, -3)}__uninstaller.exe`],
       azureSignOptions
     }
   };
@@ -252,14 +257,19 @@ function sha256(file) {
   return fileDigest(file, "sha256", "hex");
 }
 
-if (require.main === module) {
-  main().catch((error) => {
+function runWindowsSigningCli(run = main) {
+  run().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+    // Builder may still have queued signing work. Fail immediately so later
+    // cleanup cannot replace the failed process status.
+    process.exit(1);
   });
 }
 
+if (require.main === module) runWindowsSigningCli();
+
 module.exports = {
+  runWindowsSigningCli,
   assertAuthenticodeResults,
   createSignedWindowsBuilderConfiguration,
   expectedWindowsPublisherName,

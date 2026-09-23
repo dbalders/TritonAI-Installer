@@ -132,7 +132,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Candidate version update failed.' }
           "UCSD_SKILLS_SOURCE=$env:GITHUB_WORKSPACE/.release-input/secure-skills" >> $env:GITHUB_ENV
       - name: Package and verify signed application, Setup, portable and native boot
-        run: npm run package:win-installer:signed
+        run: |
+          npm run package:win-installer:signed
+          if ($LASTEXITCODE -ne 0) { throw 'Signed Windows packaging failed.' }
+          foreach ($proof in @('authenticode-signatures.json', 'packaged-boot.json')) {
+            if (!(Test-Path -LiteralPath "artifacts/windows-installer/$proof" -PathType Leaf)) {
+              throw "Signed Windows packaging did not produce $proof."
+            }
+          }
       - name: Retain verification reports only (public repository)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
