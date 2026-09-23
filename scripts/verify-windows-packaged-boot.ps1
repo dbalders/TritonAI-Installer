@@ -81,9 +81,10 @@ function Invoke-PackagedBoot([string]$ExecutablePath, [string]$CandidateId, [int
   try {
     # The portable NSIS wrapper forwards environment variables to Electron.
     # Use the same smoke-mode transport as macOS, without wrapper argument parsing.
-    $Process = Start-Process -FilePath $ExecutablePath -Environment @{
-      TRITONAI_INSTALLER_SMOKE_MARKER = $MarkerPath
-    } -PassThru
+    $StartInfo = [Diagnostics.ProcessStartInfo]::new($ExecutablePath)
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.Environment['TRITONAI_INSTALLER_SMOKE_MARKER'] = $MarkerPath
+    $Process = [Diagnostics.Process]::Start($StartInfo)
     $Deadline = [DateTime]::UtcNow.AddSeconds($LaunchTimeoutSeconds)
     while ([DateTime]::UtcNow -lt $Deadline -and -not $Process.HasExited -and -not (Test-Path -LiteralPath $MarkerPath -PathType Leaf)) {
       Start-Sleep -Milliseconds 250
