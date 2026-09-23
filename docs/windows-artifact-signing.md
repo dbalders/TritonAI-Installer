@@ -90,9 +90,9 @@ proven. The separate cross-platform `release:contract`/publication process still
 
    Do not grant subscription Owner or Contributor to the CI identity.
 4. Create Installer's `windows-signing` GitHub environment **before dispatch**.
-   Require authorized reviewers, prevent self-review and administrator bypass,
-   and configure selected deployment branches/tags to allow the `main` **branch
-   only**, no tags. An environment OIDC subject does not itself restrict branches.
+   Configure selected deployment branches/tags to allow the `main` **branch
+   only**, no tags. No per-build reviewer approval is required, matching the
+   existing Harness release process. Keep administrator bypass disabled. An environment OIDC subject does not itself restrict branches.
    Keep main protected by PR checks/review. The workflow also rejects non-main
    runs. Do not add wildcard PR, fork, tag, or repository subjects to Azure.
 5. Set these environment variables:

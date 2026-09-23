@@ -36,8 +36,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # Dispatch as the built-in GitHub Actions App. David can then review the
-      # signing deployment without disabling the environment self-review gate.
+      # Optional dispatcher using only the built-in repository token.
+      # Signing remains restricted to the main branch in the release workflow.
       - name: Request protected release on main
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,4 +45,4 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$RELEASE_INPUTS" | gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main --json
-          echo 'Release requested. Review the signing environments on the Installer release run.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Release requested. Follow the Installer release run for the verified draft.' >> "$GITHUB_STEP_SUMMARY"
