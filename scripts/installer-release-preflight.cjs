@@ -17,7 +17,9 @@ function lookup(suffix) {
 }
 function main() {
   const { installerVersion } = validateInputs(process.env);
-  assertInstallerSource(installerVersion, require('../package.json'), lookup(`releases/tags/v${installerVersion}`), lookup(`commits/v${installerVersion}`), process.env.GITHUB_SHA);
+  const ref = lookup(`git/ref/tags/v${installerVersion}`);
+  const tag = ref ? lookup(`commits/v${installerVersion}`) : null;
+  assertInstallerSource(installerVersion, require('../package.json'), lookup(`releases/tags/v${installerVersion}`), tag, process.env.GITHUB_SHA);
   console.log(`Verified Installer ${installerVersion} source and unused release target.`);
 }
 if (require.main === module) main();
