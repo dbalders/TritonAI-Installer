@@ -4,9 +4,13 @@ import { fileDigest } from "../src/installer/file-digest";
 
 // The run artifact is downloaded by ID from the selected successful Harness run,
 // independently of the mutable release. Compare every consumed release input.
-export function verifyHarnessRunArtifacts(runDirectory: string, stagedDirectory: string, version: string) {
+export function verifyHarnessRunArtifacts(runDirectory: string, stagedDirectory: string, version: string, platform: "win" | "mac" = "win") {
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Expected a stable Harness version for run binding.");
-  const files = [
+  const files = platform === "mac" ? [
+    ["latest-mac.yml", "latest-mac.yml"],
+    [`TritonAI-Harness-${version}-arm64.dmg`, `TritonAI-Harness-${version}-arm64.dmg`],
+    ["tritonai-plugin-composition-mac-arm64.json", "tritonai-plugin-composition.json"]
+  ] : [
     ["latest.yml", "latest.yml"],
     [`TritonAI-Harness-${version}-x64.exe`, `TritonAI-Harness-${version}-x64.exe`],
     ["tritonai-plugin-composition-win-x64.json", "tritonai-plugin-composition.json"]

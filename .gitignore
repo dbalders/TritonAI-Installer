@@ -48,3 +48,5 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+.release-input/

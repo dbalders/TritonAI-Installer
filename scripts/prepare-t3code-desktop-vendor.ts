@@ -121,6 +121,9 @@ function stageMacVendor(arch) {
       publishedPluginCompositionFile("mac", arch)
     );
     verifyDmgContainsApp(dmgPath);
+    if (process.env.TRITONAI_HARNESS_RUN_ARTIFACT_DIR) {
+      verifyHarnessRunArtifacts(process.env.TRITONAI_HARNESS_RUN_ARTIFACT_DIR, stagingDir, expectedHarnessVersion, "mac");
+    }
     return { stagingDir, vendorDir, version: manifest.version, assetName: selected.fileName };
   } catch (error) {
     fs.rmSync(stagingDir, { recursive: true, force: true });

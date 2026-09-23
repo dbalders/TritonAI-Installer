@@ -37,7 +37,8 @@ async function main() {
     console.log(`Clean runtime test passed with Node ${nodeVersion} and npm ${npmVersion}`);
   } finally {
     process.env.PATH = oldPath;
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    // Windows can briefly retain the executable handle after the child exits.
+    fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
 

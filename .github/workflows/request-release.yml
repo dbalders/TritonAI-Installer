@@ -1,0 +1,48 @@
+name: Request Installer release
+
+on:
+  workflow_dispatch:
+    inputs:
+      installer_version:
+        description: Stable version matching package.json on main
+        required: true
+        default: '0.3.4'
+        type: string
+      harness_version:
+        description: Published stable Harness version
+        required: true
+        default: '0.3.4'
+        type: string
+      harness_run_id:
+        description: Successful Harness release.yml run that produced the published assets
+        required: true
+        type: string
+      harness_commit:
+        description: Exact 40-character Harness tag commit
+        required: true
+        type: string
+      skills_commit:
+        description: Reviewed 40-character secure-skills commit
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  request:
+    if: github.repository == 'dbalders/TritonAI-Installer' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Dispatch as the built-in GitHub Actions App. David can then review the
+      # signing deployment without disabling the environment self-review gate.
+      - name: Request protected release on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_INPUTS: ${{ toJSON(inputs) }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$RELEASE_INPUTS" | gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main --json
+          echo 'Release requested. Review the signing environments on the Installer release run.' >> "$GITHUB_STEP_SUMMARY"

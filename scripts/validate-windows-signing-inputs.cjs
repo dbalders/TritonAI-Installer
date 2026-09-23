@@ -19,7 +19,7 @@ function validateInputs(env) {
 }
 
 function assertHarnessRelease(selection, run, release, tagCommit) {
-  if (run.path !== '.github/workflows/release.yml' || run.event !== 'push' || run.head_sha !== selection.commit || run.head_branch !== `v${selection.harnessVersion}` || run.status !== 'completed' || run.conclusion !== 'success') {
+  if (run.path !== '.github/workflows/release.yml' || !['push', 'workflow_dispatch'].includes(run.event) || run.head_sha !== selection.commit || run.head_branch !== (run.event === 'push' ? `v${selection.harnessVersion}` : 'main') || run.status !== 'completed' || run.conclusion !== 'success') {
     throw new Error('Harness must finish its stable release workflow successfully for the selected tag and exact commit before Installer packaging.');
   }
   if (release.draft !== false || release.prerelease !== false || release.tag_name !== `v${selection.harnessVersion}` || tagCommit.sha !== selection.commit) {
