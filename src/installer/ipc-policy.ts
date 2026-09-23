@@ -1,4 +1,4 @@
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 
 export function assertInstallerSender(
@@ -8,8 +8,20 @@ export function assertInstallerSender(
 ) {
   if (!contents || contents.isDestroyed() || event.sender !== contents
     || !event.senderFrame || event.senderFrame !== contents.mainFrame
-    || event.senderFrame.url !== pathToFileURL(rendererFile).href) {
+    || !matchesRendererFile(event.senderFrame.url, rendererFile)) {
     throw new Error("Installer request did not originate from its main window.");
+  }
+}
+
+function matchesRendererFile(value: string, rendererFile: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "file:" || url.search || url.hash) return false;
+    // Chromium leaves ~ literal in Windows short paths while Node encodes it.
+    // Round-trip both through Node's file URL rules before comparing identity.
+    return pathToFileURL(fileURLToPath(url)).href === pathToFileURL(rendererFile).href;
+  } catch {
+    return false;
   }
 }
 

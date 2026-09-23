@@ -30,6 +30,21 @@ async function main() {
   ]) assert.throws(() => assertInstallerSender(untrusted, contents, renderer), /main window/);
   frame.url = "https://example.com";
   assert.throws(() => assertInstallerSender(event, contents, renderer), /main window/);
+  const shortPathRenderer = path.resolve("RUNNER~1", "renderer with spaces", "index.html");
+  const canonicalUrl = pathToFileURL(shortPathRenderer).href;
+  for (const url of [canonicalUrl, canonicalUrl.replace(/%7E/gi, "~")]) {
+    frame.url = url;
+    assert.doesNotThrow(() => assertInstallerSender(event, contents, shortPathRenderer));
+    assert.throws(() => assertInstallerSender({ ...event, sender: {} }, contents, shortPathRenderer), /main window/);
+    assert.throws(() => assertInstallerSender({ ...event, senderFrame: { ...frame } }, contents, shortPathRenderer), /main window/);
+  }
+  for (const url of [
+    `${canonicalUrl}?other=1`, `${canonicalUrl}#other`, canonicalUrl.replace("index.html", "other.html"),
+    canonicalUrl.replace("index.html", "nested%2Findex.html"), "https://example.com/index.html", "not a URL"
+  ]) {
+    frame.url = url;
+    assert.throws(() => assertInstallerSender(event, contents, shortPathRenderer), /main window/);
+  }
   for (const url of ["file:///tmp/app", "javascript:alert(1)", "http://example.com", "https://user:password@example.com"]) {
     assert.throws(() => documentationUrl(url), /HTTPS/);
   }
