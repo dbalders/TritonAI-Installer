@@ -105,7 +105,7 @@ async function prepare(candidateFile) {
     if (git(producerRoot, 'rev-parse', 'HEAD') !== sources.installer.commit || git(producerRoot, 'status', '--porcelain')) throw new Error('Plugin composition producer checkout changed; inspect before resuming.');
     // Compile only the pinned composition producer, using Harness's installed
     // compiler and Node types. No Installer dependencies or app build are needed.
-    await command(dirs['harness-mac'], [tools.vp, 'exec', 'tsgo', '--project', path.join(producerRoot, 'tsconfig.plugin-producer.json'), '--typeRoots', path.join(dirs['harness-mac'], 'node_modules/@types')]);
+    await command(dirs['harness-mac'], [tools.vp, 'exec', 'tsc', '--project', path.join(producerRoot, 'tsconfig.plugin-producer.json'), '--typeRoots', path.join(dirs['harness-mac'], 'node_modules/@types')]);
   } else await command(producerRoot, ['npm', 'run', 'build']);
   const vendor = require(path.join(producerRoot, 'dist/scripts/prepare-plugins-vendor.js'));
   if (!vendor.createLocalCandidatePluginCatalog) throw new Error('Selected Installer lacks local candidate support. Select a version containing the release workflow changes.');

@@ -3,39 +3,39 @@
   "kind": "tritonai-managed-plugin-catalog",
   "source": {
     "repository": "https://github.com/dbalders/TritonAI-Plugins.git",
-    "ref": "feb583cc3d919e32eb588f1bce3755fae0d6b352",
-    "commit": "feb583cc3d919e32eb588f1bce3755fae0d6b352"
+    "ref": "8aee4ec28d41488f99632146134b0d869352c6fc",
+    "commit": "8aee4ec28d41488f99632146134b0d869352c6fc"
   },
   "packages": [
     {
       "pluginId": "github",
       "version": "1.0.0",
-      "digest": "b157289cbf659939eb545171a91975ba0dff9b3f939d31b5dbad55b947d94de7",
+      "digest": "a579bcb65c1dab010c0889d6319a3cbd0406894c28672c2150734e89042c2d13",
       "manifestDigest": "774b940854dded25bd5ad117d57e9376b59719d879410d6d505e98fa0ffbd8ad"
     },
     {
       "pluginId": "google-workspace",
       "version": "1.0.0",
-      "digest": "8c55258a2adbb52cca2dcb230cffe38f545d7b2532215cb80927f47b62966d3e",
+      "digest": "1229e6ea11034ade92e37591b26ed1f6ca5b8b9a4a937dfa11b0845cbb8596a4",
       "manifestDigest": "0a2f5fc9341e5382f64461958c020f53967681a9365e7a8dbf7a3ab121bd90c3"
     },
     {
       "pluginId": "kuali-build",
       "version": "1.1.0",
-      "digest": "1cb075c2591f925c39fad20d18c0d8b2c743ea5d64215c030766751ea8446820",
+      "digest": "09901aa836211063d3d02d37df573ece7f7e8845ad57361653de4d82403af12e",
       "manifestDigest": "3ea524184d89a59b6eb1befa3703ba0c690e86024378dc196d6b945b17d9afbf"
     },
     {
       "pluginId": "microsoft-365",
       "version": "1.2.0",
-      "digest": "e1039d19ff3506a5c5f60187523f301565ecce51add6bfe0ed8827a0fc92d100",
+      "digest": "ffd6c8c587f3e5c48c23e4395d6dba392ee84c3fe35aaf5bede019cd74858e96",
       "manifestDigest": "1c8ad09f0a4f6fb5f49c81a77c6cf72548667be53e5b96b147c93f478c9ffb41"
     },
     {
       "pluginId": "n8n",
       "version": "1.0.0",
-      "digest": "b0676251f714cf7dd448e1b7d8b22b0db9e491fe6ac36f685d90b549c0f38bb5",
-      "manifestDigest": "6268b3210984def7a325389881f4cf437d77e39d0e21990c7491e01a1ebdabe8"
+      "digest": "3c214c1d7627417438d4f3983ce471dd178ddc3f9c85dd15691e408f5b6339cf",
+      "manifestDigest": "8e9e737c32457346d06a61a607211ae23bbc278522e51a9b1a246bc1f871185a"
     }
   ]
 }
