@@ -494,10 +494,10 @@ function assertFrontierSessionRouteColumnsStayCoherent() {
     );
     assert.strictEqual(
       JSON.parse(topLevelRuntime.runtime_payload_json).modelSelection.model,
-      "gpt-5.6-sol"
+      "gpt-6.1-sol"
     );
     assert.strictEqual(divergentRuntime.provider_instance_id, "codex_frontier");
-    assert.strictEqual(JSON.parse(divergentRuntime.runtime_payload_json).model, "gpt-5.6-sol");
+    assert.strictEqual(JSON.parse(divergentRuntime.runtime_payload_json).model, "gpt-6.1-sol");
     assert.strictEqual(projectionSession.provider_instance_id, "codex_frontier");
     assert.strictEqual(
       JSON.parse(projectionThread.model_selection_json).instanceId,
