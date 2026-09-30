@@ -32,12 +32,10 @@ The final Windows job rechecks signatures and both boot proofs, generates `SHA25
 
 An existing release blocks a new build, including an existing draft. Inspect failed runs and any partially created draft before retrying. Do not delete or replace a public release to bypass this guard. A run can be retried from failed jobs before draft creation; an already-created partial draft requires deliberate reconciliation with the original candidate bytes using the existing publisher.
 
-## Verified Harness 0.3.4 inputs
+## Harness prerequisites for Installer 0.3.5
 
-- Harness run: `35795214512`
-- Harness commit: `313db55bb01179cd7a9282325f66ee85580a8be9`
-- Installer and Harness versions: `0.3.4`
+Installer 0.3.5 selects Plugins `v0.1.4`, including n8n `1.1.0`, through the [managed plugin catalog](../config/managed-plugin-catalog.json). Publish a stable Harness `0.3.5` with that exact plugin composition before dispatching the Installer release. Harness `0.3.4` contains the earlier composition and cannot satisfy this catalog.
 
-These identify the published Harness inspected on September 22, 2026. Recheck release status and ensure the run artifacts have not expired before dispatch. Selected secure-skills input: `6b28588d4f11526d2b773eb6d5283232b9c3fbe8` (merged PR #27). The clean checkout contains the single `ucsd-dsmlp-deploy` skill and its chart/reference assets; the final commit changes review tooling and documentation, not the packaged skill. Release packaging still enforces clean-source provenance and the exact selected commit.
+Select the successful stable `release.yml` run and exact tag commit after Harness publication; nightly validation runs do not satisfy the stable release prerequisite. Recheck the published artifacts and their retention before dispatch. Select a reviewed secure-skills commit separately; packaging enforces clean-source provenance and the exact selected commit.
 
 The optional `Request Installer release` workflow also dispatches the release using GitHub's built-in Actions token. It has no signing or private-input secrets. Both signing environments allow only the `main` branch and do not require per-build approval. Public publication remains a separate action after draft verification and UAT.
