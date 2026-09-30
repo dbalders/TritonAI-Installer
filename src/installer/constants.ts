@@ -10,7 +10,10 @@ const LEGACY_CODEX_MODEL_REPLACEMENTS = {
   "api-gemma-4-31b": "api-muse-glimmer-30b",
   "onyx-muse-glimmer-30b": "api-muse-glimmer-30b",
   "api-glm-5.2": "api-glm-5.3",
-  "gpt-5.5": "gpt-5.6-sol",
+  "gpt-5.5": "gpt-6.1-sol",
+  "gpt-5.6-luna": "gpt-6.1-sol",
+  "gpt-5.6-sol": "gpt-6.1-sol",
+  "gpt-5.6-terra": "gpt-6.1-sol",
   "claude-opus-4-8": "claude-opus-5"
 };
 const TRITONAI_CODEX_MODEL_CAPABILITIES = {
@@ -67,17 +70,9 @@ const DEFAULT_CODEX_MODELS = {
     capabilities: withInputModalities(["text", "image"]),
     availableToRestrictedKeys: true
   },
-  "gpt-5.6-luna": {
-    id: "gpt-5.6-luna",
-    name: "GPT-5.6 Luna"
-  },
-  "gpt-5.6-sol": {
-    id: "gpt-5.6-sol",
-    name: "GPT-5.6 Sol"
-  },
-  "gpt-5.6-terra": {
-    id: "gpt-5.6-terra",
-    name: "GPT-5.6 Terra"
+  "gpt-6.1-sol": {
+    id: "gpt-6.1-sol",
+    name: "GPT-6.1 Sol"
   },
   "claude-opus-5": {
     id: "claude-opus-5",
@@ -178,7 +173,7 @@ function normalizeManagedConfig(config) {
     apiDocsUrl: normalizeOptionalUrl(config.apiDocsUrl),
     codexModel,
     restrictedCodexModel,
-    externalModelProbe: config.externalModelProbe || "gpt-5.6-sol",
+    externalModelProbe: config.externalModelProbe || "gpt-6.1-sol",
     codexModels: normalizeCodexModels(config.codexModels, codexModel, restrictedCodexModel)
   };
 }
