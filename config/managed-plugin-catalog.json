@@ -3,21 +3,21 @@
   "kind": "tritonai-managed-plugin-catalog",
   "source": {
     "repository": "https://github.com/dbalders/TritonAI-Plugins.git",
-    "ref": "feb583cc3d919e32eb588f1bce3755fae0d6b352",
-    "commit": "feb583cc3d919e32eb588f1bce3755fae0d6b352"
+    "ref": "refs/tags/v0.1.4",
+    "commit": "298d3a75ec9f8e52afbb0b65b03d5a1d9a5e6153"
   },
   "packages": [
     {
       "pluginId": "github",
-      "version": "1.0.0",
-      "digest": "b157289cbf659939eb545171a91975ba0dff9b3f939d31b5dbad55b947d94de7",
-      "manifestDigest": "774b940854dded25bd5ad117d57e9376b59719d879410d6d505e98fa0ffbd8ad"
+      "version": "1.0.1",
+      "digest": "26cc7a433200b99f058d62608abc5b76bc8de9ea6d3b50d9e45c56238d87b6c2",
+      "manifestDigest": "721026bb3cc6b62a685a509d4a8934530db050f4f2775a35eb89a45cdf23917a"
     },
     {
       "pluginId": "google-workspace",
-      "version": "1.0.0",
-      "digest": "8c55258a2adbb52cca2dcb230cffe38f545d7b2532215cb80927f47b62966d3e",
-      "manifestDigest": "0a2f5fc9341e5382f64461958c020f53967681a9365e7a8dbf7a3ab121bd90c3"
+      "version": "1.0.1",
+      "digest": "0e5ddd1ba55c192961225b6eec5896dd581b5b05cbc07464ea3ca2482b925c59",
+      "manifestDigest": "c1c6d56bdc7b4be023d8add5b0432695795597d4ab758ea92699d0a386f09b2a"
     },
     {
       "pluginId": "kuali-build",
@@ -27,15 +27,15 @@
     },
     {
       "pluginId": "microsoft-365",
-      "version": "1.2.0",
-      "digest": "e1039d19ff3506a5c5f60187523f301565ecce51add6bfe0ed8827a0fc92d100",
-      "manifestDigest": "1c8ad09f0a4f6fb5f49c81a77c6cf72548667be53e5b96b147c93f478c9ffb41"
+      "version": "1.2.1",
+      "digest": "e13a5992a9eb782b58cebb22d4aa1f46868b924ee76b62d1b8b5dfd93762165a",
+      "manifestDigest": "eefbb8fa54842263303499a3d730fad55f477804677b71c57eb7b71ba3cc0b7b"
     },
     {
       "pluginId": "n8n",
-      "version": "1.0.0",
-      "digest": "b0676251f714cf7dd448e1b7d8b22b0db9e491fe6ac36f685d90b549c0f38bb5",
-      "manifestDigest": "6268b3210984def7a325389881f4cf437d77e39d0e21990c7491e01a1ebdabe8"
+      "version": "1.1.0",
+      "digest": "397dcd1ce4d0cb094aee18858613cef03a59eb8cf36fe021650f4f2626d38909",
+      "manifestDigest": "e1c3f55167625577e066ec4574ec3ac803f46bc31663fb35e9c0361e78583a37"
     }
   ]
 }
