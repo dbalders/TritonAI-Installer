@@ -9,6 +9,7 @@ interface CredentialCheckResult {
   key: string;
   keyIndex: number;
   access: CredentialAccess;
+  modelIds?: string[];
 }
 
 function normalizeApiKey(value: unknown): string {
@@ -69,6 +70,12 @@ function assignCheckedCredentials(results: CredentialCheckResult[]) {
   const frontier = frontierOnly
     || [...results].reverse().find((result) => result.access.frontier);
 
+  const availableModels = {
+    ...(onPrem?.modelIds === undefined ? {} : { "on-prem": onPrem.modelIds }),
+    ...(frontier?.modelIds === undefined ? {} : { frontier: frontier.modelIds })
+  };
+  const modelAvailability = Object.keys(availableModels).length ? { availableModels } : {};
+
   if (!onPrem && !frontier) {
     throw new Error("These keys are active, but they do not include access to TritonAI Harness models.");
   }
@@ -77,6 +84,7 @@ function assignCheckedCredentials(results: CredentialCheckResult[]) {
     return {
       credentials: { sharedApiKey: onPrem.key },
       access: { onPrem: true, frontier: true },
+      ...modelAvailability,
       assignments: { onPremKeyIndex: onPrem.keyIndex, frontierKeyIndex: frontier.keyIndex }
     };
   }
@@ -87,6 +95,7 @@ function assignCheckedCredentials(results: CredentialCheckResult[]) {
       ...(frontier ? { frontierApiKey: frontier.key } : {})
     },
     access: { onPrem: Boolean(onPrem), frontier: Boolean(frontier) },
+    ...modelAvailability,
     assignments: {
       ...(onPrem ? { onPremKeyIndex: onPrem.keyIndex } : {}),
       ...(frontier ? { frontierKeyIndex: frontier.keyIndex } : {})
@@ -121,7 +130,11 @@ async function checkAndAssignCredentials({
   for (let index = 0; index < keys.length; index += 1) {
     try {
       const result = await checkConnection({ apiKey: keys[index], baseUrl, timeoutMs });
-      checked.push({ key: keys[index], keyIndex: index, access: normalizeAccess(result) });
+      const modelIds = result && typeof result === "object" && "modelIds" in result
+        && Array.isArray(result.modelIds)
+        ? result.modelIds.filter((modelId): modelId is string => typeof modelId === "string")
+        : undefined;
+      checked.push({ key: keys[index], keyIndex: index, access: normalizeAccess(result), modelIds });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const label = keys.length === 1 ? "access key" : `access key ${index + 1}`;

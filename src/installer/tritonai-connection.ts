@@ -52,21 +52,25 @@ async function checkTritonAiConnection({ apiKey, baseUrl = UCSD.baseUrl, timeout
   return {
     ok: true,
     access,
+    ...(modelCatalogReported ? { modelIds: modelIdsFromResponse(response.body) } : {}),
     externalModelsEnabled: access.frontier
   };
 }
 
-function classifyModelAccess(body): { onPrem: boolean; frontier: boolean } {
+function modelIdsFromResponse(body): string[] {
   const record = body && typeof body === "object" ? body as { data?: unknown } : {};
   const data = Array.isArray(record.data) ? record.data : [];
-  const modelIds = new Set<string>(data.flatMap((entry): string[] => {
+  return [...new Set<string>(data.flatMap((entry): string[] => {
     if (typeof entry === "string") return [entry];
     const model = entry && typeof entry === "object" ? entry as { id?: unknown } : {};
     if (typeof model.id === "string") return [model.id];
     return [];
-  }));
+  }))];
+}
+
+function classifyModelAccess(body): { onPrem: boolean; frontier: boolean } {
   const access = { onPrem: false, frontier: false };
-  for (const modelId of modelIds) {
+  for (const modelId of modelIdsFromResponse(body)) {
     if (!Object.prototype.hasOwnProperty.call(UCSD.codexModels, modelId)) continue;
     access[UCSD.modelRoute(modelId) === "on-prem" ? "onPrem" : "frontier"] = true;
   }

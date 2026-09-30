@@ -58,6 +58,17 @@ async function main() {
     onPremApiKey: "saved-on-prem",
     frontierApiKey: "new-frontier"
   });
+  const scoped = await checkAndAssignCredentials({
+    apiKeys: ["opus-only-cloud-key", "on-prem-key"],
+    checkConnection: async ({ apiKey }) => apiKey === "opus-only-cloud-key"
+      ? { access: { onPrem: false, frontier: true }, modelIds: ["claude-opus-5"] }
+      : { access: { onPrem: true, frontier: false }, modelIds: ["api-glm-5.3"] }
+  });
+  assert.deepStrictEqual(scoped.availableModels, {
+    "on-prem": ["api-glm-5.3"],
+    frontier: ["claude-opus-5"]
+  });
+
   const environmentLines = buildMacEnvironmentLines({
     credentials: split.credentials,
     pathEntries: ["/managed/bin"],
