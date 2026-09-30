@@ -1370,17 +1370,11 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
     return;
   }
 
-  for (const { externalModelsEnabled, availableModels } of [
-    { externalModelsEnabled: true, availableModels: undefined },
-    { externalModelsEnabled: false, availableModels: undefined },
-    { externalModelsEnabled: true, availableModels: { frontier: ["claude-opus-5"] } }
-  ]) {
-    const solAvailable = externalModelsEnabled && availableModels === undefined;
+  for (const externalModelsEnabled of [true, false]) {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-model-access-"));
     try {
       const paths = getPaths(tempRoot, process.platform);
       paths.externalModelsEnabled = externalModelsEnabled;
-      paths.availableModels = availableModels;
       writeT3CodeSettings(paths);
       const settings = JSON.parse(fs.readFileSync(paths.t3Settings, "utf8"));
       settings.providerInstances["codex-work"] = {
@@ -1454,8 +1448,8 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
         ).get(retiredModel).model_selection_json);
         assert.deepStrictEqual(migrated, {
           ...legacySelection,
-          instanceId: solAvailable ? "codex_frontier" : "codex",
-          model: solAvailable ? "gpt-6.1-sol" : UCSD.restrictedCodexModel
+          instanceId: externalModelsEnabled ? "codex_frontier" : "codex",
+          model: externalModelsEnabled ? "gpt-6.1-sol" : UCSD.restrictedCodexModel
         });
       }
       const selection = JSON.parse(
@@ -1501,8 +1495,8 @@ function assertT3DefaultsPatcherRespectsModelAccess() {
       patched.close();
       assert.deepStrictEqual(selection, {
         ...legacySelection,
-        instanceId: solAvailable ? "codex_frontier" : "codex",
-        model: solAvailable ? "gpt-6.1-sol" : UCSD.restrictedCodexModel
+        instanceId: externalModelsEnabled ? "codex_frontier" : "codex",
+        model: externalModelsEnabled ? "gpt-6.1-sol" : UCSD.restrictedCodexModel
       });
       assert.deepStrictEqual(migratedOpusSelection, {
         ...opusSelection,

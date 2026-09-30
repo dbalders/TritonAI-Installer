@@ -93,7 +93,6 @@ async function runInstall(payload, runtime) {
     apiKey = primaryApiKey(credentials);
     paths.externalModelsEnabled = connection.access.frontier;
     paths.onPremModelsEnabled = connection.access.onPrem;
-    paths.availableModels = connection.availableModels;
 
     diagnostics.setStep("prepare");
     const shouldSeedOnboardingWorkspace = isFreshInstall(paths);

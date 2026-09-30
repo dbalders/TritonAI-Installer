@@ -1401,11 +1401,8 @@ function getCodexModels(paths) {
   return Object.fromEntries(
     Object.entries(UCSD.codexModels).filter(([slug]) => {
       const route = UCSD.modelRoute(slug);
-      const routeEnabled = route === "frontier"
-        ? paths.externalModelsEnabled === true
-        : paths.onPremModelsEnabled !== false;
-      const availableModels = paths.availableModels?.[route];
-      return routeEnabled && (availableModels === undefined || availableModels.includes(slug));
+      if (route === "frontier") return paths.externalModelsEnabled === true;
+      return paths.onPremModelsEnabled !== false;
     })
   );
 }
