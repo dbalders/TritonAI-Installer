@@ -6,12 +6,12 @@ on:
       installer_version:
         description: Stable version matching package.json on main
         required: true
-        default: '0.3.4'
+        default: '0.3.5'
         type: string
       harness_version:
         description: Published stable Harness version
         required: true
-        default: '0.3.4'
+        default: '0.3.5'
         type: string
       harness_run_id:
         description: Successful Harness release.yml run that produced the published assets
