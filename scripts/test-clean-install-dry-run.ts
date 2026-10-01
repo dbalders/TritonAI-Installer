@@ -304,6 +304,19 @@ function assertManagedModelDefaultsUseFlash() {
   assert.strictEqual(UCSD.codexModels["api-glm-5.3"].shortName, "GLM");
   assert.strictEqual(UCSD.codexModels["api-glm-5.3"].availableToRestrictedKeys, true);
   assert.deepStrictEqual(UCSD.codexModels[UCSD.codexModel].capabilities.inputModalities, ["text", "image"]);
+  assert.deepStrictEqual(UCSD.codexModels["api-glm-5.3-flash"].capabilities.optionDescriptors, [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High", isDefault: true },
+        { id: "xhigh", label: "Extra High" }
+      ],
+      currentValue: "high"
+    }
+  ]);
   assert.deepStrictEqual(UCSD.codexModels["api-glm-5.3"].capabilities.inputModalities, ["text"]);
   assert.deepStrictEqual(UCSD.codexModels["api-glm-5.3"].capabilities.optionDescriptors, [
     {
