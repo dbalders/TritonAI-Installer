@@ -4,7 +4,7 @@ const { defaultAppRoot } = require("./app-root");
 
 const MANAGED_CONFIG_FILE = "managed-config.json";
 const DEFAULT_BASE_URL = "https://example.invalid/v1";
-const DEFAULT_RESTRICTED_CODEX_MODEL = "api-glm-5.3";
+const DEFAULT_RESTRICTED_CODEX_MODEL = "api-glm-5.3-flash";
 const DEFAULT_CODEX_MODEL = DEFAULT_RESTRICTED_CODEX_MODEL;
 const LEGACY_CODEX_MODEL_REPLACEMENTS = {
   "api-gemma-4-31b": "api-muse-glimmer-30b",
@@ -14,7 +14,8 @@ const LEGACY_CODEX_MODEL_REPLACEMENTS = {
   "gpt-5.6-luna": "gpt-6.1-sol",
   "gpt-5.6-sol": "gpt-6.1-sol",
   "gpt-5.6-terra": "gpt-6.1-sol",
-  "claude-opus-4-8": "claude-opus-5"
+  "claude-opus-4-8": "claude-opus-5-5",
+  "claude-opus-5": "claude-opus-5-5"
 };
 const TRITONAI_CODEX_MODEL_CAPABILITIES = {
   optionDescriptors: [
@@ -48,7 +49,30 @@ const GLM_CODEX_MODEL_CAPABILITIES = {
     }
   ]
 };
+const FLASH_CODEX_MODEL_CAPABILITIES = {
+  inputModalities: ["text", "image"],
+  optionDescriptors: [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High", isDefault: true },
+        { id: "xhigh", label: "Extra High" }
+      ],
+      currentValue: "high"
+    }
+  ]
+};
 const DEFAULT_CODEX_MODELS = {
+  "api-glm-5.3-flash": {
+    id: "api-glm-5.3-flash",
+    name: "GLM 5.3 Flash",
+    shortName: "Flash",
+    capabilities: FLASH_CODEX_MODEL_CAPABILITIES,
+    availableToRestrictedKeys: true
+  },
   "api-deepseek-v4-flash": {
     id: "api-deepseek-v4-flash",
     name: "DeepSeek v4 Flash",
@@ -70,13 +94,17 @@ const DEFAULT_CODEX_MODELS = {
     capabilities: withInputModalities(["text", "image"]),
     availableToRestrictedKeys: true
   },
+  "gpt-6-astra": {
+    id: "gpt-6-astra",
+    name: "GPT-6 Astra"
+  },
   "gpt-6.1-sol": {
     id: "gpt-6.1-sol",
     name: "GPT-6.1 Sol"
   },
-  "claude-opus-5": {
-    id: "claude-opus-5",
-    name: "Claude Opus 5"
+  "claude-opus-5-5": {
+    id: "claude-opus-5-5",
+    name: "Claude Opus 5.5"
   }
 };
 
