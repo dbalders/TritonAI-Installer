@@ -14,7 +14,7 @@ function createManagedConfig(env = process.env) {
     ),
     codexModel: env.UCSD_CODEX_MODEL || "api-glm-5.3",
     restrictedCodexModel: env.UCSD_RESTRICTED_CODEX_MODEL || "api-glm-5.3",
-    externalModelProbe: env.UCSD_EXTERNAL_MODEL_PROBE || "gpt-5.6-sol"
+    externalModelProbe: env.UCSD_EXTERNAL_MODEL_PROBE || "gpt-6.1-sol"
   };
 }
 
