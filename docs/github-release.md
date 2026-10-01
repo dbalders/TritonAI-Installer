@@ -34,7 +34,7 @@ An existing release blocks a new build, including an existing draft. Inspect fai
 
 ## Harness prerequisites for Installer 0.3.5
 
-Installer 0.3.5 selects Plugins `v0.1.4`, including n8n `1.1.0`, through the [managed plugin catalog](../config/managed-plugin-catalog.json). Publish a stable Harness `0.3.5` with that exact plugin composition before dispatching the Installer release. Harness `0.3.4` contains the earlier composition and cannot satisfy this catalog.
+Installer 0.3.5 requires the Plugins `v0.1.7` catalog update, including n8n `1.1.1`, through the [managed plugin catalog](../config/managed-plugin-catalog.json). Publish a stable Harness `0.3.5` with that exact plugin composition before dispatching the Installer release. Harness `0.3.4` contains the earlier composition and cannot satisfy this catalog.
 
 Select the successful stable `release.yml` run and exact tag commit after Harness publication; nightly validation runs do not satisfy the stable release prerequisite. Recheck the published artifacts and their retention before dispatch. Select a reviewed secure-skills commit separately; packaging enforces clean-source provenance and the exact selected commit.
 
