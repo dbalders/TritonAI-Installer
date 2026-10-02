@@ -55,7 +55,7 @@ async function saveEnvironment({ apiKey, credentials, paths, platform, nodeRunti
     const migration = prepareWindowsEnvironmentMigration({ paths, ...windowsEnvironmentMigrationRuntime });
     const lines = buildWindowsEnvironmentLines({ apiKey, credentials, pathEntries, tritonAiEnvironment });
 
-    writeFileAtomic(paths.envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
+    writeFileAtomic(paths.envFile, `\uFEFF${lines.join("\n")}\n`, { mode: 0o600 });
     emit(`Saved private TritonAI Harness environment at ${paths.envFile}`);
     return migration;
   }

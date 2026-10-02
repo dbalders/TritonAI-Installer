@@ -762,7 +762,7 @@ function writeWindowsLauncherScript({ paths, appPath, emit }) {
   const nodeBinary = getNodeRuntimePaths(paths, "win32", "x64").nodeBinary;
 
   fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-  writeFileAtomic(launcherPath, `${buildWindowsEnvironmentScript(paths)}
+  writeFileAtomic(launcherPath, `\uFEFF${buildWindowsEnvironmentScript(paths)}
 $nodePath = '${escapePowerShellSingleQuoted(nodeBinary)}'
 $defaultsPatcher = '${escapePowerShellSingleQuoted(paths.t3DefaultsPatcher)}'
 if ((Test-Path $nodePath) -and (Test-Path $defaultsPatcher)) {
