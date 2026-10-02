@@ -9,7 +9,7 @@ const { ensurePrerequisites } = require("./prerequisites");
 const { checkInstallCapacity } = require("./install-preflight");
 const { installT3CodeDesktop } = require("./t3code-desktop");
 const { installBundledSkills } = require("./skills");
-const { installBundledCodexCli, writeManagedCodexLauncher } = require("./codex-vendor");
+const { installBundledCodexCli, writeManagedCodexLauncher, managedCodexEntrypoint } = require("./codex-vendor");
 const { checkTritonAiConnection } = require("./tritonai-connection");
 const { getTritonAiEnvironment } = require("./codex-environment");
 const configWriters = require("./config-writers");
@@ -273,6 +273,8 @@ async function ensureCodexCliForT3({ credentials, paths, nodeRuntime, runtime, e
         binary: managedBinary,
         env: buildEnv(credentials, paths, nodeRuntime, runtime.platform),
         platform: runtime.platform,
+        paths,
+        nodeRuntime,
         runtime,
         emit
       })
@@ -305,6 +307,7 @@ async function ensureCodexCliForT3({ credentials, paths, nodeRuntime, runtime, e
     paths,
     nodeRuntime,
     commandRunner: runtime.commandRunner,
+    platform: runtime.platform,
     allowFailure: true
   });
 }
@@ -315,6 +318,8 @@ async function verifyManagedCodexCli({ credentials, paths, nodeRuntime, runtime,
     binary: managedBinary,
     env: buildEnv(credentials, paths, nodeRuntime, runtime.platform),
     platform: runtime.platform,
+    paths,
+    nodeRuntime,
     runtime,
     emit
   });
@@ -352,13 +357,13 @@ async function installManagedCodexCli({ credentials, paths, nodeRuntime, runtime
   paths.codexBinaryPath = managedCodexBinary(paths, runtime.platform);
 }
 
-async function getCodexVersionForRuntime({ binary, env, platform, runtime, emit }) {
+async function getCodexVersionForRuntime({ binary, env, platform, paths, nodeRuntime, runtime, emit }) {
   if (runtime.getCodexVersion) {
     return runtime.getCodexVersion(binary);
   }
 
   try {
-    const output = await runCommandForOutput(binary, ["--version"], { env, platform });
+    const output = await runCommandForOutput(binary, ["--version"], { env, platform, paths, nodeRuntime });
     return parseCodexVersion(output);
   } catch (error) {
     emit(`Could not determine managed Codex version: ${error.message}`);
@@ -499,12 +504,15 @@ function runCommand(command, args, {
   allowFailure = false,
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
   platform = process.platform,
+  paths,
+  nodeRuntime,
   terminate = terminateProcessTree
 }) {
   return new Promise<void>((resolve, reject) => {
     emit(`$ ${command} ${args.join(" ")}`);
-    const shell = platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
-    const child = spawn(command, args, {
+    const invocation = resolveManagedCodexInvocation(command, args, { platform, paths, nodeRuntime });
+    const shell = platform === "win32" && /\.(?:cmd|bat)$/i.test(invocation.command);
+    const child = spawn(invocation.command, invocation.args, {
       env,
       shell,
       detached: platform !== "win32"
@@ -563,13 +571,16 @@ function runCommand(command, args, {
 function runCommandForOutput(command, args, {
   env,
   platform = process.platform,
+  paths,
+  nodeRuntime,
   timeoutMs = VERSION_COMMAND_TIMEOUT_MS,
   terminate = terminateProcessTree
 }) {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(command, args, {
+    const invocation = resolveManagedCodexInvocation(command, args, { platform, paths, nodeRuntime });
+    const child = spawn(invocation.command, invocation.args, {
       env,
-      shell: platform === "win32" && /\.(?:cmd|bat)$/i.test(command),
+      shell: platform === "win32" && /\.(?:cmd|bat)$/i.test(invocation.command),
       detached: platform !== "win32"
     });
     let stdout = "";
@@ -622,6 +633,17 @@ function runCommandForOutput(command, args, {
 
 function clean(chunk) {
   return chunk.toString("utf8").replace(/\n+$/g, "");
+}
+
+function resolveManagedCodexInvocation(command, args, { platform, paths, nodeRuntime }) {
+  if (platform === "win32" && paths && nodeRuntime && command === managedCodexBinary(paths, platform)) {
+    // Invoke the same pinned runtime as codex.cmd without passing profile paths through cmd.exe.
+    return {
+      command: nodeRuntime.nodeBinary,
+      args: [managedCodexEntrypoint(paths.codexInstallRoot, platform), ...args]
+    };
+  }
+  return { command, args };
 }
 
 function managedCodexBinary(paths, platform = process.platform) {

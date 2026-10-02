@@ -316,4 +316,5 @@ module.exports = {
   stageAndActivateBundledCodex,
   codexTargetName,
   writeManagedCodexLauncher,
+  managedCodexEntrypoint,
 };
