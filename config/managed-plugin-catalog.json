@@ -3,21 +3,21 @@
   "kind": "tritonai-managed-plugin-catalog",
   "source": {
     "repository": "https://github.com/dbalders/TritonAI-Plugins.git",
-    "ref": "refs/tags/v0.1.7",
-    "commit": "932a7e6e7f341862d20e2c1b480f29780c224f1a"
+    "ref": "refs/tags/v0.1.8",
+    "commit": "7d7d728cfa99eb22df4e3a4ec1f05bbc5938e0ad"
   },
   "packages": [
     {
       "pluginId": "github",
-      "version": "1.0.1",
-      "digest": "26cc7a433200b99f058d62608abc5b76bc8de9ea6d3b50d9e45c56238d87b6c2",
-      "manifestDigest": "721026bb3cc6b62a685a509d4a8934530db050f4f2775a35eb89a45cdf23917a"
+      "version": "1.0.2",
+      "digest": "0fde1135fd02140d096d7d439ef172bb8e23d839d317e1aab1d47d2ee44b070c",
+      "manifestDigest": "2b9a57677c96258327f66a0b7c7c5176974730ec27bf3a1c21235ca302f0395e"
     },
     {
       "pluginId": "google-workspace",
-      "version": "1.1.0",
-      "digest": "ba70915f59e48213375545eee86d1001c6f343254734e09057010de39384b7a2",
-      "manifestDigest": "99a38a6aeb86ca13a0fcfa5ce9f44fd2b345f29e3cb0ec673e98b32a8ac5eb0d"
+      "version": "1.1.1",
+      "digest": "bfca9f747875fe6700a89e9c8a5f62d5f52e7cb083b3f6bdc4b5492abbaced6a",
+      "manifestDigest": "01b746974ca996234983230f1866032fbdccc35577645f26d853dea4923db454"
     },
     {
       "pluginId": "kuali-build",
@@ -27,15 +27,15 @@
     },
     {
       "pluginId": "microsoft-365",
-      "version": "1.3.0",
-      "digest": "c63ef640bb0d1ee6b47b45d008fd7592f3eb36f2872fe7abb10a2835dc6a1238",
-      "manifestDigest": "201efd5ad11f1ca62487f2f43e0cd66a088ce416470771a375be4c7e828698ce"
+      "version": "1.3.1",
+      "digest": "d847a6e30b9efff54a4a6733de7d0624fd4f822e65c86922a1603ae374694e19",
+      "manifestDigest": "07960e5bf66f31aef32309a0958aa3e41e2bb36ad1d2b9b4565e9425257ec06e"
     },
     {
       "pluginId": "n8n",
-      "version": "1.1.1",
-      "digest": "63159581752bc4fcbbbdafdef5dc2945ebfe632644a52bc84401fe1dc2f60e25",
-      "manifestDigest": "7d9bc3535888da3da9da2849a0880ef15b1ba3deb0e107563e78ecf9109ec47a"
+      "version": "1.1.2",
+      "digest": "04d1b7b03e52109edb936009177ec295360d9ff9f4c88dc00c48759831decc37",
+      "manifestDigest": "cb9f3983936f9fcea9bc29031a81884002c8acc4a4abcd024c014b0025f604a0"
     }
   ]
 }
