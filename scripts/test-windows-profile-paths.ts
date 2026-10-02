@@ -74,7 +74,7 @@ async function main() {
       fs.writeFileSync(wrapper, `\uFEFF$ErrorActionPreference = 'Stop'
 function Start-Process {
   param($FilePath, $WorkingDirectory)
-  $result = @{ app = $FilePath; directory = $WorkingDirectory; home = $env:CODEX_HOME; key = $env:${UCSD.apiKeyEnv} }
+  $result = @{ app = $FilePath; directory = $WorkingDirectory; home = $env:${UCSD.tritonAiHomeEnv}; key = $env:${UCSD.apiKeyEnv} }
   [IO.File]::WriteAllText(${powerShellLiteral(capture)}, ($result | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
 }
 . ${powerShellLiteral(launcher)}
@@ -84,7 +84,7 @@ function Start-Process {
       assert.deepStrictEqual(JSON.parse(fs.readFileSync(capture, "utf8")), {
         app: appPath,
         directory: path.dirname(appPath),
-        home: paths.codexHome,
+        home: paths.t3Home,
         key: "synthetic-test-key",
       });
       const binary = path.join(paths.codexBinDir, "codex.cmd");
