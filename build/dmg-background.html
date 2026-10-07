@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- Finder background for the Installer DMG (560x360 window content), used by
+     scripts/package-macos-release.ts. The app icon is placed at (280, 160); keep that
+     area clear. After editing, re-render this page at 560x360 to dmg-background.png
+     (1x) and dmg-background@2x.png (2x) in a Chromium browser on macOS. -->
+<html><head><meta charset="utf-8"><style>
+* { box-sizing: border-box; margin: 0; }
+html, body { width: 560px; height: 360px; }
+body { position: relative; overflow: hidden; background: #fff; color: #182b49; border-top: 4px solid #ffcd00;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+.top { position: absolute; top: 22px; left: 32px; right: 32px; display: flex; align-items: center; gap: 10px; }
+.eyebrow { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.muted { color: #9aa6b6; font-size: 11.5px; }
+.logo { margin-left: auto; width: 125px; height: auto; }
+h1 { position: absolute; top: 270px; width: 100%; text-align: center; font: 500 23px/1.2 ui-serif, "New York", Georgia, serif; letter-spacing: -.01em; }
+p { position: absolute; top: 308px; width: 100%; text-align: center; color: #6b7a90; font-size: 12.5px; }
+</style></head><body>
+<div class="top"><span class="eyebrow">TritonAI Harness</span><span class="muted">Installer</span><img class="logo" src="../src/renderer/uc-san-diego-logo.svg" alt=""></div>
+<h1>Double-click to begin setup</h1>
+<p>Setup runs from this window. There’s no need to copy it to Applications.</p>
+</body></html>

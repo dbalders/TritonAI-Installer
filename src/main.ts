@@ -57,10 +57,10 @@ if (packagedBootSmoke) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 580,
-    height: 500,
-    minWidth: 540,
-    minHeight: 390,
+    width: 600,
+    height: 560,
+    minWidth: 520,
+    minHeight: 460,
     title: "TritonAI Installer",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
