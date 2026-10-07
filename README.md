@@ -189,7 +189,7 @@ and support-report persistence are deliberately non-authoritative observers, so 
 write failure cannot abort otherwise valid package/runtime mutation. Support reports classify the
 failing owner component as well as the step while continuing to redact the submitted access key.
 Environment/profile files, migration state, managed runtime launchers, and the Windows desktop shortcut are staged and replaced atomically, and durable transaction journals let a later run
-commit or roll back interrupted Node, Codex, managed Harness, launcher, and secure-skill swaps without
+commit or roll back interrupted Node, Codex, Harness app, and secure-skill swaps without
 misclassifying partial Installer-owned state as user content.
 Managed probes, Windows environment discovery/cleanup, Node archive extraction, and native helpers are watchdog-bounded; a timeout is
 reported only after the owned process tree is confirmed stopped. The nested Windows NSIS process has a

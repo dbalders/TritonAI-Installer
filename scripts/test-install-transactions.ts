@@ -22,10 +22,9 @@ const {
 const { getPaths } = require("../src/installer/paths");
 const { getNodeRuntimePaths } = require("../src/installer/prerequisites");
 const {
-  getManagedMacAppPath,
-  installMacAppLauncher,
-  replaceMacAppTransactionally,
-  writeMacAppLauncher
+  getLegacyMacAppPath,
+  installMacApp,
+  replaceMacAppTransactionally
 } = require("../src/installer/t3code-desktop");
 
 async function main() {
@@ -33,8 +32,8 @@ async function main() {
   assertInterruptedDirectoryReplacementRecoversDeterministically();
   assertInterruptedCodexActivationRestoresPreviousRuntime();
   await assertMacReplacementStagesBeforeSwapAndRollsBack();
-  assertMacLauncherStagesBeforeSwapAndRollsBack();
-  assertMacLauncherFallsBackForStandardAccounts();
+  await assertMacAppReplacesLegacyLauncherInSharedApplications();
+  await assertMacAppFallsBackForStandardAccounts();
   assertCodexVendorIdentityIsRequired();
   assertCodexReplacementStagesBeforeSwapAndRollsBack();
   assertFailedCodexRepairCanBeRetried();
@@ -283,131 +282,113 @@ function assertWindowsManagedCodexLauncherPinsNode() {
   }
 }
 
-function assertMacLauncherStagesBeforeSwapAndRollsBack() {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-launcher-swap-"));
+async function assertMacAppReplacesLegacyLauncherInSharedApplications() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-app-placement-"));
   try {
     const paths = getPaths(tempRoot, "darwin");
-    const managedApp = getManagedMacAppPath(paths);
-    const launcherPath = path.join(tempRoot, "Applications", "TritonAI Harness.app");
-    writeMacApp(managedApp, "managed-app");
-    writeMacApp(launcherPath, "old-launcher");
+    const systemApplicationsDir = path.join(tempRoot, "SystemApplications");
+    const userApplicationsDir = path.join(paths.homeDir, "Applications");
+    const sharedApp = path.join(systemApplicationsDir, "TritonAI Harness.app");
+    const userLauncher = path.join(userApplicationsDir, "TritonAI Harness.app");
+    const legacyApp = getLegacyMacAppPath(paths);
+    const sourceApp = path.join(tempRoot, "mounted", "TritonAI Harness.app");
+    writeMacApp(sourceApp, "signed-harness");
+    writeMacApp(legacyApp, "legacy-managed-copy");
+    writeLegacyMacLauncher(sharedApp);
+    writeLegacyMacLauncher(userLauncher);
+    const unrelatedApp = path.join(userApplicationsDir, "Other.app");
+    writeMacApp(unrelatedApp, "other");
+    fs.writeFileSync(path.join(systemApplicationsDir, ".tritonai-harness-launcher-transaction.json"), "{}");
+    fs.mkdirSync(path.join(systemApplicationsDir, ".tritonai-harness-launcher-backup-abc123"));
+    fs.writeFileSync(path.join(path.dirname(legacyApp), ".tritonai-harness-app-transaction.json"), "{}");
 
+    const events = [];
+    const installedPath = await installMacApp({
+      sourceAppPath: sourceApp,
+      paths,
+      emit: (message) => events.push(message),
+      runtime: { systemApplicationsDir, replaceApp: replaceMacAppWithoutHostChecks }
+    });
+
+    assert.strictEqual(installedPath, sharedApp);
+    assert.strictEqual(readMacAppVersion(sharedApp), "signed-harness", "the signed app must replace the shared launcher");
+    assert(!fs.existsSync(userLauncher), "an old per-user launcher must not shadow the shared app");
+    assert(!fs.existsSync(legacyApp), "the unused managed copy must be removed");
+    assert(!fs.existsSync(path.dirname(legacyApp)), "the empty legacy apps folder must be removed");
+    assert.strictEqual(readMacAppVersion(unrelatedApp), "other", "cleanup must only remove Installer-owned launchers");
+    assert.deepStrictEqual(
+      fs.readdirSync(systemApplicationsDir).sort(),
+      ["TritonAI Harness.app"],
+      "legacy launcher transaction leftovers and write probes must be cleaned up"
+    );
+    assert(events.some((message) => message.includes("Removed old TritonAI Harness launcher")));
+
+    writeMacApp(sourceApp, "signed-harness-rerun");
     assert.strictEqual(
-      writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
-      launcherPath
+      await installMacApp({
+        sourceAppPath: sourceApp,
+        paths,
+        emit: () => {},
+        runtime: { systemApplicationsDir, replaceApp: replaceMacAppWithoutHostChecks }
+      }),
+      sharedApp
     );
-    const installedLauncher = fs.readFileSync(
-      path.join(launcherPath, "Contents", "MacOS", "TritonAI Harness"),
-      "utf8"
-    );
-    assert(installedLauncher.includes('APP_PATH="$HOME/.agents/ucsd/apps/TritonAI Harness.app"'));
-    assert(!installedLauncher.includes(tempRoot), "shared launcher must resolve the launching account at runtime");
-
-    writeMacApp(launcherPath, "old-launcher");
-    const originalWriteFileSync = fs.writeFileSync;
-    fs.writeFileSync = (target, ...args) => {
-      if (String(target).includes(".tritonai-harness-launcher-stage-") && path.basename(String(target)) === "Info.plist") {
-        throw new Error("simulated launcher staging failure");
-      }
-      return originalWriteFileSync(target, ...args);
-    };
-    try {
-      assert.throws(
-        () => writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
-        /simulated launcher staging failure/
-      );
-    } finally {
-      fs.writeFileSync = originalWriteFileSync;
-    }
-    assert.strictEqual(
-      readMacAppVersion(launcherPath),
-      "old-launcher",
-      "failed launcher staging must not touch the Applications entry"
-    );
-
-    writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath });
-    const previousValidLauncher = readMacAppVersion(launcherPath);
-
-    const originalRenameSync = fs.renameSync;
-    fs.renameSync = (source, target) => {
-      if (source.includes(".tritonai-harness-launcher-stage-") && target === launcherPath) {
-        throw new Error("simulated launcher activation failure");
-      }
-      return originalRenameSync(source, target);
-    };
-    try {
-      assert.throws(
-        () => writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
-        /simulated launcher activation failure/
-      );
-    } finally {
-      fs.renameSync = originalRenameSync;
-    }
-    assert.strictEqual(
-      readMacAppVersion(launcherPath),
-      previousValidLauncher,
-      "failed launcher replacement must restore the Applications entry"
-    );
-
-    fs.renameSync = (source, target) => {
-      if (source.includes(".tritonai-harness-launcher-stage-") && target === launcherPath) {
-        throw new Error("simulated launcher activation failure");
-      }
-      if (source.includes(".tritonai-harness-launcher-backup-") && target === launcherPath) {
-        throw new Error("simulated launcher rollback failure");
-      }
-      return originalRenameSync(source, target);
-    };
-    try {
-      assert.throws(
-        () => writeMacAppLauncher(paths, () => {}, "arm64", { launcherPath }),
-        /Rollback also failed: simulated launcher rollback failure/
-      );
-    } finally {
-      fs.renameSync = originalRenameSync;
-    }
-    const preservedLauncherBackup = fs.readdirSync(path.dirname(launcherPath))
-      .find((entry) => entry.startsWith(".tritonai-harness-launcher-backup-"));
-    assert(preservedLauncherBackup, "rollback failure must preserve the previous launcher for recovery");
-    assert.strictEqual(
-      readMacAppVersion(path.join(path.dirname(launcherPath), preservedLauncherBackup, path.basename(launcherPath))),
-      previousValidLauncher
-    );
-
-    const recoveryEvents = [];
-    assert.strictEqual(
-      writeMacAppLauncher(paths, (message) => recoveryEvents.push(message), "arm64", { launcherPath }),
-      launcherPath
-    );
-    assert(recoveryEvents.some((message) => message.includes("Restored the previous TritonAI Harness launcher")));
+    assert.strictEqual(readMacAppVersion(sharedApp), "signed-harness-rerun", "rerunning the Installer must replace the app in place");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }
 
-function assertMacLauncherFallsBackForStandardAccounts() {
+async function assertMacAppFallsBackForStandardAccounts() {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-standard-user-"));
+  const systemApplicationsDir = path.join(tempRoot, "SystemApplications");
   try {
     const paths = getPaths(tempRoot, "darwin");
-    const attempts = [];
-    const fallbackPath = installMacAppLauncher(paths, () => {}, "arm64", {
-      writeLauncher: (_paths, _emit, _arch, options: { launcherPath?: string } = {}) => {
-        const launcherPath = options.launcherPath || "/Applications/TritonAI Harness.app";
-        attempts.push(launcherPath);
-        if (!options.launcherPath) {
-          throw Object.assign(new Error("permission denied"), { code: "EACCES" });
-        }
-        return launcherPath;
-      }
+    const sharedLauncher = path.join(systemApplicationsDir, "TritonAI Harness.app");
+    const sourceApp = path.join(tempRoot, "mounted", "TritonAI Harness.app");
+    writeMacApp(sourceApp, "signed-harness");
+    writeLegacyMacLauncher(sharedLauncher);
+    fs.chmodSync(systemApplicationsDir, 0o555);
+
+    const installedPath = await installMacApp({
+      sourceAppPath: sourceApp,
+      paths,
+      emit: () => {},
+      runtime: { systemApplicationsDir, replaceApp: replaceMacAppWithoutHostChecks }
     });
-    assert.deepStrictEqual(attempts, [
-      "/Applications/TritonAI Harness.app",
-      path.join(tempRoot, "Applications", "TritonAI Harness.app")
-    ]);
-    assert.strictEqual(fallbackPath, path.join(tempRoot, "Applications", "TritonAI Harness.app"));
+
+    const userApp = path.join(paths.homeDir, "Applications", "TritonAI Harness.app");
+    assert.strictEqual(installedPath, userApp);
+    assert.strictEqual(readMacAppVersion(userApp), "signed-harness");
+    assert.deepStrictEqual(fs.readdirSync(systemApplicationsDir), ["TritonAI Harness.app"], "an unwritable shared folder must be left untouched");
   } finally {
+    fs.chmodSync(systemApplicationsDir, 0o755);
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+function replaceMacAppWithoutHostChecks(options) {
+  return replaceMacAppTransactionally({
+    ...options,
+    copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
+    validateStagedApp: async () => {},
+    stopRunningApp: async () => {}
+  });
+}
+
+function writeLegacyMacLauncher(appPath) {
+  writeMacApp(appPath, "#!/usr/bin/env sh\nexec legacy\n");
+  fs.writeFileSync(path.join(appPath, "Contents", "Info.plist"), [
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+    "<plist version=\"1.0\">",
+    "<dict>",
+    "  <key>CFBundleIdentifier</key>",
+    "  <string>edu.ucsd.ai.tritonai-harness-launcher</string>",
+    "</dict>",
+    "</plist>",
+    ""
+  ].join("\n"));
 }
 
 function assertCodexVendorIdentityIsRequired() {
