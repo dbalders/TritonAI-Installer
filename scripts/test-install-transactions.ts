@@ -37,7 +37,11 @@ async function main() {
   await assertMacAppFallsBackWhenSharedReplacementIsDenied();
   await assertMacAppNeverDowngradesATrustedNewerCopy();
   await assertMacAppSwapSurvivesUndeletableBackup();
-  if (process.platform === "darwin") await assertMacAppCopyDropsQuarantine();
+  assertLegacyLauncherRemovalNeverHalfDeletes();
+  if (process.platform === "darwin") {
+    await assertMacAppCopyDropsQuarantine();
+    await assertMacAppCopyClearsDirectQuarantine();
+  }
   assertCodexVendorIdentityIsRequired();
   assertCodexReplacementStagesBeforeSwapAndRollsBack();
   assertFailedCodexRepairCanBeRetried();
@@ -441,9 +445,10 @@ async function assertMacAppNeverDowngradesATrustedNewerCopy() {
     const sourceApp = path.join(tempRoot, "mounted", "TritonAI Harness.app");
     const versions = new Map();
     const untrusted = new Set();
+    let stops = 0;
     const runtime = {
       systemApplicationsDir,
-      replaceApp: replaceMacAppWithoutHostChecks,
+      replaceApp: (options) => replaceMacAppWithoutHostChecks({ ...options, stopRunningApp: async () => { stops += 1; } }),
       readAppVersion: async (appPath) => versions.get(readMacAppVersion(appPath)) || null,
       verifyInstalledApp: async (appPath) => {
         if (untrusted.has(readMacAppVersion(appPath))) throw new Error("signature mismatch");
@@ -457,6 +462,7 @@ async function assertMacAppNeverDowngradesATrustedNewerCopy() {
     versions.set("self-updated", "0.3.7");
     await install();
     assert.strictEqual(readMacAppVersion(sharedApp), "self-updated", "a newer trusted app must not be replaced by an older bundle");
+    assert.strictEqual(stops, 1, "keeping the newer app must still stop it before cleanup and the defaults patcher run");
 
     untrusted.add("self-updated");
     await install();
@@ -474,6 +480,19 @@ async function assertMacAppNeverDowngradesATrustedNewerCopy() {
     writeMacApp(sharedApp, "bundled");
     await install();
     assert.strictEqual(readMacAppVersion(sharedApp), "bundled", "a prerelease of the same version is older than the release");
+
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      writeMacApp(sharedApp, "shared-newest");
+      versions.set("shared-newest", "0.4.0");
+      fs.chmodSync(systemApplicationsDir, 0o555);
+      try {
+        const userApp = await install();
+        assert.strictEqual(userApp, path.join(paths.homeDir, "Applications", "TritonAI Harness.app"));
+        assert.strictEqual(readMacAppVersion(userApp), "shared-newest", "a per-user install must copy a newer shared app, not downgrade to the bundle");
+      } finally {
+        fs.chmodSync(systemApplicationsDir, 0o755);
+      }
+    }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -539,6 +558,70 @@ async function assertMacAppCopyDropsQuarantine() {
   }
 }
 
+// An earlier Installer's plain ditto from a quarantined mount left the attribute directly on every
+// file of the ~/.agents/ucsd/apps copy, which --noqtn alone does not remove.
+async function assertMacAppCopyClearsDirectQuarantine() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-direct-quarantine-"));
+  try {
+    const sourceApp = path.join(tempRoot, "legacy", "TritonAI Harness.app");
+    const target = path.join(tempRoot, "Applications", "TritonAI Harness.app");
+    writeMacApp(sourceApp, "self-updated-legacy");
+    for (const flagged of [sourceApp, path.join(sourceApp, "Contents", "MacOS", "TritonAI Harness")]) {
+      runChecked("xattr", ["-w", "com.apple.quarantine", "0083;00000000;Safari;", flagged]);
+    }
+    await replaceMacAppTransactionally({
+      sourceAppPath: sourceApp,
+      managedAppPath: target,
+      emit: () => {},
+      validateStagedApp: async () => {},
+      stopRunningApp: async () => {}
+    });
+    assert.strictEqual(runChecked("find", [target, "-xattrname", "com.apple.quarantine"]).trim(), "");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertLegacyLauncherRemovalNeverHalfDeletes() {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-launcher-removal-"));
+  const protectedDir = path.join(tempRoot, "SystemApplications", "TritonAI Harness.app", "Contents", "Resources");
+  let tombstoneResources = null;
+  try {
+    const paths = getPaths(tempRoot, "darwin");
+    const systemApplicationsDir = path.join(tempRoot, "SystemApplications");
+    const userApp = path.join(paths.homeDir, "Applications", "TritonAI Harness.app");
+    const launcher = path.join(systemApplicationsDir, "TritonAI Harness.app");
+    writeMacApp(userApp, "per-user-app");
+    writeLegacyMacLauncher(launcher);
+    fs.mkdirSync(protectedDir, { recursive: true });
+    fs.writeFileSync(path.join(protectedDir, "icon.icns"), "icon");
+    fs.chmodSync(protectedDir, 0o555);
+    const events = [];
+    removeLegacyMacInstallForTest({ paths, appPath: userApp, systemApplicationsDir, events });
+    assert(!fs.existsSync(launcher), "a launcher that can be moved must leave its public location in one step");
+    const tombstone = fs.readdirSync(systemApplicationsDir).find((entry) => entry.startsWith(".tritonai-harness-removed-"));
+    assert(tombstone, "an undeletable launcher body must stay hidden under a removal name");
+    tombstoneResources = path.join(systemApplicationsDir, tombstone, "Contents", "Resources");
+    assert(events.some((message) => message.includes("could not finish deleting")));
+  } finally {
+    for (const dir of [protectedDir, tombstoneResources]) {
+      if (dir && fs.existsSync(dir)) fs.chmodSync(dir, 0o755);
+    }
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function removeLegacyMacInstallForTest({ paths, appPath, systemApplicationsDir, events }) {
+  const { removeLegacyMacInstall } = require("../src/installer/t3code-desktop");
+  removeLegacyMacInstall({
+    paths,
+    appPath,
+    applicationsDirs: [systemApplicationsDir, path.join(paths.homeDir, "Applications")],
+    emit: (message) => events.push(message)
+  });
+}
+
 function runChecked(command, args) {
   const result = spawnSync(command, args, { encoding: "utf8" });
   assert.strictEqual(result.status, 0, `${command} ${args.join(" ")} failed: ${result.stderr}`);
@@ -558,7 +641,7 @@ function replaceMacAppWithoutHostChecks(options) {
     ...options,
     copyApp: async (source, target) => fs.cpSync(source, target, { recursive: true }),
     validateStagedApp: async () => {},
-    stopRunningApp: async () => {}
+    stopRunningApp: options.stopRunningApp || (async () => {})
   });
 }
 
