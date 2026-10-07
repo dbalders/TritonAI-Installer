@@ -56,6 +56,7 @@ const MAC_APP_BACKUP_PREFIX = ".tritonai-harness-backup-";
 const MAC_APP_TRANSACTION_KIND = "managed TritonAI Harness app";
 const MAC_APPLICATIONS_WRITE_PROBE_PREFIX = ".tritonai-harness-write-probe-";
 const MAC_REMOVED_ENTRY_PREFIX = ".tritonai-harness-removed-";
+const MAC_LEFTOVER_MIN_AGE_MS = 60 * 60 * 1000;
 // Earlier Installers wrote an unsigned shell launcher into Applications and kept the
 // signed app under ~/.agents/ucsd/apps. These names identify what upgrades must clean up.
 const LEGACY_MAC_LAUNCHER_BUNDLE_ID = "edu.ucsd.ai.tritonai-harness-launcher";
@@ -246,6 +247,15 @@ async function placeNewestMacApp({
   readAppVersion,
   verifyInstalledApp
 }) {
+  // An interrupted swap can hold the newest app in its backup; restore it before comparing.
+  for (const candidate of [...new Set(existingAppPaths.map((entry) => path.resolve(entry)))]) {
+    try {
+      recoverInterruptedMacAppSwap(candidate, emit);
+    } catch (error) {
+      if (path.resolve(candidate) === path.resolve(appPath)) throw error;
+      emit(`Left the interrupted ${TRITONAI_APP_DISPLAY_NAME} install at ${path.dirname(candidate)} for recovery: ${error.message}`);
+    }
+  }
   const bundledVersion = await readAppVersion(bundledAppPath);
   let sourceAppPath = bundledAppPath;
   let sourceVersion = bundledVersion;
@@ -350,6 +360,8 @@ function removeLegacyMacInstall({ paths, appPath, applicationsDirs, emit }) {
     const appTransactionLeftovers = fs.existsSync(path.join(applicationsDir, MAC_APP_TRANSACTION_JOURNAL_FILE))
       ? []
       : [MAC_APP_STAGE_PREFIX, MAC_APP_BACKUP_PREFIX];
+    // Another account's Installer may be staging in the shared folder right now; only sweep
+    // leftovers old enough that no live install could still own them.
     removeLegacyMacTransactionLeftovers(applicationsDir, [
       LEGACY_MAC_LAUNCHER_TRANSACTION_JOURNAL_FILE,
       LEGACY_MAC_LAUNCHER_STAGE_PREFIX,
@@ -373,6 +385,10 @@ function removeLegacyMacInstall({ paths, appPath, applicationsDirs, emit }) {
   }
 
   const legacyAppsDir = path.dirname(legacyAppPath);
+  if (fs.existsSync(path.join(legacyAppsDir, MAC_APP_TRANSACTION_JOURNAL_FILE))) {
+    emit(`Kept ${legacyAppsDir} because it holds an interrupted install that could not be recovered.`);
+    return;
+  }
   removeLegacyMacEntry(legacyAppPath, `previous ${TRITONAI_APP_DISPLAY_NAME} copy`, emit);
   removeLegacyMacTransactionLeftovers(legacyAppsDir, [
     MAC_APP_TRANSACTION_JOURNAL_FILE,
@@ -407,7 +423,7 @@ function removeLegacyMacEntry(target, label, emit) {
   return true;
 }
 
-function removeLegacyMacTransactionLeftovers(directory, names, emit) {
+function removeLegacyMacTransactionLeftovers(directory, names, emit, now = Date.now()) {
   let entries;
   try {
     entries = fs.readdirSync(directory);
@@ -415,9 +431,14 @@ function removeLegacyMacTransactionLeftovers(directory, names, emit) {
     return;
   }
   for (const entry of entries) {
-    if (names.some((name) => entry === name || (name.endsWith("-") && entry.startsWith(name)))) {
-      removeLegacyMacEntry(path.join(directory, entry), "leftover install file", emit);
+    if (!names.some((name) => entry === name || (name.endsWith("-") && entry.startsWith(name)))) continue;
+    const target = path.join(directory, entry);
+    try {
+      if (now - fs.lstatSync(target).mtimeMs < MAC_LEFTOVER_MIN_AGE_MS) continue;
+    } catch {
+      continue;
     }
+    removeLegacyMacEntry(target, "leftover install file", emit);
   }
 }
 
@@ -442,18 +463,7 @@ async function replaceMacAppTransactionally({
   const parent = path.dirname(managedAppPath);
   fs.mkdirSync(parent, { recursive: true });
   const journalPath = path.join(parent, MAC_APP_TRANSACTION_JOURNAL_FILE);
-  recoverInterruptedDirectoryTransaction({
-    journalPath,
-    kind: MAC_APP_TRANSACTION_KIND,
-    target: managedAppPath,
-    stagePrefix: MAC_APP_STAGE_PREFIX,
-    backupPrefix: MAC_APP_BACKUP_PREFIX,
-    validate: (candidate) => {
-      validateMacAppBundle(candidate, "Recovered");
-      return true;
-    },
-    emit
-  });
+  recoverInterruptedMacAppSwap(managedAppPath, emit);
   const stageRoot = fs.mkdtempSync(path.join(parent, MAC_APP_STAGE_PREFIX));
   const stagedAppPath = path.join(stageRoot, path.basename(managedAppPath));
   const backupRoot = fs.mkdtempSync(path.join(parent, MAC_APP_BACKUP_PREFIX));
@@ -533,6 +543,21 @@ async function replaceMacAppTransactionally({
       removeMacTransactionPath(journalPath, emit);
     }
   }
+}
+
+function recoverInterruptedMacAppSwap(appPath, emit) {
+  return recoverInterruptedDirectoryTransaction({
+    journalPath: path.join(path.dirname(appPath), MAC_APP_TRANSACTION_JOURNAL_FILE),
+    kind: MAC_APP_TRANSACTION_KIND,
+    target: appPath,
+    stagePrefix: MAC_APP_STAGE_PREFIX,
+    backupPrefix: MAC_APP_BACKUP_PREFIX,
+    validate: (candidate) => {
+      validateMacAppBundle(candidate, "Recovered");
+      return true;
+    },
+    emit
+  });
 }
 
 async function clearMacQuarantine(appPath, emit) {

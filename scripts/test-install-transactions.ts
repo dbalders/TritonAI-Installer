@@ -308,7 +308,12 @@ async function assertMacAppReplacesLegacyLauncherInSharedApplications() {
     writeMacApp(unrelatedApp, "other");
     fs.writeFileSync(path.join(systemApplicationsDir, ".tritonai-harness-launcher-transaction.json"), "{}");
     fs.mkdirSync(path.join(systemApplicationsDir, ".tritonai-harness-launcher-backup-abc123"));
-    fs.writeFileSync(path.join(path.dirname(legacyApp), ".tritonai-harness-app-transaction.json"), "{}");
+    fs.mkdirSync(path.join(systemApplicationsDir, ".tritonai-harness-backup-orphan1"));
+    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    for (const leftover of [".tritonai-harness-launcher-transaction.json", ".tritonai-harness-launcher-backup-abc123", ".tritonai-harness-backup-orphan1"]) {
+      fs.utimesSync(path.join(systemApplicationsDir, leftover), longAgo, longAgo);
+    }
+    const otherAccountsStage = path.join(systemApplicationsDir, ".tritonai-harness-stage-live123");
 
     const events = [];
     const installedPath = await installMacApp({
@@ -327,8 +332,20 @@ async function assertMacAppReplacesLegacyLauncherInSharedApplications() {
     assert.deepStrictEqual(
       fs.readdirSync(systemApplicationsDir).sort(),
       ["TritonAI Harness.app"],
-      "legacy launcher transaction leftovers and write probes must be cleaned up"
+      "stale leftovers and write probes must be cleaned up"
     );
+
+    // Another account's Installer staging right now must not be swept.
+    fs.mkdirSync(otherAccountsStage);
+    writeMacApp(sourceApp, "signed-harness");
+    await installMacApp({
+      sourceAppPath: sourceApp,
+      paths,
+      emit: () => {},
+      runtime: { systemApplicationsDir, replaceApp: replaceMacAppWithoutHostChecks }
+    });
+    assert(fs.existsSync(otherAccountsStage), "a fresh staging directory may belong to a live install and must be left alone");
+    fs.rmSync(otherAccountsStage, { recursive: true, force: true });
     assert(events.some((message) => message.includes("Removed old TritonAI Harness launcher")));
 
     writeMacApp(sourceApp, "signed-harness-rerun");
@@ -481,6 +498,28 @@ async function assertMacAppNeverDowngradesATrustedNewerCopy() {
     await install();
     assert.strictEqual(readMacAppVersion(sharedApp), "bundled", "a prerelease of the same version is older than the release");
 
+    // A previous run interrupted mid-swap left the newer app in its backup; it must win, not be overwritten.
+    writeMacApp(sharedApp, "interrupted-newer");
+    versions.set("interrupted-newer", "0.3.9");
+    versions.set("bundled", "0.3.6");
+    const stageRoot = fs.mkdtempSync(path.join(systemApplicationsDir, ".tritonai-harness-stage-"));
+    const backupRoot = fs.mkdtempSync(path.join(systemApplicationsDir, ".tritonai-harness-backup-"));
+    fs.renameSync(sharedApp, path.join(backupRoot, "TritonAI Harness.app"));
+    writeDirectoryTransactionJournal({
+      journalPath: path.join(systemApplicationsDir, ".tritonai-harness-app-transaction.json"),
+      kind: "managed TritonAI Harness app",
+      target: sharedApp,
+      stageRoot,
+      backupRoot,
+      stagePrefix: ".tritonai-harness-stage-",
+      backupPrefix: ".tritonai-harness-backup-",
+      stagedName: "TritonAI Harness.app",
+      backupName: "TritonAI Harness.app",
+      hadPrevious: true
+    });
+    await install();
+    assert.strictEqual(readMacAppVersion(sharedApp), "interrupted-newer", "recovery must run before choosing the newest app");
+
     if (process.platform !== "win32" && process.getuid?.() !== 0) {
       writeMacApp(sharedApp, "shared-newest");
       versions.set("shared-newest", "0.4.0");
@@ -553,7 +592,7 @@ async function assertMacAppCopyDropsQuarantine() {
       assert(!attributes.includes("com.apple.quarantine"), `${installed} must not inherit the image's quarantine flag`);
     }
   } finally {
-    if (mounted) spawnSync("hdiutil", ["detach", "-quiet", "-force", mountPoint]);
+    if (mounted) spawnSync("hdiutil", ["detach", "-quiet", "-force", mountPoint], { timeout: NATIVE_COMMAND_TIMEOUT_MS });
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }
@@ -622,8 +661,11 @@ function removeLegacyMacInstallForTest({ paths, appPath, systemApplicationsDir, 
   });
 }
 
+const NATIVE_COMMAND_TIMEOUT_MS = 60 * 1000;
+
 function runChecked(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: NATIVE_COMMAND_TIMEOUT_MS });
+  assert(!result.error, `${command} ${args.join(" ")} failed or timed out: ${result.error && result.error.message}`);
   assert.strictEqual(result.status, 0, `${command} ${args.join(" ")} failed: ${result.stderr}`);
   return result.stdout;
 }
