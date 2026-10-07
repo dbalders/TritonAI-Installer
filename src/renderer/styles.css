@@ -88,8 +88,8 @@ p {
 .masthead-brand {
   display: flex;
   max-width: var(--column);
-  gap: 10px;
-  align-items: baseline;
+  gap: 18px;
+  align-items: center;
   margin-inline: auto;
   padding-top: 18px;
 }
@@ -107,18 +107,19 @@ p {
   text-transform: uppercase;
 }
 
-.masthead-title span,
-.masthead-org {
+.masthead-title span {
   color: var(--faint);
   font-size: 11.5px;
 }
 
+/* Official UC San Diego logo (brand.ucsd.edu logo kit, unmodified). Brand
+   rules: at least 125px wide, and one cap height (~18px at 125px) of clear
+   space, which the masthead padding and rail margin provide. */
 .masthead-org {
+  flex: 0 0 auto;
+  width: clamp(125px, calc(125px + (100vw - 600px) * 0.03), 150px);
+  height: auto;
   margin-left: auto;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
 }
 
 .step-rail {
@@ -126,7 +127,7 @@ p {
   max-width: var(--column);
   gap: 6px;
   padding: 0;
-  margin: 16px auto 0;
+  margin: 18px auto 0;
   list-style: none;
 }
 
@@ -804,21 +805,7 @@ body.install-started[data-phase="attention"] .inline-progress {
   }
 }
 
-@media (max-width: 560px) {
-  .masthead-org {
-    display: none;
-  }
-}
-
 @media (max-height: 500px) {
-  .masthead {
-    padding-top: 14px;
-  }
-
-  .step-rail {
-    margin-top: 12px;
-  }
-
   .setup-card {
     padding-top: 20px;
     padding-bottom: 18px;
