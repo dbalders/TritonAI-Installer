@@ -419,7 +419,7 @@ input:disabled {
 /* Footer actions pin to the bottom of the content area. */
 .actions {
   display: flex;
-  gap: 10px;
+  gap: 16px;
   align-items: center;
   justify-content: flex-end;
   margin-top: auto;
