@@ -137,94 +137,73 @@ function signDmgs(identity) {
   }
 }
 
-function createDmgFromApp({ sourceApp = appPath, targetDmg = dmgPath, runCommand = run } = {}) {
+// Finder layout for the one-shot Installer volume: a branded background with the
+// app centered. The window height includes Finder's title bar above the 560x360
+// background; the background's @2x file is picked up automatically for Retina.
+const dmgBackground = path.join(root, "build", "dmg-background.png");
+const dmgWindow = { width: 560, height: 388 };
+const dmgAppIcon = { x: 280, y: 160, size: 128 };
+
+// The same pinned dmgbuild bundle Electron Builder uses for its own DMGs
+// (dmg-builder@1.2.5), downloaded and checksum-verified into its toolset cache.
+const DMGBUILD_RELEASE = "dmg-builder@1.2.5";
+const DMGBUILD_BUNDLES = {
+  arm64: ["dmgbuild-bundle-arm64-75c8a6c.tar.gz", "793404d0c96687e27d5ee40a668d498c92e36a64d6c2906df511031adb33cbeb"],
+  x64: ["dmgbuild-bundle-x86_64-75c8a6c.tar.gz", "1664972f9cc2d6e8fce3b63e42cd30078aff602669c5856939c4519921200433"]
+};
+
+function resolveDmgbuild() {
+  const [fileName, sha256] = DMGBUILD_BUNDLES[process.arch === "arm64" ? "arm64" : "x64"];
+  // The toolset logger writes download progress to stdout, so the resolved
+  // directory comes back through a file rather than the child's output.
+  const resultDir = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-dmgbuild-"));
+  const resultFile = path.join(resultDir, "path");
+  const script = [
+    `const { downloadBuilderToolset } = require(${JSON.stringify(path.join(root, "node_modules", "app-builder-lib", "out", "util", "electronGet"))});`,
+    `downloadBuilderToolset(${JSON.stringify({ releaseName: DMGBUILD_RELEASE, filenameWithExt: fileName, checksums: { [fileName]: sha256 } })})`,
+    `  .then((dir) => require("fs").writeFileSync(${JSON.stringify(resultFile)}, dir))`,
+    "  .catch((error) => { console.error(error.message); process.exit(1); });"
+  ].join("\n");
+  try {
+    const result = spawnSync(process.execPath, ["-e", script], { cwd: root, stdio: "inherit" });
+    if (result.error) throw result.error;
+    if (result.status !== 0 || !fs.existsSync(resultFile)) throw new Error(`Could not prepare pinned dmgbuild (${DMGBUILD_RELEASE}).`);
+    const executable = path.join(fs.readFileSync(resultFile, "utf8"), "dmgbuild");
+    if (!fs.existsSync(executable)) throw new Error(`Pinned dmgbuild is missing its executable: ${executable}`);
+    return executable;
+  } finally {
+    fs.rmSync(resultDir, { recursive: true, force: true });
+  }
+}
+
+function createDmgFromApp({ sourceApp = appPath, targetDmg = dmgPath, runCommand = run, dmgbuild = resolveDmgbuild } = {}) {
   if (!fs.existsSync(sourceApp) || !fs.lstatSync(sourceApp).isDirectory()) {
     throw new Error(`Missing assembled macOS Installer app: ${sourceApp}`);
   }
   const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-installer-dmg-src-"));
-  const sourceRoot = path.join(stagingDir, "source");
-  const writableDmg = path.join(stagingDir, "installer-writable.dmg");
-  const mountPoint = path.join(stagingDir, "mount");
+  const stagedApp = path.join(stagingDir, "source", path.basename(sourceApp));
+  const settingsPath = path.join(stagingDir, "dmg-settings.json");
   const compressedDmg = path.join(stagingDir, "installer-compressed.dmg");
-  let mounted = false;
   try {
-    fs.mkdirSync(sourceRoot, { recursive: true });
-    runCommand("/usr/bin/ditto", [
-      "--noextattr",
-      "--noqtn",
-      sourceApp,
-      path.join(sourceRoot, path.basename(sourceApp))
-    ]);
-    fs.mkdirSync(mountPoint, { recursive: true });
-    runCommand("/usr/bin/hdiutil", [
-      "create",
-      "-size",
-      `${diskImageCapacityMib(sourceRoot)}m`,
-      "-fs",
-      "HFS+",
-      "-volname",
-      dmgVolumeName,
-      "-ov",
-      writableDmg
-    ]);
-    runCommand("/usr/bin/hdiutil", [
-      "attach",
-      writableDmg,
-      "-nobrowse",
-      "-noverify",
-      "-noautoopen",
-      "-mountpoint",
-      mountPoint
-    ]);
-    mounted = true;
-    runCommand("/usr/bin/ditto", [
-      "--noextattr",
-      "--noqtn",
-      sourceRoot,
-      mountPoint
-    ]);
-    runCommand("/usr/bin/hdiutil", ["detach", mountPoint]);
-    mounted = false;
-    runCommand("/usr/bin/hdiutil", [
-      "convert",
-      writableDmg,
-      "-format",
-      "UDZO",
-      "-o",
-      compressedDmg
-    ]);
+    fs.mkdirSync(path.dirname(stagedApp), { recursive: true });
+    runCommand("/usr/bin/ditto", ["--noextattr", "--noqtn", sourceApp, stagedApp]);
+    fs.writeFileSync(settingsPath, `${JSON.stringify({
+      title: dmgVolumeName,
+      filesystem: "HFS+",
+      format: "UDZO",
+      background: dmgBackground,
+      "icon-size": dmgAppIcon.size,
+      "text-size": 12,
+      window: { position: { x: 400, y: 200 }, size: dmgWindow },
+      contents: [{ x: dmgAppIcon.x, y: dmgAppIcon.y, type: "file", path: stagedApp }]
+    }, null, 2)}\n`);
+    runCommand(dmgbuild(), ["-s", settingsPath, dmgVolumeName, compressedDmg]);
     fs.rmSync(targetDmg, { force: true });
     fs.renameSync(compressedDmg, targetDmg);
     return targetDmg;
   } finally {
-    if (mounted) {
-      try {
-        runCommand("/usr/bin/hdiutil", ["detach", mountPoint, "-force"]);
-      } catch {
-        // Preserve the original packaging failure while still attempting cleanup.
-      }
-    }
     fs.rmSync(stagingDir, { recursive: true, force: true });
   }
-}
-
-function diskImageCapacityMib(sourceRoot) {
-  const allocationBlockBytes = 4 * 1024;
-  const stack = [sourceRoot];
-  let allocatedBytes = 0;
-  while (stack.length > 0) {
-    const entryPath = stack.pop();
-    const stat = fs.lstatSync(entryPath);
-    if (stat.isDirectory()) {
-      allocatedBytes += allocationBlockBytes;
-      for (const entry of fs.readdirSync(entryPath)) stack.push(path.join(entryPath, entry));
-      continue;
-    }
-    const diskBytes = Number.isFinite(stat.blocks) ? stat.blocks * 512 : 0;
-    allocatedBytes += Math.max(allocationBlockBytes, stat.size, diskBytes);
-  }
-  const capacityBytes = Math.ceil(allocatedBytes * 1.2) + 64 * 1024 * 1024;
-  return Math.ceil(capacityBytes / (1024 * 1024));
 }
 
 function notarizeAndStapleDmgs(notary) {
