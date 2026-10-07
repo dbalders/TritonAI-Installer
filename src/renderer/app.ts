@@ -140,6 +140,7 @@ function getActiveRailStep(panelName) {
     return hasCompletedTritonAiAccessStep() ? "install" : "credentials";
   }
   if (state.installPhase === "attention") {
+    if (panelName === "credentials") return "credentials";
     return hasCompletedTritonAiAccessStep() ? "install" : "credentials";
   }
   return panelName;
@@ -420,9 +421,9 @@ function updateProgress(value) {
 function updateProgressDetail(stepIndex) {
   if (!progressDetail) return;
   const step = installSteps[stepIndex];
-  const details = (step && installStepDetails[step.id]) || [];
-  const nextIndex = Math.min((state.detailProgress[step?.id] ?? -1) + 1, details.length - 1);
-  progressDetail.textContent = details[nextIndex]?.label || step?.label || "Getting started";
+  // Installer messages announce the work in progress, so show the latest matched sub-step.
+  const latest = state.events.filter((event) => event.stepId === step?.id).pop();
+  progressDetail.textContent = latest?.message || step?.label || "Getting started";
 }
 
 function getProgressForStep(stepIndex) {
