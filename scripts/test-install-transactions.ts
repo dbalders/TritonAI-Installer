@@ -563,61 +563,11 @@ async function assertMacAppSwapSurvivesUndeletableBackup() {
   }
 }
 
-// Mirrors a browser-downloaded Installer: its bundled image carries the quarantine flag, so macOS
-// mounts it quarantined and a plain copy of the app inherits com.apple.quarantine.
-async function assertMacAppCopyDropsQuarantine() {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-quarantine-"));
-  const mountPoint = path.join(tempRoot, "mount");
-  let mounted = false;
+function isLegacyLauncher(appPath) {
   try {
-    const imageSource = path.join(tempRoot, "image");
-    const image = path.join(tempRoot, "harness.dmg");
-    const target = path.join(tempRoot, "Applications", "TritonAI Harness.app");
-    writeMacApp(path.join(imageSource, "TritonAI Harness.app"), "signed-harness");
-    runChecked("hdiutil", ["create", "-quiet", "-srcfolder", imageSource, "-fs", "HFS+", "-format", "UDZO", image]);
-    runChecked("xattr", ["-w", "com.apple.quarantine", "0083;00000000;Safari;", image]);
-    fs.mkdirSync(mountPoint);
-    runChecked("hdiutil", ["attach", "-quiet", image, "-nobrowse", "-readonly", "-mountpoint", mountPoint]);
-    mounted = true;
-
-    await replaceMacAppTransactionally({
-      sourceAppPath: path.join(mountPoint, "TritonAI Harness.app"),
-      managedAppPath: target,
-      emit: () => {},
-      validateStagedApp: async () => {},
-      stopRunningApp: async () => {}
-    });
-    for (const installed of [target, path.join(target, "Contents", "MacOS", "TritonAI Harness")]) {
-      const attributes = runChecked("xattr", [installed]);
-      assert(!attributes.includes("com.apple.quarantine"), `${installed} must not inherit the image's quarantine flag`);
-    }
-  } finally {
-    if (mounted) spawnSync("hdiutil", ["detach", "-quiet", "-force", mountPoint], { timeout: NATIVE_COMMAND_TIMEOUT_MS });
-    fs.rmSync(tempRoot, { recursive: true, force: true });
-  }
-}
-
-// An earlier Installer's plain ditto from a quarantined mount left the attribute directly on every
-// file of the ~/.agents/ucsd/apps copy, which --noqtn alone does not remove.
-async function assertMacAppCopyClearsDirectQuarantine() {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-direct-quarantine-"));
-  try {
-    const sourceApp = path.join(tempRoot, "legacy", "TritonAI Harness.app");
-    const target = path.join(tempRoot, "Applications", "TritonAI Harness.app");
-    writeMacApp(sourceApp, "self-updated-legacy");
-    for (const flagged of [sourceApp, path.join(sourceApp, "Contents", "MacOS", "TritonAI Harness")]) {
-      runChecked("xattr", ["-w", "com.apple.quarantine", "0083;00000000;Safari;", flagged]);
-    }
-    await replaceMacAppTransactionally({
-      sourceAppPath: sourceApp,
-      managedAppPath: target,
-      emit: () => {},
-      validateStagedApp: async () => {},
-      stopRunningApp: async () => {}
-    });
-    assert.strictEqual(runChecked("find", [target, "-xattrname", "com.apple.quarantine"]).trim(), "");
-  } finally {
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    return fs.readFileSync(path.join(appPath, "Contents", "Info.plist"), "utf8").includes("edu.ucsd.ai.tritonai-harness-launcher");
+  } catch {
+    return false;
   }
 }
 
@@ -659,23 +609,6 @@ function removeLegacyMacInstallForTest({ paths, appPath, systemApplicationsDir, 
     applicationsDirs: [systemApplicationsDir, path.join(paths.homeDir, "Applications")],
     emit: (message) => events.push(message)
   });
-}
-
-const NATIVE_COMMAND_TIMEOUT_MS = 60 * 1000;
-
-function runChecked(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8", timeout: NATIVE_COMMAND_TIMEOUT_MS });
-  assert(!result.error, `${command} ${args.join(" ")} failed or timed out: ${result.error && result.error.message}`);
-  assert.strictEqual(result.status, 0, `${command} ${args.join(" ")} failed: ${result.stderr}`);
-  return result.stdout;
-}
-
-function isLegacyLauncher(appPath) {
-  try {
-    return fs.readFileSync(path.join(appPath, "Contents", "Info.plist"), "utf8").includes("edu.ucsd.ai.tritonai-harness-launcher");
-  } catch {
-    return false;
-  }
 }
 
 function replaceMacAppWithoutHostChecks(options) {
@@ -962,6 +895,77 @@ function writeCodexVendor(root, version, platform = "darwin") {
 
 function readCodexVersion(root) {
   return fs.readFileSync(path.join(root, "bin", "codex"), "utf8");
+}
+
+// Mirrors a browser-downloaded Installer: its bundled image carries the quarantine flag, so macOS
+// mounts it quarantined and a plain copy of the app inherits com.apple.quarantine.
+async function assertMacAppCopyDropsQuarantine() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-quarantine-"));
+  const mountPoint = path.join(tempRoot, "mount");
+  let mounted = false;
+  try {
+    const imageSource = path.join(tempRoot, "image");
+    const image = path.join(tempRoot, "harness.dmg");
+    const target = path.join(tempRoot, "apps", "TritonAI Harness.app");
+    writeMacApp(path.join(imageSource, "TritonAI Harness.app"), "signed-harness");
+    runChecked("hdiutil", ["create", "-quiet", "-srcfolder", imageSource, "-fs", "HFS+", "-format", "UDZO", image]);
+    runChecked("xattr", ["-w", "com.apple.quarantine", "0083;00000000;Safari;", image]);
+    fs.mkdirSync(mountPoint);
+    runChecked("hdiutil", ["attach", "-quiet", image, "-nobrowse", "-readonly", "-mountpoint", mountPoint]);
+    mounted = true;
+    // Control: prove this mount still makes a plain copy quarantined, or the check below proves nothing.
+    const control = path.join(tempRoot, "control", "TritonAI Harness.app");
+    fs.mkdirSync(path.dirname(control), { recursive: true });
+    runChecked("ditto", [path.join(mountPoint, "TritonAI Harness.app"), control]);
+    assert.notStrictEqual(runChecked("find", [control, "-xattrname", "com.apple.quarantine"]).trim(), "",
+      "a plain copy from the quarantined test mount must carry quarantine");
+
+    await replaceMacAppTransactionally({
+      sourceAppPath: path.join(mountPoint, "TritonAI Harness.app"),
+      managedAppPath: target,
+      emit: () => {},
+      validateStagedApp: async () => {},
+      stopRunningApp: async () => {}
+    });
+    assert.strictEqual(runChecked("find", [target, "-xattrname", "com.apple.quarantine"]).trim(), "",
+      "the installed app must not inherit the image's quarantine flag");
+  } finally {
+    if (mounted) spawnSync("hdiutil", ["detach", "-quiet", "-force", mountPoint], { timeout: NATIVE_COMMAND_TIMEOUT_MS });
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+// An earlier Installer's plain ditto from a quarantined mount left the attribute directly on every
+// file of the existing copy, which --noqtn alone does not remove.
+async function assertMacAppCopyClearsDirectQuarantine() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-direct-quarantine-"));
+  try {
+    const sourceApp = path.join(tempRoot, "source", "TritonAI Harness.app");
+    const target = path.join(tempRoot, "apps", "TritonAI Harness.app");
+    writeMacApp(sourceApp, "signed-harness");
+    for (const flagged of [sourceApp, path.join(sourceApp, "Contents", "MacOS", "TritonAI Harness")]) {
+      runChecked("xattr", ["-w", "com.apple.quarantine", "0083;00000000;Safari;", flagged]);
+    }
+    await replaceMacAppTransactionally({
+      sourceAppPath: sourceApp,
+      managedAppPath: target,
+      emit: () => {},
+      validateStagedApp: async () => {},
+      stopRunningApp: async () => {}
+    });
+    assert.strictEqual(runChecked("find", [target, "-xattrname", "com.apple.quarantine"]).trim(), "");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+const NATIVE_COMMAND_TIMEOUT_MS = 60 * 1000;
+
+function runChecked(command, args) {
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: NATIVE_COMMAND_TIMEOUT_MS });
+  assert(!result.error, `${command} ${args.join(" ")} failed or timed out: ${result.error && result.error.message}`);
+  assert.strictEqual(result.status, 0, `${command} ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout;
 }
 
 main().catch((error) => {

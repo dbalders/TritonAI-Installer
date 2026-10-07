@@ -476,9 +476,10 @@ async function replaceMacAppTransactionally({
     if (copyApp) {
       await copyApp(sourceAppPath, stagedAppPath);
     } else {
-      // A browser-downloaded Installer mounts the bundled image quarantined. Copying that flag
-      // would make macOS translocate the app (breaking its self-updates) and require an online
-      // notarization check on first launch; the pinned publisher check below is the trust gate.
+      // A browser-downloaded Installer mounts its bundled image quarantined, and a plain copy
+      // inherits com.apple.quarantine. Gatekeeper then evaluates the unstapled app on first launch:
+      // an extra "downloaded from the Internet" prompt online, and "Apple could not verify" when
+      // Apple's notarization lookup fails. The pinned publisher check below is the trust gate.
       await run("ditto", ["--noqtn", sourceAppPath, stagedAppPath], emit);
     }
     emit(`Copied ${TRITONAI_APP_DISPLAY_NAME} app to staging.`);
@@ -489,8 +490,7 @@ async function replaceMacAppTransactionally({
       await verifyExpectedMacHarnessPublisher(stagedAppPath, emit);
     }
     if (process.platform === "darwin") {
-      // --noqtn only covers the mounted image; an existing copy (an earlier Installer's plain ditto
-      // from a quarantined mount) can carry the attribute directly on its files.
+      // --noqtn only covers the mounted image; also clear an attribute set directly on the files.
       await clearMacQuarantine(stagedAppPath, emit);
     }
     emit(`Verified staged ${TRITONAI_APP_DISPLAY_NAME} app.`);
