@@ -87,6 +87,7 @@ const installChecklist = document.getElementById("install-checklist") as HTMLEle
 const progressBar = document.getElementById("progress-bar") as HTMLElement;
 const progressValue = document.getElementById("progress-value") as HTMLElement;
 const progressTrack = document.querySelector(".progress-track") as HTMLElement | null;
+const progressDetail = document.getElementById("progress-detail");
 const eventLog = document.getElementById("event-log") as HTMLElement;
 const connectionTitle = document.getElementById("connection-title") || document.getElementById("install-title");
 const connectionSubtitle = document.getElementById("connection-subtitle");
@@ -127,6 +128,8 @@ function updateStepRail(panelName = state.installPhase === "idle" ? "credentials
     step.classList.toggle("attention", needsAttention);
     step.classList.toggle("active", stepName === activeStep && !needsAttention);
     step.classList.toggle("complete", isStepComplete(stepName, panelName));
+    if (stepName === activeStep) step.setAttribute("aria-current", "step");
+    else step.removeAttribute("aria-current");
   });
 }
 
@@ -263,11 +266,9 @@ function renderInstallChecklist(statuses = {}) {
       const status = statuses[step.id] || "pending";
       return `
         <li class="${status}" data-install-step="${step.id}">
-          <span class="step-check" aria-hidden="true">&#10003;</span>
-          <div>
-            <strong>${step.label}</strong>
-            <small>${getStatusText(status)}</small>
-          </div>
+          <span class="step-icon" aria-hidden="true"></span>
+          <strong>${step.label}</strong>
+          <small>${getStatusText(status)}</small>
         </li>
       `;
     })
@@ -276,7 +277,7 @@ function renderInstallChecklist(statuses = {}) {
 
 function getStatusText(status) {
   if (status === "complete") return "Completed";
-  if (status === "active") return "In progress...";
+  if (status === "active") return "In progress";
   if (status === "attention") return "Stopped";
   return "Pending";
 }
@@ -402,6 +403,7 @@ function renderInstallProgress({ finished = false } = {}) {
   renderInstallChecklist(statuses);
   renderEventLog();
   updateConnectionCopy();
+  updateProgressDetail(currentIndex);
   updateProgress(getProgressForStep(currentIndex));
   updateStepRail("install");
 }
@@ -413,6 +415,14 @@ function updateProgress(value) {
   progressValue.textContent = `${state.progressValue}%`;
   progressBar.style.width = `${state.progressValue}%`;
   progressTrack.setAttribute("aria-valuenow", String(state.progressValue));
+}
+
+function updateProgressDetail(stepIndex) {
+  if (!progressDetail) return;
+  const step = installSteps[stepIndex];
+  const details = (step && installStepDetails[step.id]) || [];
+  const nextIndex = Math.min((state.detailProgress[step?.id] ?? -1) + 1, details.length - 1);
+  progressDetail.textContent = details[nextIndex]?.label || step?.label || "Getting started";
 }
 
 function getProgressForStep(stepIndex) {
@@ -560,8 +570,8 @@ function renderComplete(response) {
   state.installStepIndex = installSteps.length;
   state.installResponse = response;
   state.supportInfo = response.diagnostics || null;
-  if (setupTitle) setupTitle.textContent = "Ready to use";
-  if (setupCopy) setupCopy.textContent = `${TRITONAI_APP_DISPLAY_NAME} is installed and ready to open.`;
+  if (setupTitle) setupTitle.textContent = "You’re all set";
+  if (setupCopy) setupCopy.textContent = `${TRITONAI_APP_DISPLAY_NAME} is installed and connected to TritonAI.`;
   if (inlineProgress) inlineProgress.hidden = true;
   const installTitle = document.getElementById("install-title");
   if (installTitle) installTitle.textContent = "Ready to use";
@@ -576,18 +586,15 @@ function renderComplete(response) {
   const launchTools = getLaunchTools(response);
   const manualActions = getManualActions(response);
   result.innerHTML = `
-    <div class="success-card compact-result">
-      <div>
-        <h3>Installation complete</h3>
-        <div class="actions compact">
-          ${launchTools.map((tool, index) => `
-            <button type="button" class="${index === 0 ? "primary" : "secondary"}" data-action="open-tool" data-tool-id="${tool.id}">${tool.label}</button>
-          `).join("")}
-          ${manualActions.map((action) => `
-            <button type="button" class="${launchTools.length === 0 ? "primary" : "secondary"}" data-action="open-manual-url" data-url="${escapeHtml(action.url)}">${action.label}</button>
-          `).join("")}
-          <button type="button" class="secondary" data-action="close-installer">Close installer</button>
-        </div>
+    <div class="success-card">
+      <div class="actions">
+        <button type="button" class="${launchTools.length + manualActions.length === 0 ? "primary" : "secondary"}" data-action="close-installer">Close installer</button>
+        ${manualActions.map((action) => `
+          <button type="button" class="${launchTools.length === 0 ? "primary" : "secondary"}" data-action="open-manual-url" data-url="${escapeHtml(action.url)}">${action.label}</button>
+        `).join("")}
+        ${launchTools.map((tool, index) => `
+          <button type="button" class="${index === 0 ? "primary" : "secondary"}" data-action="open-tool" data-tool-id="${tool.id}">${tool.label}</button>
+        `).join("")}
       </div>
     </div>
   `;
@@ -648,18 +655,22 @@ function renderAttention(error) {
   updateStepRail("install");
 
   result.innerHTML = `
-    <div class="attention-card compact-result">
-      <div class="attention-icon" aria-hidden="true">!</div>
-      <div>
-        <h3>One step needs attention</h3>
-        <p>${escapeHtml(errorMessage)}</p>
-        <div class="actions compact">
-          <button type="button" class="primary" data-action="retry-install">Try again</button>
-          <button type="button" class="secondary" data-action="back-to-credentials">Review access</button>
-          <button type="button" class="secondary" data-action="copy-support-report">Copy report</button>
-          <button type="button" class="secondary" data-action="show-logs">Show logs</button>
-          ${state.docsUrl ? '<button type="button" class="link-button" id="open-docs-from-error">Get help</button>' : ""}
+    <div class="attention-card">
+      <div class="attention-callout" role="alert">
+        <span class="attention-icon" aria-hidden="true"></span>
+        <div>
+          <h3>Stopped at: ${escapeHtml(installSteps[failedStepIndex]?.label || "Setup")}</h3>
+          <p>${escapeHtml(errorMessage)}</p>
         </div>
+      </div>
+      <div class="support-links">
+        <button type="button" class="text-button" data-action="copy-support-report">Copy support report</button>
+        <button type="button" class="text-button" data-action="show-logs">Show logs</button>
+        ${state.docsUrl ? '<button type="button" class="text-button" id="open-docs-from-error">Get help</button>' : ""}
+      </div>
+      <div class="actions">
+        <button type="button" class="secondary" data-action="back-to-credentials">Review access key</button>
+        <button type="button" class="primary" data-action="retry-install">Try again</button>
       </div>
     </div>
   `;
@@ -722,8 +733,9 @@ function updateCredentialControls() {
   if (secondaryApiKeyVisibilityToggle) {
     secondaryApiKeyVisibilityToggle.disabled = credentialControlsLocked;
   }
+  document.body.dataset.phase = state.installPhase;
   continueButton.setAttribute("aria-busy", String(isChecking || isInstalling));
-  continueButton.textContent = isChecking ? "Checking access..." : "Check access & install";
+  continueButton.textContent = isChecking ? "Checking access…" : "Check access & install";
   if (apiKeyHelp) {
     apiKeyHelp.classList.toggle("is-error", Boolean(state.credentialError));
     apiKeyHelp.classList.toggle("is-ready", hasApiKey && !state.credentialError);
@@ -935,6 +947,7 @@ async function startInstallFlow() {
   state.progressValue = 0;
   renderInstallChecklist();
   renderEventLog();
+  updateProgressDetail(0);
   updateProgress(0);
   setPreviewReady(false);
   updateConnectionCopy();
@@ -958,6 +971,8 @@ result.addEventListener("click", async (event) => {
   const target = event.target as HTMLElement;
   const action = target.dataset.action || target.id;
   if (action === "back-to-credentials") {
+    if (setupTitle) setupTitle.textContent = "Review your access key";
+    if (setupCopy) setupCopy.textContent = "Update or replace your TritonAI access key, then try the install again.";
     show("credentials");
   }
   if (action === "retry-install") {
