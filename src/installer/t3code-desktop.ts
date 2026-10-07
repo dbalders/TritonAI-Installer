@@ -237,7 +237,11 @@ async function replaceMacAppTransactionally({
     if (copyApp) {
       await copyApp(sourceAppPath, stagedAppPath);
     } else {
-      await run("ditto", [sourceAppPath, stagedAppPath], emit);
+      // A browser-downloaded Installer mounts its bundled image quarantined, and a plain copy
+      // inherits com.apple.quarantine. Gatekeeper then evaluates the unstapled app on first launch:
+      // an extra "downloaded from the Internet" prompt online, and "Apple could not verify" when
+      // Apple's notarization lookup fails. The pinned publisher check below is the trust gate.
+      await run("ditto", ["--noqtn", sourceAppPath, stagedAppPath], emit);
     }
     emit(`Copied ${TRITONAI_APP_DISPLAY_NAME} app to staging.`);
     validateMacAppBundle(stagedAppPath, "Staged");
@@ -245,6 +249,10 @@ async function replaceMacAppTransactionally({
       await validateStagedApp(stagedAppPath);
     } else if (process.platform === "darwin") {
       await verifyExpectedMacHarnessPublisher(stagedAppPath, emit);
+    }
+    if (process.platform === "darwin") {
+      // --noqtn only covers the mounted image; also clear an attribute set directly on the files.
+      await clearMacQuarantine(stagedAppPath, emit);
     }
     emit(`Verified staged ${TRITONAI_APP_DISPLAY_NAME} app.`);
 
@@ -293,6 +301,15 @@ async function replaceMacAppTransactionally({
     }
     // A completed rollback must not leave a journal pointing at deleted recovery directories.
     if (replacementCompleted || !previousMoved) fs.rmSync(journalPath, { force: true });
+  }
+}
+
+async function clearMacQuarantine(appPath, emit) {
+  await run("/usr/bin/xattr", ["-d", "-r", "-s", "com.apple.quarantine", appPath], emit, { shell: false });
+  // find lists only flagged entries (symlinks included), so the install log isn't flooded.
+  const remaining = await runCapture("/usr/bin/find", [appPath, "-xattrname", "com.apple.quarantine"], emit, { shell: false });
+  if (String(remaining).trim()) {
+    throw new Error(`Could not clear the quarantine flag from the staged ${TRITONAI_APP_DISPLAY_NAME} app.`);
   }
 }
 
