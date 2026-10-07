@@ -116,7 +116,7 @@ function assertFullInstallerRollbackAndFailures() {
         return rename(from, to);
       };
       fs.linkSync = (from, to) => {
-        if (failure === "publish" && String(from).includes(".replacement-")) {
+        if (failure === "publish" && to === paths.t3Settings && String(from).includes(".replacement-")) {
           throw new Error("simulated publish failure");
         }
         return link(from, to);
@@ -132,6 +132,24 @@ function assertFullInstallerRollbackAndFailures() {
       assert(!fs.readdirSync(path.dirname(paths.t3Settings)).some((name) => name.includes(".replacement-")));
     });
   }
+}
+
+function assertUnsupportedHardLinksLeaveOriginalInPlace() {
+  withFixture((paths) => {
+    const original = '{"oldPreference":"keep on unsupported filesystem"}';
+    fs.writeFileSync(paths.t3Settings, original);
+    const before = fs.lstatSync(paths.t3Settings);
+    const link = fs.linkSync;
+    fs.linkSync = () => { throw Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" }); };
+    try {
+      assert.throws(() => install(paths), /hard links unsupported/);
+    } finally {
+      fs.linkSync = link;
+    }
+    assert.strictEqual(fs.readFileSync(paths.t3Settings, "utf8"), original);
+    assert.strictEqual(fs.lstatSync(paths.t3Settings).ino, before.ino);
+    assert.deepStrictEqual(fs.readdirSync(path.dirname(paths.t3Settings)), ["settings.json"]);
+  });
 }
 
 function assertConcurrentCreationIsNotClobbered() {
@@ -251,6 +269,7 @@ function assertPatcherKeepsSettingsAndInstallerBackup() {
 assertFullInstallerReplacesAndKeepsEveryBackup();
 assertFullInstallerDoesNotReadOrCheckOldOwner();
 assertFullInstallerRollbackAndFailures();
+assertUnsupportedHardLinksLeaveOriginalInPlace();
 assertConcurrentCreationIsNotClobbered();
 assertConcurrentEditsSurviveFailure();
 assertNativeWindowsAdministratorsOwnerIsRecoverable();

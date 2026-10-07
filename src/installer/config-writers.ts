@@ -168,6 +168,11 @@ function replaceFullInstallerSettings(paths) {
   let backupPath;
   let published = false;
   try {
+    // Fail before moving the original on filesystems that cannot publish or
+    // restore exclusive hard links (for example, some network home folders).
+    const linkProbe = `${tempPath}.link-check`;
+    fs.linkSync(tempPath, linkProbe);
+    fs.unlinkSync(linkProbe);
     const current = assertFullInstallerSettingsPath(paths);
     if (original ? !sameSettingsFile(original, current) : current) {
       throw settingsError("replace concurrently changed", file);
