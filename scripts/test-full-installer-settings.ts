@@ -176,6 +176,25 @@ function assertConcurrentCreationIsNotClobbered() {
   }
 }
 
+function assertFailedProbeRemovalIsCleanedUp() {
+  withFixture((paths) => {
+    const original = '{"oldPreference":"keep on probe cleanup failure"}';
+    fs.writeFileSync(paths.t3Settings, original);
+    const unlink = fs.unlinkSync;
+    fs.unlinkSync = (file) => {
+      if (String(file).endsWith(".link-check")) throw new Error("simulated probe cleanup failure");
+      return unlink(file);
+    };
+    try {
+      assert.throws(() => install(paths), /simulated probe cleanup failure/);
+    } finally {
+      fs.unlinkSync = unlink;
+    }
+    assert.strictEqual(fs.readFileSync(paths.t3Settings, "utf8"), original);
+    assert.deepStrictEqual(fs.readdirSync(path.dirname(paths.t3Settings)), ["settings.json"]);
+  });
+}
+
 function assertConcurrentEditsSurviveFailure() {
   for (const phase of ["stage", "verify"]) {
     withFixture((paths) => {
@@ -270,6 +289,7 @@ assertFullInstallerReplacesAndKeepsEveryBackup();
 assertFullInstallerDoesNotReadOrCheckOldOwner();
 assertFullInstallerRollbackAndFailures();
 assertUnsupportedHardLinksLeaveOriginalInPlace();
+assertFailedProbeRemovalIsCleanedUp();
 assertConcurrentCreationIsNotClobbered();
 assertConcurrentEditsSurviveFailure();
 assertNativeWindowsAdministratorsOwnerIsRecoverable();

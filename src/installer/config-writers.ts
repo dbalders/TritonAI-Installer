@@ -165,14 +165,17 @@ function replaceFullInstallerSettings(paths) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tempPath = writeDurableTempFile(file, content, "replacement", accessOptions);
   const staged = fs.lstatSync(tempPath);
+  const linkProbe = `${tempPath}.link-check`;
+  let probeCreated = false;
   let backupPath;
   let published = false;
   try {
     // Fail before moving the original on filesystems that cannot publish or
     // restore exclusive hard links (for example, some network home folders).
-    const linkProbe = `${tempPath}.link-check`;
     fs.linkSync(tempPath, linkProbe);
+    probeCreated = true;
     fs.unlinkSync(linkProbe);
+    probeCreated = false;
     const current = assertFullInstallerSettingsPath(paths);
     if (original ? !sameSettingsFile(original, current) : current) {
       throw settingsError("replace concurrently changed", file);
@@ -216,7 +219,11 @@ function replaceFullInstallerSettings(paths) {
     }
     throw error;
   } finally {
-    fs.rmSync(tempPath, { force: true });
+    try {
+      if (probeCreated) fs.rmSync(linkProbe, { force: true });
+    } finally {
+      fs.rmSync(tempPath, { force: true });
+    }
   }
 }
 
