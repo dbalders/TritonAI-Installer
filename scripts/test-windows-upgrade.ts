@@ -731,6 +731,18 @@ async function assertRunnerRetriesBeforeChangingManagedSettings() {
     );
 
     const result = await runInstall({ apiKey: "test-key" }, runtime);
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(fixture.paths.t3Settings, "utf8")).preservedBeforeUpgrade,
+      undefined,
+      "a full Installer run must use fresh settings from the current installer"
+    );
+    const settingsBackups = fs.readdirSync(path.dirname(fixture.paths.t3Settings))
+      .filter((name) => name.startsWith("settings.json.backup-"));
+    assert.strictEqual(settingsBackups.length, 1);
+    assert.strictEqual(
+      fs.readFileSync(path.join(path.dirname(fixture.paths.t3Settings), settingsBackups[0]), "utf8"),
+      originalSettings
+    );
     assert.strictEqual(result.desktopApps.t3code, fixture.existingApp);
     assert.strictEqual(installAttempts, 3, "every retry must invoke the bundled Harness installer before settings");
     assert(settingsAccessCalls > 1, "successful retry must update managed settings");

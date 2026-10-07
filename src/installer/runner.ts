@@ -164,7 +164,7 @@ async function runInstall(payload, runtime) {
     diagnostics.setStep("tools");
 
     emit(`Configuring ${tool.name} for UCSD routing...`);
-    configWriters[tool.configWriter](paths);
+    configWriters[tool.configWriter](paths, { replaceExisting: true, emit });
     await runT3DefaultsPatcher({ credentials, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
 
     diagnostics.setStep("verify");
