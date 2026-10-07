@@ -5,7 +5,7 @@
   "main": "dist/src/main.js",
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node -e \"const fs=require('fs'); for (const file of ['index.html','styles.css','campus-roads-overlay.png']) fs.copyFileSync('src/renderer/'+file,'dist/src/renderer/'+file)\"",
+    "build": "npm run clean && tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node -e \"const fs=require('fs'); for (const file of ['index.html','styles.css','campus-roads-overlay.png','uc-san-diego-logo.svg']) fs.copyFileSync('src/renderer/'+file,'dist/src/renderer/'+file)\"",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "npm run build && electron .",
     "validate": "npm run build && node dist/scripts/validate.js",

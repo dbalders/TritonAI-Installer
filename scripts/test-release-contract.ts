@@ -265,7 +265,8 @@ function main() {
     const macReleaseSource = fs.readFileSync(path.join(repoRoot, "scripts", "package-macos-release.ts"), "utf8");
     assert(macReleaseSource.includes('"--noextattr"'));
     assert(macReleaseSource.includes('"attach"'));
-    assert(macReleaseSource.includes('"convert"'));
+    assert(macReleaseSource.includes('const DMGBUILD_RELEASE = "dmg-builder@1.2.5"'));
+    assert(macReleaseSource.includes('"793404d0c96687e27d5ee40a668d498c92e36a64d6c2906df511031adb33cbeb"'));
     assert(macReleaseSource.includes('const dmgVolumeName = "Double-click TritonAI Installer"'));
     assert(!macReleaseSource.includes('fs.symlinkSync("/Applications"'));
     assert(!macReleaseSource.includes('"SetFile"'));
@@ -540,6 +541,8 @@ function testNativeMacDmgCreation(tempRoot) {
     });
     assert(fs.lstatSync(path.join(mountPoint, "TritonAI Installer.app")).isDirectory());
     assert(!fs.existsSync(path.join(mountPoint, "Applications")), "one-shot Installer DMG must not ask users to drag it to Applications");
+    assert(fs.statSync(path.join(mountPoint, ".DS_Store")).isFile(), "Installer DMG must carry its Finder window layout");
+    assert(fs.statSync(path.join(mountPoint, ".background.tiff")).isFile(), "Installer DMG must carry its Finder background");
   } finally {
     execFileSync("/usr/bin/hdiutil", ["detach", mountPoint], { stdio: "ignore" });
   }

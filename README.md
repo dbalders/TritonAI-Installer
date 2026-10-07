@@ -110,8 +110,9 @@ npm run package:mac-release
 ```
 
 The macOS command keeps Electron Builder responsible for assembling and signing the application,
-then creates the distributable DMG from a clean source folder with Apple's `hdiutil`. This avoids
-copying a sealed app into a mounted writable volume. After notarization and stapling it mounts the
+then creates the distributable DMG from a clean, attribute-free copy of the app with the pinned
+`dmgbuild` bundle Electron Builder uses, which also lays out the Finder window (background from
+`build/dmg-background.png`, app icon centered). After notarization and stapling it mounts the
 exact final DMG, verifies Gatekeeper and the inner signature, launches the packaged Installer in a
 non-destructive readiness mode for five seconds, and records a SHA-256-bound boot proof.
 
