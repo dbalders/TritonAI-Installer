@@ -19,6 +19,10 @@
   --danger-soft: #fff6f1;
   --error: #c4291c;
   --radius: 4px;
+  /* Layout scales from the default 600x528 window: values below equal the
+     original fixed sizes at that size, then grow and cap on larger windows. */
+  --column: 640px;
+  --gutter: clamp(24px, calc(8px + 4vw), 48px);
   --icon-key: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z'/><circle cx='16.5' cy='7.5' r='.5' fill='black'/></svg>");
   --icon-eye: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0'/><circle cx='12' cy='12' r='3'/></svg>");
   --icon-eye-off: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49'/><path d='M14.084 14.158a3 3 0 0 1-4.242-4.242'/><path d='M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143'/><path d='m2 2 20 20'/></svg>");
@@ -76,15 +80,17 @@ p {
 /* Masthead: gold rule, wordmark, segmented three-step rail. */
 .masthead {
   flex: 0 0 auto;
-  padding: 0 32px;
+  padding: 0 var(--gutter);
   border-top: 4px solid var(--ucsd-yellow);
   background: #ffffff;
 }
 
 .masthead-brand {
   display: flex;
+  max-width: var(--column);
   gap: 10px;
   align-items: baseline;
+  margin-inline: auto;
   padding-top: 18px;
 }
 
@@ -117,9 +123,10 @@ p {
 
 .step-rail {
   display: flex;
+  max-width: var(--column);
   gap: 6px;
   padding: 0;
-  margin: 16px 0 0;
+  margin: 16px auto 0;
   list-style: none;
 }
 
@@ -176,22 +183,31 @@ p {
 .panel.active,
 .single-screen {
   display: flex;
-  min-height: 100%;
+  height: 100%;
 }
 
+/* Fills the default window; on taller windows it stops growing and centers,
+   so the actions stay close to the content. Auto margins keep the top
+   reachable when the window is shorter than the content. */
 .setup-card {
   display: flex;
-  flex: 1;
+  flex: 0 1 auto;
   flex-direction: column;
   width: 100%;
+  max-width: calc(var(--column) + 2 * var(--gutter));
   min-width: 0;
-  padding: 30px 32px 26px;
+  min-height: min(100%, 560px);
+  margin: auto;
+  padding:
+    clamp(30px, calc(30px + (100vh - 528px) * 0.08), 56px)
+    var(--gutter)
+    clamp(26px, calc(26px + (100vh - 528px) * 0.06), 48px);
 }
 
 h2 {
   color: var(--ink);
   font-family: ui-serif, "New York", Georgia, "Times New Roman", serif;
-  font-size: 30px;
+  font-size: clamp(30px, calc(30px + (100vw - 600px) * 0.02), 38px);
   font-weight: 500;
   line-height: 1.15;
   letter-spacing: -0.01em;
@@ -201,7 +217,7 @@ h2 {
   max-width: 46ch;
   margin-top: 8px;
   color: var(--body);
-  font-size: 14px;
+  font-size: clamp(14px, calc(14px + (100vw - 600px) * 0.004), 16px);
   line-height: 1.5;
 }
 
@@ -665,7 +681,7 @@ body.install-started[data-phase="complete"] .panel-header::before {
 }
 
 body.install-started[data-phase="complete"] h2 {
-  font-size: 25px;
+  font-size: clamp(25px, calc(25px + (100vw - 600px) * 0.02), 34px);
 }
 
 body.install-started[data-phase="complete"] .panel-header p {
@@ -674,6 +690,10 @@ body.install-started[data-phase="complete"] .panel-header p {
 
 body.install-started[data-phase="complete"] .success-card {
   justify-content: flex-end;
+}
+
+body.install-started[data-phase="complete"] .success-card .actions {
+  justify-content: center;
 }
 
 body.install-started[data-phase="attention"] .inline-progress {
@@ -785,12 +805,6 @@ body.install-started[data-phase="attention"] .inline-progress {
 }
 
 @media (max-width: 560px) {
-  .masthead,
-  .setup-card {
-    padding-right: 24px;
-    padding-left: 24px;
-  }
-
   .masthead-org {
     display: none;
   }

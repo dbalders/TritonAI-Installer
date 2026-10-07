@@ -136,12 +136,11 @@ function updateStepRail(panelName = state.installPhase === "idle" ? "credentials
 function getActiveRailStep(panelName) {
   if (state.installPhase === "complete") return "finish";
   if (isRailStepAttention("credentials")) return "credentials";
-  if (state.installPhase === "running") {
-    return hasCompletedTritonAiAccessStep() ? "install" : "credentials";
-  }
+  // Install starts only after the key check passes; a key rejected later is
+  // still flagged on the Access key step by isRailStepAttention.
+  if (state.installPhase === "running") return "install";
   if (state.installPhase === "attention") {
-    if (panelName === "credentials") return "credentials";
-    return hasCompletedTritonAiAccessStep() ? "install" : "credentials";
+    return panelName === "credentials" ? "credentials" : "install";
   }
   return panelName;
 }
@@ -153,7 +152,7 @@ function isStepComplete(stepName, panelName) {
     return false;
   }
   if (stepName === "credentials") {
-    return hasCompletedTritonAiAccessStep();
+    return hasCompletedTritonAiAccessStep() || ["running", "attention"].includes(state.installPhase);
   }
   if (stepName === "finish" && state.installResponse) {
     return true;
