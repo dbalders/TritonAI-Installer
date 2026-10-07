@@ -694,7 +694,7 @@ body.install-started[data-phase="complete"] .success-card {
 }
 
 body.install-started[data-phase="complete"] .success-card .actions {
-  justify-content: center;
+  justify-content: space-evenly;
 }
 
 body.install-started[data-phase="attention"] .inline-progress {
