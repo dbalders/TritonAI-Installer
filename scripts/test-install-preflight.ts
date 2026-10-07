@@ -52,15 +52,21 @@ function assertMacApplicationsVolumeIsChecked() {
     const homeDir = path.join(tempRoot, "home");
     const roomy = { bavail: 100 * 1024, bsize: 1024 * 1024 };
     const cramped = { bavail: 1, bsize: 1024 };
-    const check = (applicationsDevice) => checkInstallCapacity({
+    const check = (applicationsDevice, writable = true) => checkInstallCapacity({
       paths: getPaths(homeDir, "darwin"),
       emit: () => {},
       platform: "darwin",
       deviceOf: (target) => (target === "/Applications" ? applicationsDevice : "home-volume"),
+      canWriteApplications: () => writable,
       statfs: (target) => (target === "/Applications" ? cramped : roomy)
     });
     assert.throws(() => check("apps-volume"), /available at \/Applications/, "a full Applications volume must stop the install");
     assert.strictEqual(check("home-volume").targetPath, tempRoot, "a shared volume is measured once");
+    assert.strictEqual(
+      check("apps-volume", false).targetPath,
+      tempRoot,
+      "a standard account installs under ~/Applications, so a full shared volume must not block it"
+    );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

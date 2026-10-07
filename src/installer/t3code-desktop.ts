@@ -1466,6 +1466,7 @@ module.exports = {
   verifyExpectedMacHarnessPublisher,
   installMacApp,
   removeLegacyMacInstall,
+  canCreateEntriesIn,
   getBundledMacDmg,
   getBundledWindowsInstaller,
   parseLatestYml,

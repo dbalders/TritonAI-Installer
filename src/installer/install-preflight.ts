@@ -15,12 +15,14 @@ function checkInstallCapacity({
   statfs = fs.statfsSync,
   directorySize = getDirectorySize,
   platform = process.platform,
-  deviceOf = (target) => (fs.existsSync(target) ? fs.statSync(target).dev : null)
+  deviceOf = (target) => (fs.existsSync(target) ? fs.statSync(target).dev : null),
+  canWriteApplications = () => require("./t3code-desktop").canCreateEntriesIn(MAC_APPLICATIONS_DIR)
 }) {
   // The macOS Harness app is staged and swapped in /Applications, which may sit on another volume.
+  // Accounts that can't write there install under ~/Applications, so only measure it when used.
   const targets = [nearestExistingAncestor(paths.homeDir)];
   const applicationsDevice = platform === "darwin" ? deviceOf(MAC_APPLICATIONS_DIR) : null;
-  if (applicationsDevice !== null && applicationsDevice !== deviceOf(targets[0])) {
+  if (applicationsDevice !== null && applicationsDevice !== deviceOf(targets[0]) && canWriteApplications()) {
     targets.push(MAC_APPLICATIONS_DIR);
   }
   const measured = targets.map((target) => ({ target, available: availableBytesAt(target, statfs) }));
