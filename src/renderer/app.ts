@@ -66,9 +66,9 @@ const installStepDetails = {
     { id: "mount", label: "Prepare the app for installation", match: ["mounted tritonai harness installer image", "running tritonai harness windows installer"] },
     { id: "copy", label: "Copy the app into staging", match: ["copied tritonai harness app to staging", "windows installer completed"] },
     { id: "validate", label: "Verify the staged app", match: ["verified staged tritonai harness app", "after the windows installer completed"] },
-    { id: "install", label: "Install the app into its managed location", match: ["installed tritonai harness app into its managed location"] },
+    { id: "install", label: "Install the app", match: ["installed tritonai harness app", "kept the newer tritonai harness"] },
     { id: "cleanup", label: "Close the app package", match: ["closing tritonai harness installer image", "closed tritonai harness installer image"] },
-    { id: "launcher", label: "Create the launcher users will open", match: ["launcher", "shortcut", "applications"] }
+    { id: "launcher", label: "Make the app available to open", match: ["launcher", "shortcut", "applications"] }
   ],
   verify: [
     { id: "paths", label: "Record the installed setup", match: ["recorded the installed tritonai installer version"] },
@@ -432,7 +432,7 @@ function updateConnectionCopy() {
 
   if (state.installPhase === "complete") {
     connectionTitle.textContent = `${TRITONAI_APP_DISPLAY_NAME} is ready`;
-    connectionSubtitle.textContent = "Installation finished and the launcher is available.";
+    connectionSubtitle.textContent = `Installation finished and ${TRITONAI_APP_DISPLAY_NAME} is ready to open.`;
     return;
   }
 
@@ -451,7 +451,7 @@ function getConnectionSubtitle(stepId) {
   if (stepId === "prepare") return "Checking this computer and preparing local UCSD folders.";
   if (stepId === "tools") return "Installing and verifying TritonAI support components.";
   if (stepId === "connect") return "Verifying UC San Diego-managed TritonAI access.";
-  if (stepId === "shortcut") return `Installing ${TRITONAI_APP_DISPLAY_NAME} and preparing the launcher.`;
+  if (stepId === "shortcut") return `Installing ${TRITONAI_APP_DISPLAY_NAME}.`;
   return "Checking the installed setup.";
 }
 
@@ -1104,9 +1104,9 @@ function createPreviewInstallerApi(): InstallerApi {
         `Mounted ${TRITONAI_APP_DISPLAY_NAME} installer image.`,
         `Copied ${TRITONAI_APP_DISPLAY_NAME} app to staging.`,
         `Verified staged ${TRITONAI_APP_DISPLAY_NAME} app.`,
-        `Installed ${TRITONAI_APP_DISPLAY_NAME} app into its managed location.`,
+        `Installed ${TRITONAI_APP_DISPLAY_NAME} app at /Applications/${TRITONAI_APP_DISPLAY_NAME}.app.`,
         `Closing ${TRITONAI_APP_DISPLAY_NAME} installer image.`,
-        `${TRITONAI_APP_DISPLAY_NAME} launcher installed at /Applications/${TRITONAI_APP_DISPLAY_NAME}.app`,
+        `${TRITONAI_APP_DISPLAY_NAME} installed in Applications at /Applications/${TRITONAI_APP_DISPLAY_NAME}.app`,
         "Recorded the installed TritonAI Installer version.",
         "Install flow finished."
       ];

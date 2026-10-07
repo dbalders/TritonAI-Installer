@@ -34,6 +34,10 @@ async function main() {
   await assertMacReplacementStagesBeforeSwapAndRollsBack();
   await assertMacAppReplacesLegacyLauncherInSharedApplications();
   await assertMacAppFallsBackForStandardAccounts();
+  await assertMacAppFallsBackWhenSharedReplacementIsDenied();
+  await assertMacAppNeverDowngradesATrustedNewerCopy();
+  await assertMacAppSwapSurvivesUndeletableBackup();
+  if (process.platform === "darwin") await assertMacAppCopyDropsQuarantine();
   assertCodexVendorIdentityIsRequired();
   assertCodexReplacementStagesBeforeSwapAndRollsBack();
   assertFailedCodexRepairCanBeRetried();
@@ -347,14 +351,17 @@ async function assertMacAppFallsBackForStandardAccounts() {
     const paths = getPaths(tempRoot, "darwin");
     const sharedLauncher = path.join(systemApplicationsDir, "TritonAI Harness.app");
     const sourceApp = path.join(tempRoot, "mounted", "TritonAI Harness.app");
+    const legacyApp = getLegacyMacAppPath(paths);
     writeMacApp(sourceApp, "signed-harness");
+    writeMacApp(legacyApp, "legacy-managed-copy");
     writeLegacyMacLauncher(sharedLauncher);
     fs.chmodSync(systemApplicationsDir, 0o555);
 
+    const events = [];
     const installedPath = await installMacApp({
       sourceAppPath: sourceApp,
       paths,
-      emit: () => {},
+      emit: (message) => events.push(message),
       runtime: { systemApplicationsDir, replaceApp: replaceMacAppWithoutHostChecks }
     });
 
@@ -362,9 +369,187 @@ async function assertMacAppFallsBackForStandardAccounts() {
     assert.strictEqual(installedPath, userApp);
     assert.strictEqual(readMacAppVersion(userApp), "signed-harness");
     assert.deepStrictEqual(fs.readdirSync(systemApplicationsDir), ["TritonAI Harness.app"], "an unwritable shared folder must be left untouched");
+    assert(isLegacyLauncher(sharedLauncher), "the shared launcher must not be half-deleted");
+    assert.strictEqual(
+      readMacAppVersion(legacyApp),
+      "legacy-managed-copy",
+      "the copy a surviving launcher opens must be kept so the launcher keeps working"
+    );
+    assert(events.some((message) => message.includes("can't be removed by this account")));
   } finally {
     fs.chmodSync(systemApplicationsDir, 0o755);
     fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertMacAppFallsBackWhenSharedReplacementIsDenied() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-denied-"));
+  try {
+    const paths = getPaths(tempRoot, "darwin");
+    const systemApplicationsDir = path.join(tempRoot, "SystemApplications");
+    const sharedApp = path.join(systemApplicationsDir, "TritonAI Harness.app");
+    const sourceApp = path.join(tempRoot, "mounted", "TritonAI Harness.app");
+    writeMacApp(sourceApp, "signed-harness");
+    writeMacApp(sharedApp, "other-admins-app");
+    const attempts = [];
+    const deniedThenReal = async (options) => {
+      attempts.push(options.managedAppPath);
+      if (options.managedAppPath === sharedApp) {
+        throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+      }
+      return replaceMacAppWithoutHostChecks(options);
+    };
+
+    const installedPath = await installMacApp({
+      sourceAppPath: sourceApp,
+      paths,
+      emit: () => {},
+      runtime: { systemApplicationsDir, replaceApp: deniedThenReal }
+    });
+    const userApp = path.join(paths.homeDir, "Applications", "TritonAI Harness.app");
+    assert.deepStrictEqual(attempts, [sharedApp, userApp]);
+    assert.strictEqual(installedPath, userApp);
+    assert.strictEqual(readMacAppVersion(sharedApp), "other-admins-app");
+
+    await assert.rejects(
+      installMacApp({
+        sourceAppPath: sourceApp,
+        paths,
+        emit: () => {},
+        runtime: {
+          systemApplicationsDir,
+          replaceApp: async () => {
+            throw Object.assign(new Error("EACCES: permission denied. Rollback also failed"), { code: "EACCES", rollbackFailed: true });
+          }
+        }
+      }),
+      /Rollback also failed/,
+      "a failed rollback must surface instead of silently installing a second copy"
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertMacAppNeverDowngradesATrustedNewerCopy() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-versions-"));
+  try {
+    const paths = getPaths(tempRoot, "darwin");
+    const systemApplicationsDir = path.join(tempRoot, "SystemApplications");
+    const sharedApp = path.join(systemApplicationsDir, "TritonAI Harness.app");
+    const legacyApp = getLegacyMacAppPath(paths);
+    const sourceApp = path.join(tempRoot, "mounted", "TritonAI Harness.app");
+    const versions = new Map();
+    const untrusted = new Set();
+    const runtime = {
+      systemApplicationsDir,
+      replaceApp: replaceMacAppWithoutHostChecks,
+      readAppVersion: async (appPath) => versions.get(readMacAppVersion(appPath)) || null,
+      verifyInstalledApp: async (appPath) => {
+        if (untrusted.has(readMacAppVersion(appPath))) throw new Error("signature mismatch");
+      }
+    };
+    const install = () => installMacApp({ sourceAppPath: sourceApp, paths, emit: () => {}, runtime });
+
+    writeMacApp(sourceApp, "bundled");
+    versions.set("bundled", "0.3.6");
+    writeMacApp(sharedApp, "self-updated");
+    versions.set("self-updated", "0.3.7");
+    await install();
+    assert.strictEqual(readMacAppVersion(sharedApp), "self-updated", "a newer trusted app must not be replaced by an older bundle");
+
+    untrusted.add("self-updated");
+    await install();
+    assert.strictEqual(readMacAppVersion(sharedApp), "bundled", "an app that fails verification must be replaced");
+
+    writeMacApp(legacyApp, "legacy-updated");
+    versions.set("legacy-updated", "0.3.8");
+    await install();
+    assert.strictEqual(readMacAppVersion(sharedApp), "legacy-updated", "a newer self-updated legacy copy must be moved instead of downgraded");
+    assert(!fs.existsSync(legacyApp));
+
+    writeMacApp(legacyApp, "legacy-prerelease");
+    versions.set("legacy-prerelease", "0.3.8-beta.1");
+    versions.set("bundled", "0.3.8");
+    writeMacApp(sharedApp, "bundled");
+    await install();
+    assert.strictEqual(readMacAppVersion(sharedApp), "bundled", "a prerelease of the same version is older than the release");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertMacAppSwapSurvivesUndeletableBackup() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-backup-cleanup-"));
+  const originalRmSync = fs.rmSync;
+  try {
+    const target = path.join(tempRoot, "Applications", "TritonAI Harness.app");
+    const sourceApp = path.join(tempRoot, "mounted", "TritonAI Harness.app");
+    writeMacApp(target, "other-admins-app");
+    writeMacApp(sourceApp, "signed-harness");
+    fs.rmSync = (candidate, ...args) => {
+      if (path.basename(String(candidate)).startsWith(".tritonai-harness-backup-")) {
+        throw Object.assign(new Error("EACCES: permission denied, unlink"), { code: "EACCES" });
+      }
+      return originalRmSync(candidate, ...args);
+    };
+    const events = [];
+    await replaceMacAppWithoutHostChecks({ sourceAppPath: sourceApp, managedAppPath: target, emit: (message) => events.push(message) });
+    fs.rmSync = originalRmSync;
+    assert.strictEqual(readMacAppVersion(target), "signed-harness");
+    assert(!fs.existsSync(path.join(path.dirname(target), ".tritonai-harness-app-transaction.json")), "a completed swap must not leave a journal that fails the next run");
+    assert(events.some((message) => message.includes("Could not remove leftover")));
+  } finally {
+    fs.rmSync = originalRmSync;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+// Mirrors a browser-downloaded Installer: its bundled image carries the quarantine flag, so macOS
+// mounts it quarantined and a plain copy of the app inherits com.apple.quarantine.
+async function assertMacAppCopyDropsQuarantine() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-quarantine-"));
+  const mountPoint = path.join(tempRoot, "mount");
+  let mounted = false;
+  try {
+    const imageSource = path.join(tempRoot, "image");
+    const image = path.join(tempRoot, "harness.dmg");
+    const target = path.join(tempRoot, "Applications", "TritonAI Harness.app");
+    writeMacApp(path.join(imageSource, "TritonAI Harness.app"), "signed-harness");
+    runChecked("hdiutil", ["create", "-quiet", "-srcfolder", imageSource, "-fs", "HFS+", "-format", "UDZO", image]);
+    runChecked("xattr", ["-w", "com.apple.quarantine", "0083;00000000;Safari;", image]);
+    fs.mkdirSync(mountPoint);
+    runChecked("hdiutil", ["attach", "-quiet", image, "-nobrowse", "-readonly", "-mountpoint", mountPoint]);
+    mounted = true;
+
+    await replaceMacAppTransactionally({
+      sourceAppPath: path.join(mountPoint, "TritonAI Harness.app"),
+      managedAppPath: target,
+      emit: () => {},
+      validateStagedApp: async () => {},
+      stopRunningApp: async () => {}
+    });
+    for (const installed of [target, path.join(target, "Contents", "MacOS", "TritonAI Harness")]) {
+      const attributes = runChecked("xattr", [installed]);
+      assert(!attributes.includes("com.apple.quarantine"), `${installed} must not inherit the image's quarantine flag`);
+    }
+  } finally {
+    if (mounted) spawnSync("hdiutil", ["detach", "-quiet", "-force", mountPoint]);
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function runChecked(command, args) {
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  assert.strictEqual(result.status, 0, `${command} ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout;
+}
+
+function isLegacyLauncher(appPath) {
+  try {
+    return fs.readFileSync(path.join(appPath, "Contents", "Info.plist"), "utf8").includes("edu.ucsd.ai.tritonai-harness-launcher");
+  } catch {
+    return false;
   }
 }
 
