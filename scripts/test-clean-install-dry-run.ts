@@ -140,6 +140,7 @@ async function main() {
   assertTritonAiModelsUrl();
   await assertOnboardingWorkspaceOnlySeedsOnFirstInstall();
   await runDryRun(process.platform, {});
+  await runDryRun(process.platform, { installedNewerThanBundle: true });
   await runDryRun(process.platform, {
     externalModelsEnabled: false
   });
@@ -954,7 +955,8 @@ async function runDryRun(platform, options) {
               : {
                   appPath: "/Applications/TritonAI Harness.app",
                   shortcutPath: "/Applications/TritonAI Harness.app"
-                })
+                }),
+            installedNewerThanBundle: Boolean(options.installedNewerThanBundle)
           };
         },
         getCodexVersion: (binary) => {
@@ -1126,9 +1128,13 @@ async function runDryRun(platform, options) {
       assert.strictEqual(t3CodeDesktopInstalls[0].env.TRITONAI_ONPREM_API_KEY, "test-key");
     }
     const patcherRuns = commands.filter((entry) => entry.args.includes(paths.t3DefaultsPatcher));
-    assert.strictEqual(patcherRuns.length, 1);
-    assert.strictEqual(patcherRuns[0].command, fakeRuntime.nodeBinary);
-    assert.strictEqual(patcherRuns[0].allowFailure, true);
+    if (options.installedNewerThanBundle) {
+      assert.strictEqual(patcherRuns.length, 0, "the install-time defaults patcher must not rewrite a newer Harness kept in place");
+    } else {
+      assert.strictEqual(patcherRuns.length, 1);
+      assert.strictEqual(patcherRuns[0].command, fakeRuntime.nodeBinary);
+      assert.strictEqual(patcherRuns[0].allowFailure, true);
+    }
 
     for (const install of npmInstalls) {
       assert(install.args.includes("--before"), `${install.args.join(" ")} missing --before`);

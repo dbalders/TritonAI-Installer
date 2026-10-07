@@ -326,8 +326,7 @@ async function assertMacAppReplacesLegacyLauncherInSharedApplications() {
     assert.strictEqual(installedPath, sharedApp);
     assert.strictEqual(readMacAppVersion(sharedApp), "signed-harness", "the signed app must replace the shared launcher");
     assert(!fs.existsSync(userLauncher), "an old per-user launcher must not shadow the shared app");
-    assert(!fs.existsSync(legacyApp), "the unused managed copy must be removed");
-    assert(!fs.existsSync(path.dirname(legacyApp)), "the empty legacy apps folder must be removed");
+    assertPointsAt(legacyApp, sharedApp, "Dock icons pinned to the old copy must keep opening the installed app");
     assert.strictEqual(readMacAppVersion(unrelatedApp), "other", "cleanup must only remove Installer-owned launchers");
     assert.deepStrictEqual(
       fs.readdirSync(systemApplicationsDir).sort(),
@@ -393,9 +392,10 @@ async function assertMacAppFallsBackForStandardAccounts() {
     assert(isLegacyLauncher(sharedLauncher), "the shared launcher must not be half-deleted");
     assert.strictEqual(
       readMacAppVersion(legacyApp),
-      "legacy-managed-copy",
-      "the copy a surviving launcher opens must be kept so the launcher keeps working"
+      "signed-harness",
+      "the launcher this account can't remove must open the newly installed app"
     );
+    assertPointsAt(legacyApp, userApp, "the surviving launcher reaches the new app through the pointer");
     assert(events.some((message) => message.includes("can't be removed by this account")));
   } finally {
     fs.chmodSync(systemApplicationsDir, 0o755);
@@ -463,9 +463,18 @@ async function assertMacAppNeverDowngradesATrustedNewerCopy() {
     const versions = new Map();
     const untrusted = new Set();
     let stops = 0;
+    let stoppedPaths = [];
+    let newerKept = null;
     const runtime = {
       systemApplicationsDir,
-      replaceApp: (options) => replaceMacAppWithoutHostChecks({ ...options, stopRunningApp: async () => { stops += 1; } }),
+      replaceApp: (options) => replaceMacAppWithoutHostChecks({
+        ...options,
+        stopRunningApp: async ({ appPaths }) => {
+          stops += 1;
+          stoppedPaths = appPaths;
+        }
+      }),
+      onPlaced: (placement) => { newerKept = placement.installedNewerThanBundle; },
       readAppVersion: async (appPath) => versions.get(readMacAppVersion(appPath)) || null,
       verifyInstalledApp: async (appPath) => {
         if (untrusted.has(readMacAppVersion(appPath))) throw new Error("signature mismatch");
@@ -480,6 +489,12 @@ async function assertMacAppNeverDowngradesATrustedNewerCopy() {
     await install();
     assert.strictEqual(readMacAppVersion(sharedApp), "self-updated", "a newer trusted app must not be replaced by an older bundle");
     assert.strictEqual(stops, 1, "keeping the newer app must still stop it before cleanup and the defaults patcher run");
+    assert.strictEqual(newerKept, true, "keeping a newer app than the bundle must skip the frozen defaults patcher");
+    assert(stoppedPaths.includes(path.resolve(sharedApp)) && stoppedPaths.includes(path.resolve(legacyApp)));
+    assert(
+      !stoppedPaths.some((entry) => entry.includes("Nightly")),
+      "only stable install paths are quit; Nightly shares the bundle id"
+    );
 
     untrusted.add("self-updated");
     await install();
@@ -489,7 +504,7 @@ async function assertMacAppNeverDowngradesATrustedNewerCopy() {
     versions.set("legacy-updated", "0.3.8");
     await install();
     assert.strictEqual(readMacAppVersion(sharedApp), "legacy-updated", "a newer self-updated legacy copy must be moved instead of downgraded");
-    assert(!fs.existsSync(legacyApp));
+    assertPointsAt(legacyApp, sharedApp, "the moved legacy copy leaves a pointer behind");
 
     writeMacApp(legacyApp, "legacy-prerelease");
     versions.set("legacy-prerelease", "0.3.8-beta.1");
@@ -609,6 +624,11 @@ function removeLegacyMacInstallForTest({ paths, appPath, systemApplicationsDir, 
     applicationsDirs: [systemApplicationsDir, path.join(paths.homeDir, "Applications")],
     emit: (message) => events.push(message)
   });
+}
+
+function assertPointsAt(link, target, message) {
+  assert(fs.lstatSync(link).isSymbolicLink(), `${message}: ${link} must be a symlink`);
+  assert.strictEqual(path.resolve(path.dirname(link), fs.readlinkSync(link)), path.resolve(target), message);
 }
 
 function replaceMacAppWithoutHostChecks(options) {

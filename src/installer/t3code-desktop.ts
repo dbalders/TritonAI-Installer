@@ -101,6 +101,7 @@ interface MacAppPlacementRuntime {
   replaceApp?: typeof replaceMacAppTransactionally;
   readAppVersion?: (appPath: string) => Promise<string | null>;
   verifyInstalledApp?: (appPath: string) => Promise<void>;
+  onPlaced?: (placement: { appPath: string; installedNewerThanBundle: boolean }) => void;
 }
 
 async function installT3CodeDesktop({ paths, platform, arch, emit, env, resourcesPath, appRoot, packaged, windowsInstallRuntime }) {
@@ -133,6 +134,7 @@ async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, pa
 
   let dmgPath;
   let appPath = null;
+  let installedNewerThanBundle = false;
   if (bundledDmg) {
     dmgPath = bundledDmg.dmgPath;
     verifyDownload(dmgPath, bundledDmg.expected);
@@ -160,7 +162,12 @@ async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, pa
       throw new Error(`Could not find a supported ${TRITONAI_APP_DISPLAY_NAME} app in the mounted installer image.`);
     }
 
-    appPath = await installMacApp({ sourceAppPath: mountedApp, paths, emit });
+    appPath = await installMacApp({
+      sourceAppPath: mountedApp,
+      paths,
+      emit,
+      runtime: { onPlaced: (placement) => { installedNewerThanBundle = placement.installedNewerThanBundle; } }
+    });
   } finally {
     if (appPath) {
       emit(`Closing ${TRITONAI_APP_DISPLAY_NAME} installer image.`);
@@ -171,7 +178,7 @@ async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, pa
 
   emit(`Closed ${TRITONAI_APP_DISPLAY_NAME} installer image.`);
   emit(`${TRITONAI_APP_DISPLAY_NAME} installed in Applications at ${appPath}`);
-  return { appPath, shortcutPath: appPath };
+  return { appPath, shortcutPath: appPath, installedNewerThanBundle };
 }
 
 // Install the signed, notarized Harness itself into Applications. Shared /Applications needs an
@@ -212,8 +219,9 @@ async function installMacApp({
       + `installing ${TRITONAI_APP_DISPLAY_NAME} for this user in ${userApplicationsDir} instead.`
     );
   }
+  let placed;
   try {
-    await placeNewestMacApp({ ...placement, appPath });
+    placed = await placeNewestMacApp({ ...placement, appPath });
   } catch (error) {
     // Creating entries is not proof that an existing bundle can be replaced (another account's
     // bundle, App Management). Fall back only when the transaction left the shared copy intact.
@@ -223,8 +231,9 @@ async function installMacApp({
       + `installing ${TRITONAI_APP_DISPLAY_NAME} for this user in ${userApplicationsDir} instead.`
     );
     appPath = userAppPath;
-    await placeNewestMacApp({ ...placement, appPath });
+    placed = await placeNewestMacApp({ ...placement, appPath });
   }
+  if (runtime.onPlaced) runtime.onPlaced({ appPath, installedNewerThanBundle: placed.installedNewerThanBundle });
   removeLegacyMacInstall({
     paths,
     appPath,
@@ -259,8 +268,17 @@ async function placeNewestMacApp({
   const bundledVersion = await readAppVersion(bundledAppPath);
   let sourceAppPath = bundledAppPath;
   let sourceVersion = bundledVersion;
-  for (const candidate of [...new Set(existingAppPaths.map((entry) => path.resolve(entry)))]) {
-    if (!fs.existsSync(candidate) || isLegacyMacLauncher(candidate)) continue;
+  // Resolve pointers left at retired locations so the source is always a real bundle (copying a
+  // symlink would install a link to itself) and each real copy is considered once.
+  const existingRealAppPaths = existingAppPaths.flatMap((entry) => {
+    try {
+      return [fs.realpathSync(entry)];
+    } catch {
+      return [];
+    }
+  });
+  for (const candidate of [...new Set(existingRealAppPaths)]) {
+    if (isLegacyMacLauncher(candidate)) continue;
     const version = await readAppVersion(candidate);
     if (isNewerMacAppVersion(version, sourceVersion) && await isTrustedMacApp(candidate, verifyInstalledApp, emit)) {
       sourceAppPath = candidate;
@@ -270,7 +288,10 @@ async function placeNewestMacApp({
   if (sourceAppPath !== bundledAppPath) {
     emit(`Using the newer ${TRITONAI_APP_DISPLAY_NAME} ${sourceVersion} from ${sourceAppPath} instead of the bundled ${bundledVersion}.`);
   }
-  await replaceApp({ sourceAppPath, managedAppPath: appPath, emit });
+  // Quit only copies at these stable paths: macOS Nightly shares the bundle id but lives elsewhere.
+  const runningAppPaths = [...new Set([appPath, ...existingAppPaths].map((entry) => path.resolve(entry)))];
+  await replaceApp({ sourceAppPath, managedAppPath: appPath, emit, runningAppPaths });
+  return { installedNewerThanBundle: sourceAppPath !== bundledAppPath };
 }
 
 async function isTrustedMacApp(appPath, verifyInstalledApp, emit) {
@@ -373,23 +394,21 @@ function removeLegacyMacInstall({ paths, appPath, applicationsDirs, emit }) {
   }
 
   const legacyAppPath = getLegacyMacAppPath(paths);
-  if (survivingLauncher) {
-    // The old launcher still opens this account's previous copy, so removing it would leave a
-    // launcher (and any Dock icon pointing at it) that silently does nothing.
-    emit(
-      `An older ${TRITONAI_LAUNCHER_NAME} launcher at ${survivingLauncher} can't be removed by this account, `
-      + `so the previous app copy it opens was kept. Open ${TRITONAI_APP_DISPLAY_NAME} from ${appPath} `
-      + `instead (and replace any Dock icon), or ask an administrator to rerun the Installer.`
-    );
-    return;
-  }
-
   const legacyAppsDir = path.dirname(legacyAppPath);
   if (fs.existsSync(path.join(legacyAppsDir, MAC_APP_TRANSACTION_JOURNAL_FILE))) {
     emit(`Kept ${legacyAppsDir} because it holds an interrupted install that could not be recovered.`);
     return;
   }
-  removeLegacyMacEntry(legacyAppPath, `previous ${TRITONAI_APP_DISPLAY_NAME} copy`, emit);
+  // Dock icons and Login Items pinned from the running app, and any old launcher this account
+  // can't remove, still point at the old copy. Leave a pointer to the installed app in its place
+  // so they keep opening TritonAI Harness without anyone noticing.
+  if (pathEntryExists(legacyAppPath)) pointLegacyMacAppAt(legacyAppPath, appPath, emit);
+  if (survivingLauncher) {
+    emit(
+      `An older ${TRITONAI_LAUNCHER_NAME} launcher at ${survivingLauncher} can't be removed by this account; `
+      + `it now opens ${appPath}.`
+    );
+  }
   removeLegacyMacTransactionLeftovers(legacyAppsDir, [
     MAC_APP_TRANSACTION_JOURNAL_FILE,
     MAC_APP_STAGE_PREFIX,
@@ -403,10 +422,37 @@ function removeLegacyMacInstall({ paths, appPath, applicationsDirs, emit }) {
   }
 }
 
+function pathEntryExists(target) {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function pointLegacyMacAppAt(legacyAppPath, appPath, emit) {
+  try {
+    if (fs.lstatSync(legacyAppPath).isSymbolicLink()
+      && path.resolve(path.dirname(legacyAppPath), fs.readlinkSync(legacyAppPath)) === path.resolve(appPath)) {
+      return;
+    }
+  } catch {
+    // Treat an unreadable entry like any other previous copy.
+  }
+  if (!removeLegacyMacEntry(legacyAppPath, `previous ${TRITONAI_APP_DISPLAY_NAME} copy`, emit)) return;
+  try {
+    fs.symlinkSync(appPath, legacyAppPath);
+    emit(`Pointed ${legacyAppPath} at ${appPath} so existing Dock icons and shortcuts keep working.`);
+  } catch (error) {
+    emit(`Could not leave a pointer at ${legacyAppPath}: ${error.message}`);
+  }
+}
+
 // Move the entry out of its public name first so a partial delete can never leave a broken bundle
 // behind; returns false only when the entry is still in place.
 function removeLegacyMacEntry(target, label, emit) {
-  if (!fs.existsSync(target)) return true;
+  if (!pathEntryExists(target)) return true;
   const removed = path.join(path.dirname(target), `${MAC_REMOVED_ENTRY_PREFIX}${crypto.randomBytes(6).toString("hex")}`);
   try {
     fs.renameSync(target, removed);
@@ -457,7 +503,16 @@ async function replaceMacAppTransactionally({
   emit,
   copyApp = null,
   validateStagedApp = null,
-  stopRunningApp = stopRunningManagedMacApp
+  stopRunningApp = stopRunningManagedMacApp,
+  runningAppPaths = null
+}: {
+  sourceAppPath: string;
+  managedAppPath: string;
+  emit: InstallerEmit;
+  copyApp?: ((source: string, target: string) => Promise<void>) | null;
+  validateStagedApp?: ((appPath: string) => Promise<void>) | null;
+  stopRunningApp?: (options: { emit: InstallerEmit; appPaths: ReadonlyArray<string> }) => Promise<void>;
+  runningAppPaths?: ReadonlyArray<string> | null;
 }) {
   validateMacAppBundle(sourceAppPath, "Source");
   const parent = path.dirname(managedAppPath);
@@ -495,7 +550,7 @@ async function replaceMacAppTransactionally({
     }
     emit(`Verified staged ${TRITONAI_APP_DISPLAY_NAME} app.`);
 
-    await stopRunningApp({ emit });
+    await stopRunningApp({ emit, appPaths: runningAppPaths || [path.resolve(managedAppPath)] });
     writeDirectoryTransactionJournal({
       journalPath,
       kind: MAC_APP_TRANSACTION_KIND,
@@ -593,12 +648,23 @@ function readMacHarnessBundleIdentifier(appPath, emit) {
   return runCapture(MACOS_PLUTIL_PATH, macHarnessBundleIdentifierPlistArgs(appPath), emit, { shell: false });
 }
 
-async function stopRunningManagedMacApp({ emit }) {
+async function stopRunningManagedMacApp({ emit, appPaths }: { emit: InstallerEmit; appPaths: ReadonlyArray<string> }) {
   if (process.platform !== "darwin") return;
+  // Match the exact bundle paths being replaced or retired (and where symlinks lead), never the
+  // bundle id alone: macOS Nightly deliberately shares the stable bundle id.
+  const targets = [...new Set(appPaths.flatMap((appPath) => {
+    try {
+      return [appPath, fs.realpathSync(appPath)];
+    } catch {
+      return [appPath];
+    }
+  }))];
   const script = `
 ObjC.import("AppKit");
+const targets = ${JSON.stringify(targets)};
 const running = () => $.NSRunningApplication
-  .runningApplicationsWithBundleIdentifier("${MAC_APP_BUNDLE_ID}").js;
+  .runningApplicationsWithBundleIdentifier("${MAC_APP_BUNDLE_ID}").js
+  .filter((app) => !app.bundleURL.isNil() && targets.includes(app.bundleURL.path.js));
 for (const app of running()) app.terminate;
 for (let attempt = 0; attempt < 75 && running().length; attempt += 1) {
   $.NSThread.sleepForTimeInterval(0.2);
@@ -700,8 +766,8 @@ async function installWindowsDesktop({
     await publisherVerifier(installerPath, emit);
   } else {
     emit(
-      `WARNING: This Windows release intentionally contains an unsigned ${TRITONAI_APP_DISPLAY_NAME}. `
-      + "Its exact version and cryptographic release hash were verified, but Windows cannot verify a publisher until UC San Diego signing is available."
+      `Verified the bundled ${TRITONAI_APP_DISPLAY_NAME} installer by its exact version and pinned release hash; `
+      + "this release does not check a Windows publisher signature for it."
     );
   }
   await unblock(installerPath, emit);
