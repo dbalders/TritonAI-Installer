@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { randomUUID } = require("crypto");
 const { LEGACY_CODEX_MODEL_REPLACEMENTS, UCSD } = require("./constants");
 const {
   getCodexProviderEnvironmentVariables,
@@ -115,16 +116,103 @@ ${skillList}
 `;
 }
 
-function writeT3CodeSettings(paths) {
-  const updates = prepareManagedSettingsUpdates(
-    getT3SettingsPaths(paths),
-    (existing) => buildT3CodeSettings(existing, paths),
-    { platform: paths.platform, windowsAclRunner: paths.windowsAclRunner }
-  );
-  commitManagedSettingsUpdates(updates);
+function writeT3CodeSettings(paths, options = {}) {
+  if (options["replaceExisting"]) {
+    const backupPath = replaceFullInstallerSettings(paths);
+    if (backupPath) options["emit"]?.(`Previous Harness settings saved to ${backupPath}`);
+  } else {
+    const updates = prepareManagedSettingsUpdates(
+      getT3SettingsPaths(paths),
+      (existing) => buildT3CodeSettings(existing, paths),
+      { platform: paths.platform, windowsAclRunner: paths.windowsAclRunner }
+    );
+    commitManagedSettingsUpdates(updates);
+  }
 
   clearT3ProviderStatusCaches(paths);
   writeT3CodeDefaultsPatcher(paths);
+}
+
+function assertFullInstallerSettingsPath(paths) {
+  const managedHome = path.join(paths.homeDir, ".tritonai-harness");
+  const userData = path.join(managedHome, "userdata");
+  if (paths.t3Home !== managedHome || paths.t3Settings !== path.join(userData, "settings.json")) {
+    throw settingsError("replace redirected", paths.t3Settings);
+  }
+  for (const directory of [managedHome, userData]) {
+    const stat = fs.lstatSync(directory, { throwIfNoEntry: false });
+    if (stat && !stat.isDirectory()) {
+      throw settingsError("replace through a redirected directory for", paths.t3Settings);
+    }
+  }
+  const stat = fs.lstatSync(paths.t3Settings, { throwIfNoEntry: false });
+  if (stat && !stat.isFile()) {
+    throw settingsError("replace a path that is not a regular file for", paths.t3Settings);
+  }
+  return stat;
+}
+
+function sameSettingsFile(left, right) {
+  return left && right && left.dev === right.dev && left.ino === right.ino
+    && left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+
+function replaceFullInstallerSettings(paths) {
+  const file = paths.t3Settings;
+  const original = assertFullInstallerSettingsPath(paths);
+  const accessOptions = { platform: paths.platform, windowsAclRunner: paths.windowsAclRunner };
+  const content = `${JSON.stringify(buildT3CodeSettings({}, paths), null, 2)}\n`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tempPath = writeDurableTempFile(file, content, "replacement", accessOptions);
+  const staged = fs.lstatSync(tempPath);
+  let backupPath;
+  let published = false;
+  try {
+    const current = assertFullInstallerSettingsPath(paths);
+    if (original ? !sameSettingsFile(original, current) : current) {
+      throw settingsError("replace concurrently changed", file);
+    }
+    if (original) {
+      const candidate = `${file}.backup-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`;
+      // Move the original unchanged: neither its JSON nor its owner needs to be
+      // usable by this installer. Each full install keeps a separate recovery file.
+      fs.renameSync(file, candidate);
+      backupPath = candidate;
+      if (!sameSettingsFile(original, fs.lstatSync(backupPath))) {
+        throw settingsError("replace concurrently changed", file);
+      }
+    }
+    // Do not overwrite a file another process creates in the gap after the move.
+    fs.linkSync(tempPath, file);
+    published = true;
+    verifyPrivateManagedSettingsAccess(file, accessOptions);
+    return backupPath;
+  } catch (error) {
+    try {
+      assertFullInstallerSettingsPath(paths);
+      if (published) {
+        if (!sameSettingsFile(staged, fs.lstatSync(file, { throwIfNoEntry: false }))) {
+          throw settingsError("roll back concurrently changed", file);
+        }
+        fs.unlinkSync(file);
+      }
+      if (backupPath) {
+        // Exclusive restoration preserves a concurrent writer and leaves the
+        // original backup available even if recovery cannot publish it.
+        fs.linkSync(backupPath, file);
+        fs.unlinkSync(backupPath);
+      }
+    } catch (rollbackError) {
+      throw new Error(
+        `${error.message}. Rollback also failed: ${rollbackError.message}`
+          + (backupPath ? `. Previous settings remain at ${backupPath}` : ""),
+        { cause: error }
+      );
+    }
+    throw error;
+  } finally {
+    fs.rmSync(tempPath, { force: true });
+  }
 }
 
 function buildT3CodeSettings(existing, paths) {
