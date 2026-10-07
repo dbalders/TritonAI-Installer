@@ -693,6 +693,12 @@ async function assertMacAppCopyDropsQuarantine() {
     fs.mkdirSync(mountPoint);
     runChecked("hdiutil", ["attach", "-quiet", image, "-nobrowse", "-readonly", "-mountpoint", mountPoint]);
     mounted = true;
+    // Control: prove this mount still makes a plain copy quarantined, or the check below proves nothing.
+    const control = path.join(tempRoot, "control", "TritonAI Harness.app");
+    fs.mkdirSync(path.dirname(control), { recursive: true });
+    runChecked("ditto", [path.join(mountPoint, "TritonAI Harness.app"), control]);
+    assert.notStrictEqual(runChecked("find", [control, "-xattrname", "com.apple.quarantine"]).trim(), "",
+      "a plain copy from the quarantined test mount must carry quarantine");
 
     await replaceMacAppTransactionally({
       sourceAppPath: path.join(mountPoint, "TritonAI Harness.app"),
