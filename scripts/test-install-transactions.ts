@@ -40,6 +40,7 @@ async function main() {
   assertLegacyLauncherRemovalNeverHalfDeletes();
   assertRunningHarnessMatchingSparesNightly();
   assertFailedPointerKeepsThePreviousCopy();
+  assertInterruptedPointerSwapIsRepaired();
   if (process.platform === "darwin") {
     await assertMacAppCopyDropsQuarantine();
     await assertMacAppCopyClearsDirectQuarantine();
@@ -675,6 +676,36 @@ function assertFailedPointerKeepsThePreviousCopy() {
     );
   } finally {
     fs.symlinkSync = originalSymlinkSync;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertInterruptedPointerSwapIsRepaired() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-pointer-resume-"));
+  try {
+    const paths = getPaths(tempRoot, "darwin");
+    const legacyApp = getLegacyMacAppPath(paths);
+    const legacyDir = path.dirname(legacyApp);
+    const sharedApp = path.join(tempRoot, "SystemApplications", "TritonAI Harness.app");
+    writeMacApp(sharedApp, "installed");
+    // Interrupted after the previous copy was moved aside, before the link was swapped in.
+    writeMacApp(path.join(legacyDir, ".tritonai-harness-removed-abc123"), "previous-copy");
+    fs.symlinkSync(sharedApp, path.join(legacyDir, ".tritonai-harness-pointer-abc123"));
+    removeLegacyMacInstallForTest({ paths, appPath: sharedApp, systemApplicationsDir: path.dirname(sharedApp), events: [] });
+    assertPointsAt(legacyApp, sharedApp, "a rerun must finish an interrupted pointer swap");
+
+    // An old launcher this account can't remove still opens the legacy path even if it never existed.
+    fs.rmSync(legacyDir, { recursive: true, force: true });
+    const systemApplicationsDir = path.join(tempRoot, "LockedApplications");
+    writeLegacyMacLauncher(path.join(systemApplicationsDir, "TritonAI Harness.app"));
+    fs.chmodSync(systemApplicationsDir, 0o555);
+    try {
+      removeLegacyMacInstallForTest({ paths, appPath: sharedApp, systemApplicationsDir, events: [] });
+    } finally {
+      fs.chmodSync(systemApplicationsDir, 0o755);
+    }
+    assertPointsAt(legacyApp, sharedApp, "a surviving launcher must reach the installed app");
+  } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }

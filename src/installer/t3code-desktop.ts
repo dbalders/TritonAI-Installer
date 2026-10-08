@@ -403,7 +403,13 @@ function removeLegacyMacInstall({ paths, appPath, applicationsDirs, emit }) {
   // Dock icons and Login Items pinned from the running app, and any old launcher this account
   // can't remove, still point at the old copy. Leave a pointer to the installed app in its place
   // so they keep opening TritonAI Harness without anyone noticing.
-  if (pathEntryExists(legacyAppPath)) pointLegacyMacAppAt(legacyAppPath, appPath, emit);
+  if (pathEntryExists(legacyAppPath)) {
+    pointLegacyMacAppAt(legacyAppPath, appPath, emit);
+  } else if (survivingLauncher || hasInterruptedPointerSwap(legacyAppsDir)) {
+    // A previous run stopped mid-swap, or a launcher this account can't remove still opens this
+    // path: publish the pointer now rather than leave that launcher (or its shortcuts) broken.
+    publishMissingLegacyPointer(legacyAppPath, appPath, emit);
+  }
   if (survivingLauncher) {
     emit(
       `An older ${TRITONAI_LAUNCHER_NAME} launcher at ${survivingLauncher} can't be removed by this account; `
@@ -430,6 +436,25 @@ function pathEntryExists(target) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function hasInterruptedPointerSwap(legacyAppsDir) {
+  try {
+    return fs.readdirSync(legacyAppsDir).some((entry) =>
+      entry.startsWith(MAC_POINTER_STAGE_PREFIX) || entry.startsWith(MAC_REMOVED_ENTRY_PREFIX));
+  } catch {
+    return false;
+  }
+}
+
+function publishMissingLegacyPointer(legacyAppPath, appPath, emit) {
+  try {
+    fs.mkdirSync(path.dirname(legacyAppPath), { recursive: true });
+    fs.symlinkSync(appPath, legacyAppPath);
+    emit(`Pointed ${legacyAppPath} at ${appPath} so existing Dock icons and shortcuts keep working.`);
+  } catch (error) {
+    emit(`Could not leave a pointer at ${legacyAppPath}: ${error.message}`);
   }
 }
 
