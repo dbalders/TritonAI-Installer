@@ -5,6 +5,7 @@ const GIB = 1024 ** 3;
 const MINIMUM_FREE_BYTES = 3 * GIB;
 const ROLLBACK_RESERVE_BYTES = 1 * GIB;
 const PAYLOAD_EXPANSION_FACTOR = 3;
+const MAC_APPLICATIONS_DIR = "/Applications";
 
 function checkInstallCapacity({
   paths,
@@ -12,20 +13,21 @@ function checkInstallCapacity({
   appRoot,
   emit,
   statfs = fs.statfsSync,
-  directorySize = getDirectorySize
+  directorySize = getDirectorySize,
+  platform = process.platform,
+  deviceOf = (target) => (fs.existsSync(target) ? fs.statSync(target).dev : null),
+  canWriteApplications = () => require("./t3code-desktop").canCreateEntriesIn(MAC_APPLICATIONS_DIR)
 }) {
-  const targetPath = nearestExistingAncestor(paths.homeDir);
-  let stats;
-  try {
-    stats = statfs(targetPath);
-  } catch (error) {
-    throw new Error(`Could not determine available disk space for ${targetPath}: ${error.message}`);
+  // The macOS Harness app is staged and swapped in /Applications, which may sit on another volume.
+  // Accounts that can't write there install under ~/Applications, so only measure it when used.
+  const targets = [nearestExistingAncestor(paths.homeDir)];
+  const applicationsDevice = platform === "darwin" ? deviceOf(MAC_APPLICATIONS_DIR) : null;
+  if (applicationsDevice !== null && applicationsDevice !== deviceOf(targets[0]) && canWriteApplications()) {
+    targets.push(MAC_APPLICATIONS_DIR);
   }
-
-  const availableBytes = Number(stats.bavail) * Number(stats.bsize);
-  if (!Number.isSafeInteger(availableBytes) || availableBytes < 0) {
-    throw new Error(`Could not determine available disk space for ${targetPath}: invalid filesystem capacity result.`);
-  }
+  const measured = targets.map((target) => ({ target, available: availableBytesAt(target, statfs) }));
+  const { target: targetPath, available: availableBytes } = measured
+    .reduce((lowest, entry) => (entry.available < lowest.available ? entry : lowest));
 
   const vendorRoots = uniqueExistingDirectories([
     resourcesPath && path.join(resourcesPath, "app", "vendor"),
@@ -51,6 +53,20 @@ function checkInstallCapacity({
   }
 
   return { availableBytes, requiredBytes, bundledBytes, targetPath };
+}
+
+function availableBytesAt(targetPath, statfs) {
+  let stats;
+  try {
+    stats = statfs(targetPath);
+  } catch (error) {
+    throw new Error(`Could not determine available disk space for ${targetPath}: ${error.message}`);
+  }
+  const availableBytes = Number(stats.bavail) * Number(stats.bsize);
+  if (!Number.isSafeInteger(availableBytes) || availableBytes < 0) {
+    throw new Error(`Could not determine available disk space for ${targetPath}: invalid filesystem capacity result.`);
+  }
+  return availableBytes;
 }
 
 function getDirectorySize(root) {

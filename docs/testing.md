@@ -41,7 +41,7 @@ This creates a temp home directory, strips PATH down to OS basics, downloads the
 - Missing, malformed, wrong-target, truncated, or checksum-mismatched bundled Node.js runtime payloads.
 - Insufficient disk capacity, including the payload-expansion, staging, and rollback reserve, before any managed installation directory is created.
 - Interrupted development-runtime downloads that would otherwise leave a reusable partial cache file.
-- macOS launchers that capture the installing account's literal home or fail the whole install when a standard account cannot write `/Applications`.
+- macOS installs that leave an unsigned launcher in Applications, keep the unused `~/.agents/ucsd/apps` copy, or fail the whole install when a standard account cannot write `/Applications`.
 - Regressions where TritonAI Harness keeps a stale legacy provider-status cache.
 - Regressions where the installer uses a random system `codex` instead of the managed UCSD Codex path.
 - Regressions where the installer exports its managed `PATH` or `CODEX_HOME` through shell profiles, Windows user variables, or its own process environment, including upgrades from the legacy global environment behavior.
@@ -112,7 +112,7 @@ Before distributing a signed installer, run one manual VM test per platform:
 2. Install nothing manually.
 3. Run the packaged installer.
 4. Confirm `~/.agents/ucsd` and `~/.tritonai-harness` are created.
-5. Confirm TritonAI Harness launches from the desktop/application launcher.
+5. Confirm TritonAI Harness launches from Applications (macOS: `spctl -a -vv -t exec "/Applications/TritonAI Harness.app"` reports `Notarized Developer ID`) or the desktop shortcut (Windows).
 6. Confirm configs point at UCSD/TritonAI and do not use default vendor endpoints.
 7. Revert the VM snapshot.
 

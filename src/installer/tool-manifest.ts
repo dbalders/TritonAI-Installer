@@ -43,7 +43,7 @@ function getInstallPreview(platform = process.platform) {
       "Prepare TritonAI model access",
       ...(installsSupportComponents ? ["Install TritonAI support package"] : []),
       ...(platform === "darwin"
-        ? ["Install bundled TritonAI Harness desktop app and create the launcher"]
+        ? ["Install bundled TritonAI Harness desktop app into Applications"]
         : []),
       ...(platform === "win32"
         ? ["Install bundled TritonAI Harness desktop app and create the launcher shortcut"]

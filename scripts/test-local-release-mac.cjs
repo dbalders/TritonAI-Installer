@@ -424,7 +424,9 @@ function packagingMocks(f, status = 'Accepted') {
       fs.writeFileSync(path.join(f.stageApp, 'dist', `TritonAI-Harness-${f.version}-arm64.zip`), 'zip');
       fs.writeFileSync(path.join(f.stageApp, 'dist', `TritonAI-Harness-${f.version}-arm64.zip.blockmap`), 'zip-blockmap');
     }
-    if (program.endsWith('ditto')) {
+    if (program.endsWith('ditto') && args[0] === '-c') {
+      fs.writeFileSync(args.at(-1), 'app-submission');
+    } else if (program.endsWith('ditto')) {
       const target = args[0] === '-x' ? path.join(args.at(-1), `${f.productName}.app`) : args.at(-1);
       fs.cpSync(args[0] === '-x' ? signedApp : args.at(-2), target, { recursive: true });
     }
@@ -433,7 +435,10 @@ function packagingMocks(f, status = 'Accepted') {
       if (args[0] === 'attach' && args.includes('-readonly')) fs.cpSync(signedApp, path.join(args.at(-1), `${f.productName}.app`), { recursive: true });
     }
     if (program === 'xcrun' && args[0] === 'notarytool') return { stdout: JSON.stringify({ status, id: 'notary-job' }) };
-    if (program === 'xcrun' && args[1] === 'staple') fs.appendFileSync(args[2], '-stapled');
+    if (program === 'xcrun' && args[1] === 'staple') {
+      if (fs.statSync(args[2]).isDirectory()) fs.writeFileSync(path.join(args[2], 'Contents', 'CodeResources'), 'ticket');
+      else fs.appendFileSync(args[2], '-stapled');
+    }
     if (program === process.execPath && args.includes('--artifact')) {
       const dmg = args[args.indexOf('--artifact') + 1];
       const bytes = fs.readFileSync(dmg);
@@ -444,7 +449,14 @@ function packagingMocks(f, status = 'Accepted') {
   return { calls, command, tools: { asar: f.asar, buildBlockMap: async (input, format, output) => {
     assert.equal(format, 'gzip');
     assert.match(fs.readFileSync(input, 'utf8'), /-stapled$/);
+    calls.push({ program: 'buildBlockMap', args: [input] });
     fs.writeFileSync(output, 'final-blockmap');
+  }, archive: async (format, output, appDir, options) => {
+    assert.equal(format, 'zip');
+    assert.deepEqual(options, { compression: 'normal', withoutDir: false, preserveSymlinks: true });
+    assert(fs.existsSync(path.join(appDir, 'Contents', 'CodeResources')), 'the updater ZIP must be built from the stapled app');
+    calls.push({ program: 'archive', args: [output, appDir] });
+    fs.writeFileSync(output, 'zip-from-app-stapled');
   } } };
 }
 
@@ -471,6 +483,18 @@ test('full finalization binds metadata after stapling, verifies payload and boot
   assert(validation > 0 && validation < notarization);
   const finalizer = mock.calls.find((call) => call.args.includes('--artifact'));
   assert.equal(finalizer.args.at(-1), f.release);
+  assert.equal(report.appNotarization.status, 'Accepted');
+  const appNotarization = mock.calls.findIndex(call => call.program === 'xcrun' && call.args[0] === 'notarytool' && call.args[2].endsWith('notarize-app.zip'));
+  const appStaple = mock.calls.findIndex(call => call.program === 'xcrun' && call.args[1] === 'staple' && call.args[2].endsWith('.app'));
+  const zipBuild = mock.calls.findIndex(call => call.program === 'archive');
+  const dmgCreate = mock.calls.findIndex(call => call.program === 'hdiutil' && call.args[0] === 'create');
+  assert(validation < appNotarization && appNotarization < appStaple && appStaple < zipBuild && zipBuild < dmgCreate,
+    'the app must be notarized and stapled before the updater ZIP and DMG are built from it');
+  assert(mock.calls.some(call => call.program === 'buildBlockMap' && call.args[0].endsWith('.zip')), 'the rebuilt ZIP needs a fresh blockmap');
+  const validations = mock.calls.filter(call => call.program === 'xcrun' && call.args[1] === 'validate').map(call => call.args[2]);
+  assert(validations.some(target => target.includes('verify-zip-')), 'the app inside the final ZIP must carry the staple');
+  assert(validations.filter(target => target.endsWith('.app')).length >= 3, 'signed, DMG, and ZIP apps must all validate');
+  assert.match(fs.readFileSync(path.join(f.release, 'latest-mac.yml'), 'utf8'), new RegExp(`size: ${'zip-from-app-stapled'.length}`));
 });
 
 test('rejected notarization cannot emit successful proof or updater metadata', async (t) => {

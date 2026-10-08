@@ -89,6 +89,8 @@ function resolvePackagingTools(harnessRoot) {
     asar: libraryRequire('@electron/asar'),
     // Electron Builder 26.15 owns this implementation; app-builder-bin no longer exists.
     buildBlockMap: libraryRequire('./out/targets/blockmap/blockmap.js').buildBlockMap,
+    // The same 7za archiver Electron Builder used for the original updater ZIP.
+    archive: libraryRequire('./out/targets/archive.js').archive,
     electron: desktopRequire('playwright-core')._electron,
   };
 }
@@ -100,6 +102,14 @@ function verifySignedApp(app, identity, runCommand) {
   if (!details.split(/\r?\n/).includes(`Authority=Developer ID Application: ${identity}`)) {
     throw new Error('Packaged Harness app was not signed by the pinned Developer ID Application identity.');
   }
+}
+
+function notarize(file, label, notary, exec) {
+  const result = exec('xcrun', ['notarytool', 'submit', file, '--key', notary.key, '--key-id', notary.keyId, '--issuer', notary.issuer, '--wait', '--output-format', 'json'], { capture: true, label: `Notarize ${label} and wait for Apple` });
+  let receipt;
+  try { receipt = JSON.parse(result.stdout); } catch { throw new Error('Apple notarization did not return a valid JSON receipt.'); }
+  if (receipt.status !== 'Accepted') throw new Error(`Apple notarization did not accept the ${label}.`);
+  return receipt;
 }
 
 async function fileInfo(file) {
@@ -498,24 +508,35 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   const zipName = `TritonAI-Harness-${version}-arm64.zip`;
   const zip = path.join(output, zipName);
   const dmg = path.join(output, `TritonAI-Harness-${version}-arm64.dmg`);
-  fs.copyFileSync(regularFile(path.join(dist, zipName)), zip);
-  fs.copyFileSync(regularFile(path.join(dist, `${zipName}.blockmap`)), `${zip}.blockmap`);
+  // Staple the app itself before packaging. The Installer copies it out of a DMG mounted with
+  // hdiutil (which never ingests the DMG's ticket), and the updater ZIP has no DMG at all, so an
+  // unstapled app needs Apple's online lookup on first launch and fails Gatekeeper offline.
+  const appSubmission = path.join(stageRoot, 'notarize-app.zip');
+  fs.rmSync(appSubmission, { force: true });
+  exec('/usr/bin/ditto', ['-c', '-k', '--keepParent', signedApp, appSubmission], { label: 'Archive signed app for notarization' });
+  let appReceipt;
+  try { appReceipt = notarize(appSubmission, 'signed app', notary, exec); } finally { fs.rmSync(appSubmission, { force: true }); }
+  exec('xcrun', ['stapler', 'staple', signedApp], { label: 'Staple accepted signed app' });
+  exec('xcrun', ['stapler', 'validate', signedApp], { label: 'Validate stapled app notarization' });
+  verifySignedApp(signedApp, identity, exec);
+  // Electron Builder's ZIP predates the staple; rebuild it (and its blockmap) from the stapled app.
+  fs.rmSync(zip, { force: true });
+  await tools.archive('zip', zip, signedApp, { compression: 'normal', withoutDir: false, preserveSymlinks: true });
+  await tools.buildBlockMap(zip, 'gzip', `${zip}.blockmap`);
   createSignedDmg(signedApp, dmg, stageRoot, exec);
   await withMountedDmg(dmg, stageRoot, exec, (app) => {
     verifySignedApp(app, identity, exec);
     verifyPluginPayload(app, composition, tools.asar, version);
   }, productName);
   exec('codesign', ['--force', '--sign', `Developer ID Application: ${identity}`, '--timestamp', dmg], { label: 'Sign candidate DMG' });
-  const notarization = exec('xcrun', ['notarytool', 'submit', dmg, '--key', notary.key, '--key-id', notary.keyId, '--issuer', notary.issuer, '--wait', '--output-format', 'json'], { capture: true, label: 'Notarize candidate DMG and wait for Apple' });
-  let receipt;
-  try { receipt = JSON.parse(notarization.stdout); } catch { throw new Error('Apple notarization did not return a valid JSON receipt.'); }
-  if (receipt.status !== 'Accepted') throw new Error('Apple notarization did not accept the candidate DMG.');
+  const receipt = notarize(dmg, 'candidate DMG', notary, exec);
   exec('xcrun', ['stapler', 'staple', dmg], { label: 'Staple accepted candidate DMG' });
   exec('xcrun', ['stapler', 'validate', dmg], { label: 'Validate stapled notarization' });
   exec('spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=4', dmg], { label: 'Assess candidate DMG with Gatekeeper' });
   exec('hdiutil', ['verify', dmg], { label: 'Verify final DMG integrity' });
   const boot = await withMountedDmg(dmg, stageRoot, exec, async (app) => {
     verifySignedApp(app, identity, exec);
+    exec('xcrun', ['stapler', 'validate', app], { label: 'Validate stapled app inside final DMG' });
     verifyPluginPayload(app, composition, tools.asar, version);
     return verifyBoot({ appPath: app, stageRoot, version, electron: tools.electron, env, runCommand: exec });
   }, productName);
@@ -524,6 +545,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
     exec('/usr/bin/ditto', ['-x', '-k', zip, zipScratch], { label: 'Extract final updater ZIP for verification' });
     const zipApp = path.join(zipScratch, `${productName}.app`);
     verifySignedApp(zipApp, identity, exec);
+    exec('xcrun', ['stapler', 'validate', zipApp], { label: 'Validate stapled app inside final updater ZIP' });
     verifyPluginPayload(zipApp, composition, tools.asar, version);
     const [zipAsar, signedAsar] = await Promise.all([zipApp, signedApp].map((app) => fileInfo(path.join(app, 'Contents', 'Resources', 'app.asar'))));
     if (zipAsar.sha256 !== signedAsar.sha256) throw new Error('Updater ZIP differs from the signed candidate app.');
@@ -540,7 +562,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   }
   regularFile(`${dmg}.blockmap`);
   const report = { schemaVersion: 1, version, sourceCommit: commit, platform: 'macos-arm64', verifiedAt: new Date().toISOString(),
-    notarization: { status: receipt.status, id: receipt.id }, pluginSource: composition.source, plugins: stagedProof,
+    notarization: { status: receipt.status, id: receipt.id }, appNotarization: { status: appReceipt.status, id: appReceipt.id }, pluginSource: composition.source, plugins: stagedProof,
     artifacts: [dmgInfo, zipInfo], boot };
   fs.writeFileSync(path.join(output, 'harness-mac-verification.json'), `${JSON.stringify(report, null, 2)}\n`);
   return report;

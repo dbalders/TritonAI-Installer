@@ -165,7 +165,13 @@ async function runInstall(payload, runtime) {
 
     emit(`Configuring ${tool.name} for UCSD routing...`);
     configWriters[tool.configWriter](paths, { replaceExisting: true, emit });
-    await runT3DefaultsPatcher({ credentials, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
+    if (result && result.installedNewerThanBundle) {
+      // The patcher's model catalog is frozen at this Installer's build; the newer Harness that was
+      // kept enforces its own managed policy, so rewriting its selections could only roll them back.
+      emit("Kept a newer TritonAI Harness than this Installer bundles; leaving its defaults to the app.");
+    } else {
+      await runT3DefaultsPatcher({ credentials, paths, nodeRuntime, runtime: { ...runtime, platform, arch }, emit });
+    }
 
     diagnostics.setStep("verify");
     const markerWriter = runtime.writeInstallerVersionMarker || writeInstallerVersionMarker;
