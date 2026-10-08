@@ -30,3 +30,33 @@ test('accepts controlled manual stable releases only at the published tag commit
   assert.throws(() => assertHarnessRelease(selection, { ...manual, head_sha: 'd'.repeat(40) }, release, tag));
   assert.throws(() => assertHarnessRelease(selection, { ...manual, head_branch: 'feature' }, release, tag));
 });
+
+test('workflow source binds exact successful run attempt and both immutable artifact identities', () => {
+  const { workflowArtifactReceipt } = require('./validate-windows-signing-inputs.cjs');
+  const source = validateInputs({ ...env, HARNESS_SOURCE: 'workflow_artifacts' });
+  const completeRun = { ...run, run_attempt: 2 };
+  const artifacts = ['desktop-mac-arm64', 'desktop-win-x64'].map((name, index) => ({ name, id: index + 1, expired: false, size_in_bytes: 100, digest: `sha256:${'c'.repeat(64)}`, workflow_run: { id: Number(source.runId), head_sha: source.commit } }));
+  const listing = { total_count: artifacts.length, artifacts };
+  assert.equal(workflowArtifactReceipt(source, completeRun, tag, listing).runAttempt, 2);
+  for (const delta of [{ expired: true }, { id: 0 }, { size_in_bytes: 0 }, { digest: null }, { workflow_run: { id: 1235, head_sha: source.commit } }, { workflow_run: { id: Number(source.runId), head_sha: 'd'.repeat(40) } }]) {
+    assert.throws(() => workflowArtifactReceipt(source, completeRun, tag, { ...listing, artifacts: [{ ...artifacts[0], ...delta }, artifacts[1]] }));
+  }
+  assert.throws(() => workflowArtifactReceipt(source, { ...completeRun, run_attempt: 0 }, tag, listing));
+  assert.throws(() => workflowArtifactReceipt(source, completeRun, tag, { ...listing, total_count: 101 }));
+  assert.throws(() => workflowArtifactReceipt(source, completeRun, tag, { total_count: 1, artifacts: artifacts.slice(0, 1) }));
+  assert.throws(() => validateInputs({ ...env, HARNESS_SOURCE: 'draft_artifacts' }));
+});
+
+test('final provenance recheck rejects a changed run attempt, archive or missing frozen receipt', t => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const { bindWorkflowReceipt } = require('./validate-windows-signing-inputs.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-workflow-meta-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const receiptPath = path.join(root, 'receipt.json');
+  const receipt = { schemaVersion: 1, selection, runAttempt: 2, artifacts: [{ id: 1, digest: 'original' }] };
+  assert.throws(() => bindWorkflowReceipt(receipt, receiptPath, true), /receipt is missing/);
+  bindWorkflowReceipt(receipt, receiptPath);
+  assert.doesNotThrow(() => bindWorkflowReceipt(receipt, receiptPath, true));
+  assert.throws(() => bindWorkflowReceipt({ ...receipt, runAttempt: 3 }, receiptPath, true), /provenance changed/);
+  assert.throws(() => bindWorkflowReceipt({ ...receipt, artifacts: [{ id: 2, digest: 'replacement' }] }, receiptPath, true), /provenance changed/);
+});

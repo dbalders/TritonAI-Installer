@@ -6,15 +6,23 @@ on:
       installer_version:
         description: Stable version matching package.json on main
         required: true
-        default: '0.3.5'
+        default: '0.3.6'
         type: string
       harness_version:
-        description: Published stable Harness version
+        description: Stable Harness version
         required: true
-        default: '0.3.5'
+        default: '0.3.6'
         type: string
+      harness_source:
+        description: Published stable assets or authenticated successful workflow artifacts
+        required: true
+        default: published
+        type: choice
+        options:
+          - published
+          - workflow_artifacts
       harness_run_id:
-        description: Successful Harness release.yml run that produced the published assets
+        description: Successful exact-source Harness release.yml run
         required: true
         type: string
       harness_commit:
@@ -35,6 +43,8 @@ concurrency:
 
 env:
   INSTALLER_VERSION: ${{ inputs.installer_version }}
+  HARNESS_SOURCE: ${{ inputs.harness_source }}
+  HARNESS_WORKFLOW_RECEIPT: ${{ github.workspace }}/.release-input/harness-workflow.json
   HARNESS_VERSION: ${{ inputs.harness_version }}
   HARNESS_RUN_ID: ${{ inputs.harness_run_id }}
   HARNESS_COMMIT: ${{ inputs.harness_commit }}
@@ -42,6 +52,7 @@ env:
 
 jobs:
   preflight:
+    environment: macos-signing
     if: github.repository == 'dbalders/TritonAI-Installer' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -54,12 +65,33 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22.22.2'
-      - name: Verify source and published Harness prerequisites
+      - name: Mint read-only Harness provenance token
+        if: inputs.harness_source == 'workflow_artifacts'
+        id: harness_metadata_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.RELEASE_INPUT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_INPUT_APP_PRIVATE_KEY }}
+          owner: dbalders
+          repositories: TritonAI-Harness
+          permission-contents: read
+          permission-actions: read
+      - name: Verify source and selected Harness prerequisites
         env:
           GH_TOKEN: ${{ github.token }}
+          HARNESS_METADATA_TOKEN: ${{ steps.harness_metadata_token.outputs.token }}
         run: |
-          node scripts/validate-windows-signing-inputs.cjs
+          GH_TOKEN="${HARNESS_METADATA_TOKEN:-$GH_TOKEN}" node scripts/validate-windows-signing-inputs.cjs
           node scripts/installer-release-preflight.cjs
+      - name: Freeze authenticated Harness workflow provenance
+        if: inputs.harness_source == 'workflow_artifacts'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: harness-workflow-source
+          path: .release-input/harness-workflow.json
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: error
 
   build:
     needs: preflight
@@ -121,7 +153,20 @@ jobs:
           owner: dbalders
           repositories: UCSD-Skills-Library-Secure
           permission-contents: read
+      - name: Download frozen Harness workflow provenance
+        if: inputs.harness_source == 'workflow_artifacts'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: harness-workflow-source
+          path: .release-input
+      - name: Download digest-verified exact Harness workflow artifact
+        if: inputs.harness_source == 'workflow_artifacts'
+        env:
+          GH_TOKEN: ${{ steps.harness_token.outputs.token }}
+          HARNESS_ARTIFACT_NAME: ${{ matrix.artifact }}
+        run: node scripts/download-harness-workflow-artifact.cjs
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: inputs.harness_source != 'workflow_artifacts'
         with:
           repository: dbalders/TritonAI-Harness
           run-id: ${{ inputs.harness_run_id }}
@@ -222,6 +267,7 @@ jobs:
             vendor/t3code-desktop/win-x64/
 
   draft:
+    environment: windows-signing
     needs: build
     runs-on: windows-latest # Release contract rechecks Authenticode natively.
     timeout-minutes: 20
@@ -241,14 +287,37 @@ jobs:
           pattern: installer-*
           merge-multiple: true
       - run: npm ci
+      - name: Download frozen Harness workflow provenance
+        if: inputs.harness_source == 'workflow_artifacts'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: harness-workflow-source
+          path: .release-input
+      - name: Mint read-only Harness provenance token
+        if: inputs.harness_source == 'workflow_artifacts'
+        id: harness_metadata_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.RELEASE_INPUT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_INPUT_APP_PRIVATE_KEY }}
+          owner: dbalders
+          repositories: TritonAI-Harness
+          permission-contents: read
+          permission-actions: read
       - name: Recheck prerequisites and create verified draft
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          HARNESS_METADATA_TOKEN: ${{ steps.harness_metadata_token.outputs.token }}
+          HARNESS_WORKFLOW_RECEIPT_REQUIRED: 'true'
         run: |
           $ErrorActionPreference = 'Stop'
-          node scripts/validate-windows-signing-inputs.cjs
-          if ($LASTEXITCODE -ne 0) { throw 'Harness prerequisite verification failed.' }
+          $installerToken = $env:GH_TOKEN
+          if ($env:HARNESS_METADATA_TOKEN) { $env:GH_TOKEN = $env:HARNESS_METADATA_TOKEN }
+          try {
+            node scripts/validate-windows-signing-inputs.cjs
+            if ($LASTEXITCODE -ne 0) { throw 'Harness prerequisite verification failed.' }
+          } finally { $env:GH_TOKEN = $installerToken }
           node scripts/installer-release-preflight.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Installer prerequisite verification failed.' }
           git rev-parse --verify "refs/tags/v$env:INSTALLER_VERSION" 2>$null
