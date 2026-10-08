@@ -695,6 +695,8 @@ function assertInterruptedPointerSwapIsRepaired() {
     assertPointsAt(legacyApp, sharedApp, "a rerun must finish an interrupted pointer swap");
 
     // An old launcher this account can't remove still opens the legacy path even if it never existed.
+    // A read-only folder only blocks removal for a non-root POSIX user.
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
     fs.rmSync(legacyDir, { recursive: true, force: true });
     const systemApplicationsDir = path.join(tempRoot, "LockedApplications");
     writeLegacyMacLauncher(path.join(systemApplicationsDir, "TritonAI Harness.app"));
