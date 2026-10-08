@@ -329,7 +329,7 @@ function assertCanonicalGitBytesStaging() {
         const checkout = path.join(tempRoot, `${subdir ? "nested" : "root"}-${autocrlf}`);
         const previousParameters = process.env.GIT_CONFIG_PARAMETERS;
         try {
-          process.env.GIT_CONFIG_PARAMETERS = `'core.autocrlf=${autocrlf}'`;
+          process.env.GIT_CONFIG_PARAMETERS = `'core.autocrlf=${autocrlf}' 'core.eol=lf'`;
           cloneSecureRepository(repository, git(["branch", "--show-current"]), checkout);
         } finally {
           if (previousParameters === undefined) delete process.env.GIT_CONFIG_PARAMETERS;
