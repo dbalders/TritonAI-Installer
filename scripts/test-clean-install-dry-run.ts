@@ -26,15 +26,12 @@ const {
   parseLatestYml,
   selectMacDmg,
   selectWindowsInstaller,
-  macInfoPlist,
-  getMacAppIconSource,
-  buildMacLauncherScript,
   buildWindowsEnvironmentScript,
   buildWindowsDesktopShortcutScript,
   getBundledMacDmg,
   getBundledWindowsInstaller,
   findWindowsT3CodeApp,
-  getManagedMacAppPath
+  getLegacyMacAppPath
 } = require("../src/installer/t3code-desktop");
 const { saveEnvironment } = require("../src/installer/profile");
 const { buildWindowsEnvironmentCleanupScript } = require("../src/installer/windows-environment-migration");
@@ -143,6 +140,7 @@ async function main() {
   assertTritonAiModelsUrl();
   await assertOnboardingWorkspaceOnlySeedsOnFirstInstall();
   await runDryRun(process.platform, {});
+  await runDryRun(process.platform, { installedNewerThanBundle: true });
   await runDryRun(process.platform, {
     externalModelsEnabled: false
   });
@@ -246,12 +244,6 @@ async function assertEnvironmentIsHarnessScoped() {
       assert(fs.lstatSync(bashrc).isSymbolicLink(), "atomic profile cleanup must preserve dotfile symlinks");
       assert.strictEqual(fs.readFileSync(linkedBashrc, "utf8"), "# user bash config\n");
     }
-
-    const macLauncher = buildMacLauncherScript(macPaths, macRuntime.nodeBinary, getManagedMacAppPath(macPaths));
-    assert(macLauncher.includes('$HOME/.agents/ucsd/env'));
-    assert(!macLauncher.includes(macPaths.homeDir), "macOS launcher must resolve the launching user's home dynamically");
-    assert(macLauncher.includes('APP_PATH="$HOME/.agents/ucsd/apps/TritonAI Harness.app"'));
-    assert(!macLauncher.includes("CODEX_HOME"), "macOS launcher must leave Codex home selection to Harness child processes");
 
     const winPaths = getPaths(tempRoot, "win32");
     const winRuntime = getNodeRuntimePaths(winPaths, "win32", "x64");
@@ -963,7 +955,8 @@ async function runDryRun(platform, options) {
               : {
                   appPath: "/Applications/TritonAI Harness.app",
                   shortcutPath: "/Applications/TritonAI Harness.app"
-                })
+                }),
+            installedNewerThanBundle: Boolean(options.installedNewerThanBundle)
           };
         },
         getCodexVersion: (binary) => {
@@ -1135,9 +1128,13 @@ async function runDryRun(platform, options) {
       assert.strictEqual(t3CodeDesktopInstalls[0].env.TRITONAI_ONPREM_API_KEY, "test-key");
     }
     const patcherRuns = commands.filter((entry) => entry.args.includes(paths.t3DefaultsPatcher));
-    assert.strictEqual(patcherRuns.length, 1);
-    assert.strictEqual(patcherRuns[0].command, fakeRuntime.nodeBinary);
-    assert.strictEqual(patcherRuns[0].allowFailure, true);
+    if (options.installedNewerThanBundle) {
+      assert.strictEqual(patcherRuns.length, 0, "the install-time defaults patcher must not rewrite a newer Harness kept in place");
+    } else {
+      assert.strictEqual(patcherRuns.length, 1);
+      assert.strictEqual(patcherRuns[0].command, fakeRuntime.nodeBinary);
+      assert.strictEqual(patcherRuns[0].allowFailure, true);
+    }
 
     for (const install of npmInstalls) {
       assert(install.args.includes("--before"), `${install.args.join(" ")} missing --before`);
@@ -1629,33 +1626,8 @@ function assertT3CodeUcsdCustomModelsAreCanonical() {
 }
 
 function assertDesktopArtifactHelpers() {
-  assert.match(macInfoPlist(), /CFBundleIconFile/);
-  assert.match(macInfoPlist(), /<string>icon\.icns<\/string>/);
-  assert.match(macInfoPlist(), /<string>TritonAI Harness<\/string>/);
-  const legacyAppName = ["TritonAI", "Code"].join(" ");
-  assert(!macInfoPlist().includes(legacyAppName), "macOS launcher metadata should use the current app name");
   const ucsdRoot = path.join(path.sep, "Users", "alice", ".agents", "ucsd");
-  assert.strictEqual(getManagedMacAppPath({ ucsdRoot }), path.join(ucsdRoot, "apps", "TritonAI Harness.app"));
-
-  const iconTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ucsd-installer-mac-icon-"));
-  try {
-    const appPath = path.join(iconTempRoot, "TritonAI Harness.app");
-    const contentsDir = path.join(appPath, "Contents");
-    const resourcesDir = path.join(contentsDir, "Resources");
-    fs.mkdirSync(resourcesDir, { recursive: true });
-    fs.writeFileSync(path.join(resourcesDir, "triton-brand.icns"), "fake icon");
-    fs.writeFileSync(path.join(contentsDir, "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0">
-<dict>
-  <key>CFBundleIconFile</key>
-  <string>triton-brand</string>
-</dict>
-</plist>
-`);
-    assert.strictEqual(getMacAppIconSource(appPath), path.join(resourcesDir, "triton-brand.icns"));
-  } finally {
-    fs.rmSync(iconTempRoot, { recursive: true, force: true });
-  }
+  assert.strictEqual(getLegacyMacAppPath({ ucsdRoot }), path.join(ucsdRoot, "apps", "TritonAI Harness.app"));
 
   const t3MacManifest = parseLatestYml(`version: 0.1.3
 files:

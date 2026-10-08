@@ -14,6 +14,7 @@ const {
 function main() {
   assertCapacityUsesBundledPayloadAndRollbackReserve();
   assertLowCapacityFailsBeforeMutation();
+  assertMacApplicationsVolumeIsChecked();
   console.log("Installer disk preflight tests passed.");
 }
 
@@ -40,6 +41,32 @@ function assertCapacityUsesBundledPayloadAndRollbackReserve() {
       (result.bundledBytes * PAYLOAD_EXPANSION_FACTOR) + ROLLBACK_RESERVE_BYTES
     );
     assert(emitted.some((message) => message.includes("staging, and rollback")));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertMacApplicationsVolumeIsChecked() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-capacity-apps-"));
+  try {
+    const homeDir = path.join(tempRoot, "home");
+    const roomy = { bavail: 100 * 1024, bsize: 1024 * 1024 };
+    const cramped = { bavail: 1, bsize: 1024 };
+    const check = (applicationsDevice, writable = true) => checkInstallCapacity({
+      paths: getPaths(homeDir, "darwin"),
+      emit: () => {},
+      platform: "darwin",
+      deviceOf: (target) => (target === "/Applications" ? applicationsDevice : "home-volume"),
+      canWriteApplications: () => writable,
+      statfs: (target) => (target === "/Applications" ? cramped : roomy)
+    });
+    assert.throws(() => check("apps-volume"), /available at \/Applications/, "a full Applications volume must stop the install");
+    assert.strictEqual(check("home-volume").targetPath, tempRoot, "a shared volume is measured once");
+    assert.strictEqual(
+      check("apps-volume", false).targetPath,
+      tempRoot,
+      "a standard account installs under ~/Applications, so a full shared volume must not block it"
+    );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

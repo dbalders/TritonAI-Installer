@@ -80,7 +80,7 @@ async function assertUnsignedBundleSkipsOnlyPublisherVerification() {
       }
     });
     assert.strictEqual(result.appPath, fixture.existingApp);
-    assert(events.some((message) => message.includes("intentionally contains an unsigned TritonAI Harness")));
+    assert(events.some((message) => message.includes("pinned release hash; this release does not check a Windows publisher signature")));
     assert(events.some((message) => message.includes("Verified TritonAI Harness 0.2.1")));
   });
 }

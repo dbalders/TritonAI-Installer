@@ -1,4 +1,5 @@
 import { fileDigest } from "./file-digest";
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -30,12 +31,10 @@ const MAC_RELEASE_BASE = RELEASE_BASE;
 const WIN_RELEASE_BASE = RELEASE_BASE;
 const TRITONAI_APP_DISPLAY_NAME = "TritonAI Harness";
 const MAC_MANAGED_APP_NAME = `${TRITONAI_APP_DISPLAY_NAME}.app`;
-const MAC_TRITONAI_APP_PATH = `/Applications/${MAC_MANAGED_APP_NAME}`;
+const MAC_SYSTEM_APPLICATIONS_DIR = "/Applications";
 const MAC_MANIFEST_FILE = "latest-mac.yml";
 const WIN_MANIFEST_FILE = "latest.yml";
 const TRITONAI_LAUNCHER_NAME = TRITONAI_APP_DISPLAY_NAME;
-const MAC_LAUNCHER_EXECUTABLE_NAME = TRITONAI_APP_DISPLAY_NAME;
-const MAC_LAUNCHER_ICON_FILE = "icon.icns";
 const MAC_APP_BUNDLE_ID = EXPECTED_MAC_HARNESS_BUNDLE_ID;
 const MAC_SOURCE_APP_NAMES = [
   MAC_MANAGED_APP_NAME
@@ -55,10 +54,16 @@ const MAC_APP_TRANSACTION_JOURNAL_FILE = ".tritonai-harness-app-transaction.json
 const MAC_APP_STAGE_PREFIX = ".tritonai-harness-stage-";
 const MAC_APP_BACKUP_PREFIX = ".tritonai-harness-backup-";
 const MAC_APP_TRANSACTION_KIND = "managed TritonAI Harness app";
-const MAC_LAUNCHER_TRANSACTION_JOURNAL_FILE = ".tritonai-harness-launcher-transaction.json";
-const MAC_LAUNCHER_STAGE_PREFIX = ".tritonai-harness-launcher-stage-";
-const MAC_LAUNCHER_BACKUP_PREFIX = ".tritonai-harness-launcher-backup-";
-const MAC_LAUNCHER_TRANSACTION_KIND = "TritonAI Harness launcher";
+const MAC_APPLICATIONS_WRITE_PROBE_PREFIX = ".tritonai-harness-write-probe-";
+const MAC_REMOVED_ENTRY_PREFIX = ".tritonai-harness-removed-";
+const MAC_POINTER_STAGE_PREFIX = ".tritonai-harness-pointer-";
+const MAC_LEFTOVER_MIN_AGE_MS = 60 * 60 * 1000;
+// Earlier Installers wrote an unsigned shell launcher into Applications and kept the
+// signed app under ~/.agents/ucsd/apps. These names identify what upgrades must clean up.
+const LEGACY_MAC_LAUNCHER_BUNDLE_ID = "edu.ucsd.ai.tritonai-harness-launcher";
+const LEGACY_MAC_LAUNCHER_TRANSACTION_JOURNAL_FILE = ".tritonai-harness-launcher-transaction.json";
+const LEGACY_MAC_LAUNCHER_STAGE_PREFIX = ".tritonai-harness-launcher-stage-";
+const LEGACY_MAC_LAUNCHER_BACKUP_PREFIX = ".tritonai-harness-launcher-backup-";
 
 interface DesktopBundleOptions {
   arch?: NodeJS.Architecture;
@@ -92,12 +97,12 @@ interface WindowsInstallerCommandRuntime {
   runPowerShellCapture?: typeof runPowerShellCapture;
 }
 
-interface MacLauncherOptions {
-  launcherPath?: string;
-}
-
-interface MacLauncherInstallRuntime {
-  writeLauncher?: typeof writeMacAppLauncher;
+interface MacAppPlacementRuntime {
+  systemApplicationsDir?: string;
+  replaceApp?: typeof replaceMacAppTransactionally;
+  readAppVersion?: (appPath: string) => Promise<string | null>;
+  verifyInstalledApp?: (appPath: string) => Promise<void>;
+  onPlaced?: (placement: { appPath: string; installedNewerThanBundle: boolean }) => void;
 }
 
 async function installT3CodeDesktop({ paths, platform, arch, emit, env, resourcesPath, appRoot, packaged, windowsInstallRuntime }) {
@@ -126,11 +131,11 @@ async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, pa
   const bundledDmg = getBundledMacDmg({ arch, resourcesPath, appRoot });
   const downloadDir = path.join(paths.cacheDir, "t3code-desktop");
   const mountDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-desktop-"));
-  const managedAppPath = getManagedMacAppPath(paths);
   fs.mkdirSync(downloadDir, { recursive: true });
 
   let dmgPath;
-  let appInstalled = false;
+  let appPath = null;
+  let installedNewerThanBundle = false;
   if (bundledDmg) {
     dmgPath = bundledDmg.dmgPath;
     verifyDownload(dmgPath, bundledDmg.expected);
@@ -158,46 +163,421 @@ async function installMacDesktop({ paths, arch, emit, resourcesPath, appRoot, pa
       throw new Error(`Could not find a supported ${TRITONAI_APP_DISPLAY_NAME} app in the mounted installer image.`);
     }
 
-    await replaceMacAppTransactionally({
+    appPath = await installMacApp({
       sourceAppPath: mountedApp,
-      managedAppPath,
-      emit
+      paths,
+      emit,
+      runtime: { onPlaced: (placement) => { installedNewerThanBundle = placement.installedNewerThanBundle; } }
     });
-    appInstalled = true;
   } finally {
-    if (appInstalled) {
+    if (appPath) {
       emit(`Closing ${TRITONAI_APP_DISPLAY_NAME} installer image.`);
     }
     await run("hdiutil", ["detach", mountDir], emit, { allowFailure: true });
     fs.rmSync(mountDir, { recursive: true, force: true });
   }
 
-  if (appInstalled) {
-    emit(`Closed ${TRITONAI_APP_DISPLAY_NAME} installer image.`);
-  }
-  const shortcutPath = installMacAppLauncher(paths, emit, arch);
-  emit(`${TRITONAI_LAUNCHER_NAME} launcher installed at ${shortcutPath}`);
-  return { appPath: shortcutPath, shortcutPath };
+  emit(`Closed ${TRITONAI_APP_DISPLAY_NAME} installer image.`);
+  emit(`${TRITONAI_APP_DISPLAY_NAME} installed in Applications at ${appPath}`);
+  return { appPath, shortcutPath: appPath, installedNewerThanBundle };
 }
 
-function installMacAppLauncher(
+// Install the signed, notarized Harness itself into Applications. Shared /Applications needs an
+// admin account, which is also what the Harness updater needs to replace it later, so standard
+// accounts get a per-user copy in ~/Applications that they can keep updated themselves.
+async function installMacApp({
+  sourceAppPath,
   paths,
   emit,
-  arch,
-  runtime: MacLauncherInstallRuntime = {}
-) {
-  const launcherWriter = runtime.writeLauncher || writeMacAppLauncher;
-  try {
-    return launcherWriter(paths, emit, arch);
-  } catch (error) {
-    if (!isPermissionError(error)) throw error;
-
-    const userLauncherPath = path.join(paths.homeDir, "Applications", MAC_MANAGED_APP_NAME);
+  runtime = {}
+}: {
+  sourceAppPath: string;
+  paths: { homeDir: string; ucsdRoot: string };
+  emit: InstallerEmit;
+  runtime?: MacAppPlacementRuntime;
+}) {
+  const systemApplicationsDir = runtime.systemApplicationsDir || MAC_SYSTEM_APPLICATIONS_DIR;
+  const userApplicationsDir = path.join(paths.homeDir, "Applications");
+  const placement = {
+    bundledAppPath: sourceAppPath,
+    // Every location an earlier install, self-update, or manual copy may have left a Harness in.
+    existingAppPaths: [
+      getLegacyMacAppPath(paths),
+      path.join(systemApplicationsDir, MAC_MANAGED_APP_NAME),
+      path.join(userApplicationsDir, MAC_MANAGED_APP_NAME)
+    ],
+    emit,
+    replaceApp: runtime.replaceApp || replaceMacAppTransactionally,
+    readAppVersion: runtime.readAppVersion || ((appPath) => readMacHarnessVersion(appPath, emit)),
+    verifyInstalledApp: runtime.verifyInstalledApp || ((appPath) => verifyExpectedMacHarnessPublisher(appPath, emit))
+  };
+  const userAppPath = path.join(userApplicationsDir, MAC_MANAGED_APP_NAME);
+  let appPath = path.join(systemApplicationsDir, MAC_MANAGED_APP_NAME);
+  if (!canCreateEntriesIn(systemApplicationsDir)) {
+    appPath = userAppPath;
     emit(
       `The shared Applications folder is not writable for this account; `
-      + `installing the ${TRITONAI_LAUNCHER_NAME} launcher for this user instead.`
+      + `installing ${TRITONAI_APP_DISPLAY_NAME} for this user in ${userApplicationsDir} instead.`
     );
-    return launcherWriter(paths, emit, arch, { launcherPath: userLauncherPath });
+  }
+  let placed;
+  try {
+    placed = await placeNewestMacApp({ ...placement, appPath });
+  } catch (error) {
+    // Creating entries is not proof that an existing bundle can be replaced (another account's
+    // bundle, App Management). Fall back only when the transaction left the shared copy intact.
+    if (appPath === userAppPath || !isPermissionError(error) || error.rollbackFailed) throw error;
+    emit(
+      `Could not replace ${appPath} (${error.message}); `
+      + `installing ${TRITONAI_APP_DISPLAY_NAME} for this user in ${userApplicationsDir} instead.`
+    );
+    appPath = userAppPath;
+    placed = await placeNewestMacApp({ ...placement, appPath });
+  }
+  if (runtime.onPlaced) runtime.onPlaced({ appPath, installedNewerThanBundle: placed.installedNewerThanBundle });
+  removeLegacyMacInstall({
+    paths,
+    appPath,
+    applicationsDirs: [systemApplicationsDir, userApplicationsDir],
+    emit
+  });
+  return appPath;
+}
+
+// Rerunning an older Installer must not roll back a Harness that already updated itself: an
+// older app can't open state a newer one has migrated. Install whichever trusted copy is newest,
+// even when that is the app already at the target, so it is still stopped, re-verified, and
+// cleared of quarantine through the same transaction.
+async function placeNewestMacApp({
+  bundledAppPath,
+  existingAppPaths,
+  appPath,
+  emit,
+  replaceApp,
+  readAppVersion,
+  verifyInstalledApp
+}) {
+  // An interrupted swap can hold the newest app in its backup; restore it before comparing.
+  for (const candidate of [...new Set(existingAppPaths.map((entry) => path.resolve(entry)))]) {
+    try {
+      recoverInterruptedMacAppSwap(candidate, emit);
+    } catch (error) {
+      if (path.resolve(candidate) === path.resolve(appPath)) throw error;
+      emit(`Left the interrupted ${TRITONAI_APP_DISPLAY_NAME} install at ${path.dirname(candidate)} for recovery: ${error.message}`);
+    }
+  }
+  const bundledVersion = await readAppVersion(bundledAppPath);
+  let sourceAppPath = bundledAppPath;
+  let sourceVersion = bundledVersion;
+  // Resolve pointers left at retired locations so the source is always a real bundle (copying a
+  // symlink would install a link to itself) and each real copy is considered once.
+  const existingRealAppPaths = existingAppPaths.flatMap((entry) => {
+    try {
+      return [fs.realpathSync(entry)];
+    } catch {
+      return [];
+    }
+  });
+  for (const candidate of [...new Set(existingRealAppPaths)]) {
+    if (isLegacyMacLauncher(candidate)) continue;
+    const version = await readAppVersion(candidate);
+    if (isNewerMacAppVersion(version, sourceVersion) && await isTrustedMacApp(candidate, verifyInstalledApp, emit)) {
+      sourceAppPath = candidate;
+      sourceVersion = version;
+    }
+  }
+  if (sourceAppPath !== bundledAppPath) {
+    emit(`Using the newer ${TRITONAI_APP_DISPLAY_NAME} ${sourceVersion} from ${sourceAppPath} instead of the bundled ${bundledVersion}.`);
+  }
+  // Quit only copies at these stable paths: macOS Nightly shares the bundle id but lives elsewhere.
+  const runningAppPaths = [...new Set([appPath, ...existingAppPaths].map((entry) => path.resolve(entry)))];
+  await replaceApp({ sourceAppPath, managedAppPath: appPath, emit, runningAppPaths });
+  return { installedNewerThanBundle: sourceAppPath !== bundledAppPath };
+}
+
+async function isTrustedMacApp(appPath, verifyInstalledApp, emit) {
+  try {
+    await verifyInstalledApp(appPath);
+    return true;
+  } catch (error) {
+    emit(`Ignoring the ${TRITONAI_APP_DISPLAY_NAME} at ${appPath} because it failed verification: ${error.message}`);
+    return false;
+  }
+}
+
+async function readMacHarnessVersion(appPath, emit) {
+  try {
+    const version = await runCapture(
+      MACOS_PLUTIL_PATH,
+      ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path.join(appPath, "Contents", "Info.plist")],
+      emit,
+      { shell: false }
+    );
+    return String(version).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function isNewerMacAppVersion(candidate, baseline) {
+  const left = parseMacAppVersion(candidate);
+  const right = parseMacAppVersion(baseline);
+  if (!left || !right) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (left.core[index] !== right.core[index]) return left.core[index] > right.core[index];
+  }
+  if (left.prerelease === right.prerelease) return false;
+  if (!left.prerelease) return true;
+  if (!right.prerelease) return false;
+  return comparePrerelease(left.prerelease, right.prerelease) > 0;
+}
+
+function parseMacAppVersion(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(String(version || "").trim());
+  return match
+    ? { core: [Number(match[1]), Number(match[2]), Number(match[3])], prerelease: match[4] || "" }
+    : null;
+}
+
+function comparePrerelease(left, right) {
+  const leftParts = left.split(".");
+  const rightParts = right.split(".");
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const a = leftParts[index];
+    const b = rightParts[index];
+    if (a === undefined) return -1;
+    if (b === undefined) return 1;
+    const numeric = /^\d+$/.test(a) && /^\d+$/.test(b);
+    const order = numeric ? Number(a) - Number(b) : a.localeCompare(b);
+    if (order !== 0) return order;
+  }
+  return 0;
+}
+
+function canCreateEntriesIn(directory) {
+  let probe = null;
+  try {
+    probe = fs.mkdtempSync(path.join(directory, MAC_APPLICATIONS_WRITE_PROBE_PREFIX));
+    return true;
+  } catch (error) {
+    if (isPermissionError(error) || error.code === "ENOENT") return false;
+    throw error;
+  } finally {
+    if (probe) fs.rmSync(probe, { recursive: true, force: true });
+  }
+}
+
+// Cleanup runs only after the new app is active and is best-effort: a leftover legacy file must
+// not fail an install whose app is already in place.
+function removeLegacyMacInstall({ paths, appPath, applicationsDirs, emit }) {
+  // An earlier standard-account install left a real copy in ~/Applications. Now that the shared
+  // copy is installed, point the per-user one at it so its Dock icons open the current version,
+  // and finish a pointer swap an interrupted run left there. Runs before the leftover sweep so the
+  // evidence of an interrupted swap is still present. (Never the reverse: the shared copy must not
+  // be pointed into one account's home.)
+  const userAppPath = path.join(paths.homeDir, "Applications", MAC_MANAGED_APP_NAME);
+  if (path.resolve(userAppPath) !== path.resolve(appPath)) {
+    if (isStableMacHarnessBundle(userAppPath)) {
+      pointLegacyMacAppAt(userAppPath, appPath, emit);
+    } else if (!pathEntryExists(userAppPath) && hasInterruptedPointerSwap(path.dirname(userAppPath))) {
+      publishMissingLegacyPointer(userAppPath, appPath, emit);
+    }
+  }
+
+  let survivingLauncher = null;
+  for (const applicationsDir of [...new Set(applicationsDirs)]) {
+    const candidate = path.join(applicationsDir, MAC_MANAGED_APP_NAME);
+    if (path.resolve(candidate) !== path.resolve(appPath)
+      && isLegacyMacLauncher(candidate)
+      && !removeLegacyMacEntry(candidate, `old ${TRITONAI_LAUNCHER_NAME} launcher`, emit)) {
+      survivingLauncher = candidate;
+    }
+    // A journal means an interrupted app swap whose backup is recovery evidence; leave those.
+    const appTransactionLeftovers = fs.existsSync(path.join(applicationsDir, MAC_APP_TRANSACTION_JOURNAL_FILE))
+      ? []
+      : [MAC_APP_STAGE_PREFIX, MAC_APP_BACKUP_PREFIX];
+    // Another account's Installer may be staging in the shared folder right now; only sweep
+    // leftovers old enough that no live install could still own them.
+    removeLegacyMacTransactionLeftovers(applicationsDir, [
+      LEGACY_MAC_LAUNCHER_TRANSACTION_JOURNAL_FILE,
+      LEGACY_MAC_LAUNCHER_STAGE_PREFIX,
+      LEGACY_MAC_LAUNCHER_BACKUP_PREFIX,
+      MAC_APPLICATIONS_WRITE_PROBE_PREFIX,
+      MAC_REMOVED_ENTRY_PREFIX,
+      MAC_POINTER_STAGE_PREFIX,
+      ...appTransactionLeftovers
+    ], emit);
+  }
+
+  const legacyAppPath = getLegacyMacAppPath(paths);
+  const legacyAppsDir = path.dirname(legacyAppPath);
+  if (fs.existsSync(path.join(legacyAppsDir, MAC_APP_TRANSACTION_JOURNAL_FILE))) {
+    emit(`Kept ${legacyAppsDir} because it holds an interrupted install that could not be recovered.`);
+    return;
+  }
+  // Dock icons and Login Items pinned from the running app, and any old launcher this account
+  // can't remove, still point at the old copy. Leave a pointer to the installed app in its place
+  // so they keep opening TritonAI Harness without anyone noticing.
+  if (pathEntryExists(legacyAppPath)) {
+    pointLegacyMacAppAt(legacyAppPath, appPath, emit);
+  } else if (survivingLauncher || hasInterruptedPointerSwap(legacyAppsDir)) {
+    // A previous run stopped mid-swap, or a launcher this account can't remove still opens this
+    // path: publish the pointer now rather than leave that launcher (or its shortcuts) broken.
+    publishMissingLegacyPointer(legacyAppPath, appPath, emit);
+  }
+  if (survivingLauncher) {
+    emit(
+      `An older ${TRITONAI_LAUNCHER_NAME} launcher at ${survivingLauncher} can't be removed by this account; `
+      + `it now opens ${appPath}.`
+    );
+  }
+  removeLegacyMacTransactionLeftovers(legacyAppsDir, [
+    MAC_APP_TRANSACTION_JOURNAL_FILE,
+    MAC_APP_STAGE_PREFIX,
+    MAC_APP_BACKUP_PREFIX,
+    MAC_REMOVED_ENTRY_PREFIX,
+    MAC_POINTER_STAGE_PREFIX
+  ], emit);
+  try {
+    if (fs.existsSync(legacyAppsDir) && fs.readdirSync(legacyAppsDir).length === 0) fs.rmdirSync(legacyAppsDir);
+  } catch {
+    // An empty legacy folder is harmless.
+  }
+}
+
+function pathEntryExists(target) {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasInterruptedPointerSwap(legacyAppsDir) {
+  try {
+    // Only a pointer swap stages these links, so one left behind means that swap was interrupted.
+    return fs.readdirSync(legacyAppsDir).some((entry) => entry.startsWith(MAC_POINTER_STAGE_PREFIX));
+  } catch {
+    return false;
+  }
+}
+
+function publishMissingLegacyPointer(legacyAppPath, appPath, emit) {
+  try {
+    fs.mkdirSync(path.dirname(legacyAppPath), { recursive: true });
+    fs.symlinkSync(appPath, legacyAppPath);
+    emit(`Pointed ${legacyAppPath} at ${appPath} so existing Dock icons and shortcuts keep working.`);
+  } catch (error) {
+    emit(`Could not leave a pointer at ${legacyAppPath}: ${error.message}`);
+  }
+}
+
+function pointLegacyMacAppAt(legacyAppPath, appPath, emit) {
+  try {
+    if (fs.lstatSync(legacyAppPath).isSymbolicLink()
+      && path.resolve(path.dirname(legacyAppPath), fs.readlinkSync(legacyAppPath)) === path.resolve(appPath)) {
+      return;
+    }
+  } catch {
+    // Treat an unreadable entry like any other previous copy.
+  }
+  // Publish the pointer before letting go of the old copy: stage the link, move the copy aside,
+  // swap the link in, and restore the copy if the swap fails, so the path is never left empty.
+  const directory = path.dirname(legacyAppPath);
+  const suffix = crypto.randomBytes(6).toString("hex");
+  const stagedLink = path.join(directory, `${MAC_POINTER_STAGE_PREFIX}${suffix}`);
+  const retired = path.join(directory, `${MAC_REMOVED_ENTRY_PREFIX}${suffix}`);
+  try {
+    fs.symlinkSync(appPath, stagedLink);
+  } catch (error) {
+    emit(`Kept the previous ${TRITONAI_APP_DISPLAY_NAME} copy at ${legacyAppPath}; could not stage a pointer: ${error.message}`);
+    return;
+  }
+  try {
+    fs.renameSync(legacyAppPath, retired);
+  } catch (error) {
+    fs.rmSync(stagedLink, { force: true });
+    emit(`Kept the previous ${TRITONAI_APP_DISPLAY_NAME} copy at ${legacyAppPath}: ${error.message}`);
+    return;
+  }
+  try {
+    fs.renameSync(stagedLink, legacyAppPath);
+  } catch (error) {
+    try {
+      fs.renameSync(retired, legacyAppPath);
+    } catch {
+      // Neither the pointer nor the previous copy is in place. Keep the staged link as the marker
+      // the next run uses to publish the pointer before any leftover sweep.
+      emit(`Could not publish a pointer at ${legacyAppPath} or restore the previous copy; the next run will finish it: ${error.message}`);
+      return;
+    }
+    fs.rmSync(stagedLink, { force: true });
+    emit(`Kept the previous ${TRITONAI_APP_DISPLAY_NAME} copy at ${legacyAppPath}; could not publish a pointer: ${error.message}`);
+    return;
+  }
+  emit(`Pointed ${legacyAppPath} at ${appPath} so existing Dock icons and shortcuts keep working.`);
+  try {
+    fs.rmSync(retired, { recursive: true, force: true });
+  } catch (error) {
+    emit(`Could not finish deleting the previous ${TRITONAI_APP_DISPLAY_NAME} copy at ${retired}: ${error.message}`);
+  }
+}
+
+// Move the entry out of its public name first so a partial delete can never leave a broken bundle
+// behind; returns false only when the entry is still in place.
+function removeLegacyMacEntry(target, label, emit) {
+  if (!pathEntryExists(target)) return true;
+  const removed = path.join(path.dirname(target), `${MAC_REMOVED_ENTRY_PREFIX}${crypto.randomBytes(6).toString("hex")}`);
+  try {
+    fs.renameSync(target, removed);
+  } catch (error) {
+    emit(`Could not remove ${label} at ${target}: ${error.message}`);
+    return false;
+  }
+  try {
+    fs.rmSync(removed, { recursive: true, force: true });
+  } catch (error) {
+    emit(`Moved ${label} away from ${target} but could not finish deleting ${removed}: ${error.message}`);
+  }
+  emit(`Removed ${label} at ${target}.`);
+  return true;
+}
+
+function removeLegacyMacTransactionLeftovers(directory, names, emit, now = Date.now()) {
+  let entries;
+  try {
+    entries = fs.readdirSync(directory);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!names.some((name) => entry === name || (name.endsWith("-") && entry.startsWith(name)))) continue;
+    const target = path.join(directory, entry);
+    try {
+      if (now - fs.lstatSync(target).mtimeMs < MAC_LEFTOVER_MIN_AGE_MS) continue;
+    } catch {
+      continue;
+    }
+    removeLegacyMacEntry(target, "leftover install file", emit);
+  }
+}
+
+function isStableMacHarnessBundle(appPath) {
+  try {
+    if (fs.lstatSync(appPath).isSymbolicLink()) return false;
+    return readMacBundlePlistString(appPath, "CFBundleIdentifier") === MAC_APP_BUNDLE_ID;
+  } catch {
+    return false;
+  }
+}
+
+function isLegacyMacLauncher(appPath) {
+  try {
+    if (fs.lstatSync(appPath).isSymbolicLink()) return false;
+    return readMacBundlePlistString(appPath, "CFBundleIdentifier") === LEGACY_MAC_LAUNCHER_BUNDLE_ID;
+  } catch {
+    return false;
   }
 }
 
@@ -207,24 +587,22 @@ async function replaceMacAppTransactionally({
   emit,
   copyApp = null,
   validateStagedApp = null,
-  stopRunningApp = stopRunningManagedMacApp
+  stopRunningApp = stopRunningManagedMacApp,
+  runningAppPaths = null
+}: {
+  sourceAppPath: string;
+  managedAppPath: string;
+  emit: InstallerEmit;
+  copyApp?: ((source: string, target: string) => Promise<void>) | null;
+  validateStagedApp?: ((appPath: string) => Promise<void>) | null;
+  stopRunningApp?: (options: { emit: InstallerEmit; appPaths: ReadonlyArray<string> }) => Promise<void>;
+  runningAppPaths?: ReadonlyArray<string> | null;
 }) {
-  validateMacAppBundle(sourceAppPath, "Mounted");
+  validateMacAppBundle(sourceAppPath, "Source");
   const parent = path.dirname(managedAppPath);
   fs.mkdirSync(parent, { recursive: true });
   const journalPath = path.join(parent, MAC_APP_TRANSACTION_JOURNAL_FILE);
-  recoverInterruptedDirectoryTransaction({
-    journalPath,
-    kind: MAC_APP_TRANSACTION_KIND,
-    target: managedAppPath,
-    stagePrefix: MAC_APP_STAGE_PREFIX,
-    backupPrefix: MAC_APP_BACKUP_PREFIX,
-    validate: (candidate) => {
-      validateMacAppBundle(candidate, "Recovered");
-      return true;
-    },
-    emit
-  });
+  recoverInterruptedMacAppSwap(managedAppPath, emit);
   const stageRoot = fs.mkdtempSync(path.join(parent, MAC_APP_STAGE_PREFIX));
   const stagedAppPath = path.join(stageRoot, path.basename(managedAppPath));
   const backupRoot = fs.mkdtempSync(path.join(parent, MAC_APP_BACKUP_PREFIX));
@@ -256,7 +634,7 @@ async function replaceMacAppTransactionally({
     }
     emit(`Verified staged ${TRITONAI_APP_DISPLAY_NAME} app.`);
 
-    await stopRunningApp({ emit });
+    await stopRunningApp({ emit, appPaths: runningAppPaths || [path.resolve(managedAppPath)] });
     writeDirectoryTransactionJournal({
       journalPath,
       kind: MAC_APP_TRANSACTION_KIND,
@@ -276,7 +654,7 @@ async function replaceMacAppTransactionally({
     fs.renameSync(stagedAppPath, managedAppPath);
     replacementActivated = true;
     validateMacAppBundle(managedAppPath, "Installed");
-    emit(`Installed ${TRITONAI_APP_DISPLAY_NAME} app into its managed location.`);
+    emit(`Installed ${TRITONAI_APP_DISPLAY_NAME} app at ${managedAppPath}.`);
     replacementCompleted = true;
   } catch (error) {
     if (previousMoved) {
@@ -285,23 +663,40 @@ async function replaceMacAppTransactionally({
         fs.renameSync(previousAppPath, managedAppPath);
         previousMoved = false;
       } catch (rollbackError) {
-        throw new Error(
+        throw Object.assign(new Error(
           `Could not replace ${TRITONAI_APP_DISPLAY_NAME}: ${error.message}. `
           + `Rollback also failed: ${rollbackError.message}`
-        );
+        ), { rollbackFailed: true });
       }
     } else if (replacementActivated) {
       fs.rmSync(managedAppPath, { recursive: true, force: true });
     }
     throw error;
   } finally {
-    fs.rmSync(stageRoot, { recursive: true, force: true });
+    // Cleanup is best-effort. After a completed swap the new app is already active, and a backup
+    // this account can't delete (another account's old bundle) must not turn success into failure.
+    removeMacTransactionPath(stageRoot, emit);
     if (replacementCompleted || !previousMoved) {
-      fs.rmSync(backupRoot, { recursive: true, force: true });
+      removeMacTransactionPath(backupRoot, emit);
+      // A completed rollback must not leave a journal pointing at deleted recovery directories.
+      removeMacTransactionPath(journalPath, emit);
     }
-    // A completed rollback must not leave a journal pointing at deleted recovery directories.
-    if (replacementCompleted || !previousMoved) fs.rmSync(journalPath, { force: true });
   }
+}
+
+function recoverInterruptedMacAppSwap(appPath, emit) {
+  return recoverInterruptedDirectoryTransaction({
+    journalPath: path.join(path.dirname(appPath), MAC_APP_TRANSACTION_JOURNAL_FILE),
+    kind: MAC_APP_TRANSACTION_KIND,
+    target: appPath,
+    stagePrefix: MAC_APP_STAGE_PREFIX,
+    backupPrefix: MAC_APP_BACKUP_PREFIX,
+    validate: (candidate) => {
+      validateMacAppBundle(candidate, "Recovered");
+      return true;
+    },
+    emit
+  });
 }
 
 async function clearMacQuarantine(appPath, emit) {
@@ -310,6 +705,14 @@ async function clearMacQuarantine(appPath, emit) {
   const remaining = await runCapture("/usr/bin/find", [appPath, "-xattrname", "com.apple.quarantine"], emit, { shell: false });
   if (String(remaining).trim()) {
     throw new Error(`Could not clear the quarantine flag from the staged ${TRITONAI_APP_DISPLAY_NAME} app.`);
+  }
+}
+
+function removeMacTransactionPath(target, emit) {
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+  } catch (error) {
+    emit(`Could not remove leftover ${TRITONAI_APP_DISPLAY_NAME} install files at ${target}: ${error.message}`);
   }
 }
 
@@ -329,12 +732,33 @@ function readMacHarnessBundleIdentifier(appPath, emit) {
   return runCapture(MACOS_PLUTIL_PATH, macHarnessBundleIdentifierPlistArgs(appPath), emit, { shell: false });
 }
 
-async function stopRunningManagedMacApp({ emit }) {
+// Decides which running stable-bundle-id apps to quit. Kept dependency-free: its source is also
+// embedded in the AppKit script. A quarantined copy opened from Finder runs from a random
+// AppTranslocation folder, so match that by its exact stable bundle name; Nightly
+// ("TritonAI Harness (Nightly).app") shares the bundle id but never matches.
+function shouldQuitRunningMacHarness(bundlePath, targets) {
+  if (targets.indexOf(bundlePath) !== -1) return true;
+  return bundlePath.indexOf("/AppTranslocation/") !== -1 && /\/TritonAI Harness\.app$/.test(bundlePath);
+}
+
+async function stopRunningManagedMacApp({ emit, appPaths }: { emit: InstallerEmit; appPaths: ReadonlyArray<string> }) {
   if (process.platform !== "darwin") return;
+  // Match the exact bundle paths being replaced or retired (and where symlinks lead), never the
+  // bundle id alone: macOS Nightly deliberately shares the stable bundle id.
+  const targets = [...new Set(appPaths.flatMap((appPath) => {
+    try {
+      return [appPath, fs.realpathSync(appPath)];
+    } catch {
+      return [appPath];
+    }
+  }))];
   const script = `
 ObjC.import("AppKit");
+const targets = ${JSON.stringify(targets)};
+const shouldQuit = ${shouldQuitRunningMacHarness.toString()};
 const running = () => $.NSRunningApplication
-  .runningApplicationsWithBundleIdentifier("${MAC_APP_BUNDLE_ID}").js;
+  .runningApplicationsWithBundleIdentifier("${MAC_APP_BUNDLE_ID}").js
+  .filter((app) => !app.bundleURL.isNil() && shouldQuit(app.bundleURL.path.js, targets));
 for (const app of running()) app.terminate;
 for (let attempt = 0; attempt < 75 && running().length; attempt += 1) {
   $.NSThread.sleepForTimeInterval(0.2);
@@ -436,8 +860,8 @@ async function installWindowsDesktop({
     await publisherVerifier(installerPath, emit);
   } else {
     emit(
-      `WARNING: This Windows release intentionally contains an unsigned ${TRITONAI_APP_DISPLAY_NAME}. `
-      + "Its exact version and cryptographic release hash were verified, but Windows cannot verify a publisher until UC San Diego signing is available."
+      `Verified the bundled ${TRITONAI_APP_DISPLAY_NAME} installer by its exact version and pinned release hash; `
+      + "this release does not check a Windows publisher signature for it."
     );
   }
   await unblock(installerPath, emit);
@@ -525,226 +949,14 @@ function cleanupStaleWindowsUpgradeBackup({
   return true;
 }
 
-function writeMacAppLauncher(paths, emit, arch, options: MacLauncherOptions = {}) {
-  const launcherPath = options.launcherPath || MAC_TRITONAI_APP_PATH;
-  const parent = path.dirname(launcherPath);
-  fs.mkdirSync(parent, { recursive: true });
-  const managedAppPath = getManagedMacAppPath(paths);
-  const journalPath = path.join(parent, MAC_LAUNCHER_TRANSACTION_JOURNAL_FILE);
-  recoverInterruptedDirectoryTransaction({
-    journalPath,
-    kind: MAC_LAUNCHER_TRANSACTION_KIND,
-    target: launcherPath,
-    stagePrefix: MAC_LAUNCHER_STAGE_PREFIX,
-    backupPrefix: MAC_LAUNCHER_BACKUP_PREFIX,
-    validate: (candidate) => {
-      validateMacLauncherBundle(candidate, paths, managedAppPath, "Recovered");
-      return true;
-    },
-    emit
-  });
-  const stageRoot = fs.mkdtempSync(path.join(parent, MAC_LAUNCHER_STAGE_PREFIX));
-  const stagedLauncherPath = path.join(stageRoot, path.basename(launcherPath));
-  const backupRoot = fs.mkdtempSync(path.join(parent, MAC_LAUNCHER_BACKUP_PREFIX));
-  const previousLauncherPath = path.join(backupRoot, path.basename(launcherPath));
-  let previousMoved = false;
-  let replacementActivated = false;
-  let replacementCompleted = false;
-
-  try {
-    writeMacAppLauncherBundle(stagedLauncherPath, paths, emit, arch, managedAppPath);
-    validateMacLauncherBundle(stagedLauncherPath, paths, managedAppPath, "Staged");
-
-    writeDirectoryTransactionJournal({
-      journalPath,
-      kind: MAC_LAUNCHER_TRANSACTION_KIND,
-      target: launcherPath,
-      stageRoot,
-      backupRoot,
-      stagePrefix: MAC_LAUNCHER_STAGE_PREFIX,
-      backupPrefix: MAC_LAUNCHER_BACKUP_PREFIX,
-      stagedName: path.basename(launcherPath),
-      backupName: path.basename(launcherPath),
-      hadPrevious: fs.existsSync(launcherPath)
-    });
-
-    if (fs.existsSync(launcherPath)) {
-      fs.renameSync(launcherPath, previousLauncherPath);
-      previousMoved = true;
-    }
-    fs.renameSync(stagedLauncherPath, launcherPath);
-    replacementActivated = true;
-    validateMacLauncherBundle(launcherPath, paths, managedAppPath, "Installed");
-    replacementCompleted = true;
-    return launcherPath;
-  } catch (error) {
-    if (previousMoved) {
-      try {
-        fs.rmSync(launcherPath, { recursive: true, force: true });
-        fs.renameSync(previousLauncherPath, launcherPath);
-        previousMoved = false;
-      } catch (rollbackError) {
-        throw new Error(
-          `Could not replace ${TRITONAI_LAUNCHER_NAME} launcher: ${error.message}. `
-          + `Rollback also failed: ${rollbackError.message}`
-        );
-      }
-    } else if (replacementActivated) {
-      fs.rmSync(launcherPath, { recursive: true, force: true });
-    }
-    throw new Error(`Could not create ${TRITONAI_LAUNCHER_NAME} launcher app: ${error.message}`, { cause: error });
-  } finally {
-    fs.rmSync(stageRoot, { recursive: true, force: true });
-    if (replacementCompleted || !previousMoved) {
-      fs.rmSync(backupRoot, { recursive: true, force: true });
-    }
-    // A completed rollback must not leave a journal pointing at deleted recovery directories.
-    if (replacementCompleted || !previousMoved) fs.rmSync(journalPath, { force: true });
-  }
-}
-
-function writeMacAppLauncherBundle(launcherPath, paths, emit, arch, managedAppPath) {
-  const contentsDir = path.join(launcherPath, "Contents");
-  const macosDir = path.join(contentsDir, "MacOS");
-  const resourcesDir = path.join(contentsDir, "Resources");
-  const executablePath = path.join(macosDir, MAC_LAUNCHER_EXECUTABLE_NAME);
-  const nodeBinary = getNodeRuntimePaths(paths, "darwin", arch).nodeBinary;
-
-  fs.mkdirSync(macosDir, { recursive: true });
-  fs.mkdirSync(resourcesDir, { recursive: true });
-  const iconFile = copyMacLauncherIcon(managedAppPath, resourcesDir, emit)
-    ? MAC_LAUNCHER_ICON_FILE
-    : null;
-  fs.writeFileSync(path.join(contentsDir, "Info.plist"), macInfoPlist(iconFile));
-  fs.writeFileSync(executablePath, buildMacLauncherScript(paths, nodeBinary, managedAppPath), { mode: 0o755 });
-}
-
-function validateMacLauncherBundle(launcherPath, paths, managedAppPath, label) {
-  validateMacAppBundle(launcherPath, `${label} launcher`);
-  const executablePath = path.join(launcherPath, "Contents", "MacOS", MAC_LAUNCHER_EXECUTABLE_NAME);
-  if (process.platform === "darwin" && (fs.statSync(executablePath).mode & 0o111) === 0) {
-    throw new Error(`${label} ${TRITONAI_LAUNCHER_NAME} launcher is not executable.`);
-  }
-  const script = fs.readFileSync(executablePath, "utf8");
-  const managedApp = relativePathFromHome(paths.homeDir, managedAppPath);
-  if (!script.includes(`APP_PATH="$HOME/${managedApp}"`)) {
-    throw new Error(`${label} ${TRITONAI_LAUNCHER_NAME} launcher does not target the managed app.`);
-  }
-}
-
-function buildMacLauncherScript(paths, nodeBinary, managedAppPath) {
-  const envFile = relativePathFromHome(paths.homeDir, paths.envFile);
-  const t3Home = relativePathFromHome(paths.homeDir, paths.t3Home);
-  const managedNode = relativePathFromHome(paths.homeDir, nodeBinary);
-  const defaultsPatcher = relativePathFromHome(paths.homeDir, paths.t3DefaultsPatcher);
-  const managedApp = relativePathFromHome(paths.homeDir, managedAppPath);
-  return `#!/usr/bin/env sh
-set -eu
-if [ -f "$HOME/${envFile}" ]; then
-  # shellcheck disable=SC1090
-  . "$HOME/${envFile}"
-fi
-export TRITONAI_HOME="$HOME/${t3Home}"
-if [ -x "$HOME/${managedNode}" ] && [ -f "$HOME/${defaultsPatcher}" ]; then
-  "$HOME/${managedNode}" "$HOME/${defaultsPatcher}" >/dev/null 2>&1 || true
-elif [ -f "$HOME/${defaultsPatcher}" ]; then
-  node "$HOME/${defaultsPatcher}" >/dev/null 2>&1 || true
-fi
-APP_PATH="$HOME/${managedApp}"
-APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist")
-exec "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE" "$@"
-`;
-}
-
-function relativePathFromHome(homeDir, target) {
-  const relative = path.relative(path.resolve(homeDir), path.resolve(target));
-  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error(`Managed launcher path must stay inside the current user's home: ${target}`);
-  }
-  return relative.split(path.sep).join("/");
-}
-
-function getManagedMacAppPath(paths) {
+function getLegacyMacAppPath(paths) {
   return path.join(paths.ucsdRoot, "apps", MAC_MANAGED_APP_NAME);
 }
 
-function macInfoPlist(iconFile = MAC_LAUNCHER_ICON_FILE) {
-  const iconEntry = iconFile
-    ? `  <key>CFBundleIconFile</key>
-  <string>${escapeXml(iconFile)}</string>
-`
-    : "";
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key>
-  <string>${escapeXml(MAC_LAUNCHER_EXECUTABLE_NAME)}</string>
-  <key>CFBundleIdentifier</key>
-  <string>edu.ucsd.ai.tritonai-harness-launcher</string>
-  <key>CFBundleName</key>
-  <string>${escapeXml(TRITONAI_LAUNCHER_NAME)}</string>
-  <key>CFBundleDisplayName</key>
-  <string>${escapeXml(TRITONAI_LAUNCHER_NAME)}</string>
-${iconEntry}  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>12.0</string>
-</dict>
-</plist>
-`;
-}
-
-function copyMacLauncherIcon(managedAppPath, resourcesDir, emit: InstallerEmit = () => {}) {
-  const iconSource = getMacAppIconSource(managedAppPath);
-  if (!iconSource) {
-    emit(`Could not find a ${TRITONAI_APP_DISPLAY_NAME} app icon to copy from ${managedAppPath}.`);
-    return false;
-  }
-
-  fs.copyFileSync(iconSource, path.join(resourcesDir, MAC_LAUNCHER_ICON_FILE));
-  return true;
-}
-
-function getMacAppIconSource(appPath) {
-  const resourcesDir = path.join(appPath, "Contents", "Resources");
-  if (!fs.existsSync(resourcesDir)) return null;
-
-  const plistIconFile = readMacBundleIconFile(appPath);
-  for (const candidate of macIconCandidates(resourcesDir, plistIconFile)) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-
-  const fallback = fs.readdirSync(resourcesDir)
-    .filter((entry) => entry.toLowerCase().endsWith(".icns"))
-    .sort((left, right) => {
-      if (left === "icon.icns") return -1;
-      if (right === "icon.icns") return 1;
-      return left.localeCompare(right);
-    })[0];
-
-  return fallback ? path.join(resourcesDir, fallback) : null;
-}
-
-function readMacBundleIconFile(appPath) {
-  const plistPath = path.join(appPath, "Contents", "Info.plist");
-  if (!fs.existsSync(plistPath)) return null;
-
-  const plist = fs.readFileSync(plistPath, "utf8");
-  const match = plist.match(/<key>\s*CFBundleIconFile\s*<\/key>\s*<string>\s*([^<]+)\s*<\/string>/);
-  return match ? match[1].trim() : null;
-}
-
-function macIconCandidates(resourcesDir, iconFile) {
-  if (!iconFile) return [];
-
-  const candidates = [iconFile];
-  if (!iconFile.toLowerCase().endsWith(".icns")) {
-    candidates.push(`${iconFile}.icns`);
-  }
-
-  return candidates.map((entry) => path.join(resourcesDir, entry));
+function readMacBundlePlistString(appPath, key) {
+  const plist = fs.readFileSync(path.join(appPath, "Contents", "Info.plist"), "utf8");
+  const match = plist.match(new RegExp(`<key>\\s*${escapeRegExp(key)}\\s*</key>\\s*<string>\\s*([^<]+?)\\s*</string>`));
+  return match ? match[1] : null;
 }
 
 function buildWindowsEnvironmentScript(paths) {
@@ -1399,15 +1611,6 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function escapeXml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&apos;");
-}
-
 function clean(chunk) {
   return chunk.toString("utf8").replace(/\n+$/g, "");
 }
@@ -1421,22 +1624,21 @@ module.exports = {
   installWindowsDesktop,
   replaceMacAppTransactionally,
   verifyExpectedMacHarnessPublisher,
-  installMacAppLauncher,
-  writeMacAppLauncher,
+  installMacApp,
+  removeLegacyMacInstall,
+  shouldQuitRunningMacHarness,
+  canCreateEntriesIn,
   getBundledMacDmg,
   getBundledWindowsInstaller,
   parseLatestYml,
   selectMacDmg,
   selectWindowsInstaller,
-  macInfoPlist,
-  getMacAppIconSource,
-  buildMacLauncherScript,
   buildWindowsEnvironmentScript,
   buildWindowsDesktopShortcutScript,
   findWindowsT3CodeApp,
   normalizeWindowsAppVersion,
   verifyExpectedWindowsHarnessPublisher,
-  getManagedMacAppPath,
+  getLegacyMacAppPath,
   cleanupStaleWindowsUpgradeBackup,
   resolveCommandShell,
   runWindowsInstaller,
