@@ -41,6 +41,7 @@ async function main() {
   assertRunningHarnessMatchingSparesNightly();
   assertFailedPointerKeepsThePreviousCopy();
   assertInterruptedPointerSwapIsRepaired();
+  assertDoubleFailedPointerSwapIsRepairedNextRun();
   await assertSharedInstallRedirectsThePerUserCopy();
   if (process.platform === "darwin") {
     await assertMacAppCopyDropsQuarantine();
@@ -762,6 +763,36 @@ function writeStableMacHarness(appPath, version) {
     "</plist>",
     ""
   ].join("\n"));
+}
+
+function assertDoubleFailedPointerSwapIsRepairedNextRun() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-pointer-double-"));
+  const originalRenameSync = fs.renameSync;
+  try {
+    const paths = getPaths(tempRoot, "darwin");
+    const legacyApp = getLegacyMacAppPath(paths);
+    const sharedApp = path.join(tempRoot, "SystemApplications", "TritonAI Harness.app");
+    writeMacApp(legacyApp, "previous-copy");
+    writeMacApp(sharedApp, "installed");
+    // Publishing the link and restoring the retired copy both fail.
+    fs.renameSync = (source, target) => {
+      if (String(target) === legacyApp) throw Object.assign(new Error("EIO: simulated failure"), { code: "EIO" });
+      return originalRenameSync(source, target);
+    };
+    const events = [];
+    removeLegacyMacInstallForTest({ paths, appPath: sharedApp, systemApplicationsDir: path.dirname(sharedApp), events });
+    fs.renameSync = originalRenameSync;
+    assert(events.some((message) => message.includes("the next run will finish it")));
+    assert(
+      fs.readdirSync(path.dirname(legacyApp)).some((entry) => entry.startsWith(".tritonai-harness-pointer-")),
+      "the staged link must survive as the recovery marker"
+    );
+    removeLegacyMacInstallForTest({ paths, appPath: sharedApp, systemApplicationsDir: path.dirname(sharedApp), events: [] });
+    assertPointsAt(legacyApp, sharedApp, "the next run must publish the pointer");
+  } finally {
+    fs.renameSync = originalRenameSync;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertPointsAt(link, target, message) {

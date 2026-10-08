@@ -507,7 +507,10 @@ function pointLegacyMacAppAt(legacyAppPath, appPath, emit) {
     try {
       fs.renameSync(retired, legacyAppPath);
     } catch {
-      // Leave the retired copy for the next run's recovery sweep rather than guess.
+      // Neither the pointer nor the previous copy is in place. Keep the staged link as the marker
+      // the next run uses to publish the pointer before any leftover sweep.
+      emit(`Could not publish a pointer at ${legacyAppPath} or restore the previous copy; the next run will finish it: ${error.message}`);
+      return;
     }
     fs.rmSync(stagedLink, { force: true });
     emit(`Kept the previous ${TRITONAI_APP_DISPLAY_NAME} copy at ${legacyAppPath}; could not publish a pointer: ${error.message}`);
