@@ -41,6 +41,7 @@ async function main() {
   assertRunningHarnessMatchingSparesNightly();
   assertFailedPointerKeepsThePreviousCopy();
   assertInterruptedPointerSwapIsRepaired();
+  await assertSharedInstallRedirectsThePerUserCopy();
   if (process.platform === "darwin") {
     await assertMacAppCopyDropsQuarantine();
     await assertMacAppCopyClearsDirectQuarantine();
@@ -710,6 +711,44 @@ function assertInterruptedPointerSwapIsRepaired() {
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+async function assertSharedInstallRedirectsThePerUserCopy() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-user-to-shared-"));
+  try {
+    const paths = getPaths(tempRoot, "darwin");
+    const systemApplicationsDir = path.join(tempRoot, "SystemApplications");
+    const sharedApp = path.join(systemApplicationsDir, "TritonAI Harness.app");
+    const userApp = path.join(paths.homeDir, "Applications", "TritonAI Harness.app");
+    const sourceApp = path.join(tempRoot, "mounted", "TritonAI Harness.app");
+    writeMacApp(sourceApp, "bundled");
+    writeStableMacHarness(userApp, "earlier-standard-account-copy");
+    fs.mkdirSync(systemApplicationsDir, { recursive: true });
+    await installMacApp({
+      sourceAppPath: sourceApp,
+      paths,
+      emit: () => {},
+      runtime: { systemApplicationsDir, replaceApp: replaceMacAppWithoutHostChecks, readAppVersion: async () => null }
+    });
+    assert.strictEqual(readMacAppVersion(sharedApp), "bundled");
+    assertPointsAt(userApp, sharedApp, "Dock icons for the earlier per-user copy must open the shared install");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function writeStableMacHarness(appPath, version) {
+  writeMacApp(appPath, version);
+  fs.writeFileSync(path.join(appPath, "Contents", "Info.plist"), [
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+    "<plist version=\"1.0\">",
+    "<dict>",
+    "  <key>CFBundleIdentifier</key>",
+    "  <string>edu.ucsd.tritonai.harness</string>",
+    "</dict>",
+    "</plist>",
+    ""
+  ].join("\n"));
 }
 
 function assertPointsAt(link, target, message) {

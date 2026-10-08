@@ -394,6 +394,14 @@ function removeLegacyMacInstall({ paths, appPath, applicationsDirs, emit }) {
     ], emit);
   }
 
+  // An earlier standard-account install left a real copy in ~/Applications. Now that the shared
+  // copy is installed, point the per-user one at it so its Dock icons open the current version.
+  // (Never the reverse: the shared copy must not be pointed into one account's home.)
+  const userAppPath = path.join(paths.homeDir, "Applications", MAC_MANAGED_APP_NAME);
+  if (path.resolve(userAppPath) !== path.resolve(appPath) && isStableMacHarnessBundle(userAppPath)) {
+    pointLegacyMacAppAt(userAppPath, appPath, emit);
+  }
+
   const legacyAppPath = getLegacyMacAppPath(paths);
   const legacyAppsDir = path.dirname(legacyAppPath);
   if (fs.existsSync(path.join(legacyAppsDir, MAC_APP_TRANSACTION_JOURNAL_FILE))) {
@@ -542,6 +550,15 @@ function removeLegacyMacTransactionLeftovers(directory, names, emit, now = Date.
       continue;
     }
     removeLegacyMacEntry(target, "leftover install file", emit);
+  }
+}
+
+function isStableMacHarnessBundle(appPath) {
+  try {
+    if (fs.lstatSync(appPath).isSymbolicLink()) return false;
+    return readMacBundlePlistString(appPath, "CFBundleIdentifier") === MAC_APP_BUNDLE_ID;
+  } catch {
+    return false;
   }
 }
 
