@@ -38,6 +38,8 @@ async function main() {
   await assertMacAppNeverDowngradesATrustedNewerCopy();
   await assertMacAppSwapSurvivesUndeletableBackup();
   assertLegacyLauncherRemovalNeverHalfDeletes();
+  assertRunningHarnessMatchingSparesNightly();
+  assertFailedPointerKeepsThePreviousCopy();
   if (process.platform === "darwin") {
     await assertMacAppCopyDropsQuarantine();
     await assertMacAppCopyClearsDirectQuarantine();
@@ -624,6 +626,57 @@ function removeLegacyMacInstallForTest({ paths, appPath, systemApplicationsDir, 
     applicationsDirs: [systemApplicationsDir, path.join(paths.homeDir, "Applications")],
     emit: (message) => events.push(message)
   });
+}
+
+function assertRunningHarnessMatchingSparesNightly() {
+  const { shouldQuitRunningMacHarness } = require("../src/installer/t3code-desktop");
+  const targets = ["/Applications/TritonAI Harness.app", "/Users/a/.agents/ucsd/apps/TritonAI Harness.app"];
+  assert.strictEqual(shouldQuitRunningMacHarness("/Applications/TritonAI Harness.app", targets), true);
+  assert.strictEqual(shouldQuitRunningMacHarness("/Users/a/.agents/ucsd/apps/TritonAI Harness.app", targets), true);
+  assert.strictEqual(
+    shouldQuitRunningMacHarness("/private/var/folders/x/T/AppTranslocation/ABC/d/TritonAI Harness.app", targets),
+    true,
+    "a translocated quarantined copy must be quit before its replacement"
+  );
+  assert.strictEqual(shouldQuitRunningMacHarness("/Applications/TritonAI Harness (Nightly).app", targets), false);
+  assert.strictEqual(
+    shouldQuitRunningMacHarness("/private/var/folders/x/T/AppTranslocation/ABC/d/TritonAI Harness (Nightly).app", targets),
+    false,
+    "Nightly shares the bundle id but must never be quit"
+  );
+  assert.strictEqual(shouldQuitRunningMacHarness("/Users/a/Downloads/TritonAI Harness.app", targets), false);
+}
+
+function assertFailedPointerKeepsThePreviousCopy() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-mac-pointer-"));
+  const originalSymlinkSync = fs.symlinkSync;
+  try {
+    const paths = getPaths(tempRoot, "darwin");
+    const legacyApp = getLegacyMacAppPath(paths);
+    const sharedApp = path.join(tempRoot, "SystemApplications", "TritonAI Harness.app");
+    writeMacApp(legacyApp, "previous-copy");
+    writeMacApp(sharedApp, "installed");
+    fs.symlinkSync = () => {
+      throw Object.assign(new Error("ENOSPC: no space left on device, symlink"), { code: "ENOSPC" });
+    };
+    const events = [];
+    removeLegacyMacInstallForTest({ paths, appPath: sharedApp, systemApplicationsDir: path.dirname(sharedApp), events });
+    fs.symlinkSync = originalSymlinkSync;
+    assert.strictEqual(
+      readMacAppVersion(legacyApp),
+      "previous-copy",
+      "if the pointer can't be created, the old copy that shortcuts open must stay in place"
+    );
+    assert(events.some((message) => message.includes("could not stage a pointer")));
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(legacyApp)).filter((entry) => entry.startsWith(".")),
+      [],
+      "no staged pointer or retired copy may be left behind"
+    );
+  } finally {
+    fs.symlinkSync = originalSymlinkSync;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function assertPointsAt(link, target, message) {

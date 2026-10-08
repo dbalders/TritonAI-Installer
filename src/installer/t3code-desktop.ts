@@ -56,6 +56,7 @@ const MAC_APP_BACKUP_PREFIX = ".tritonai-harness-backup-";
 const MAC_APP_TRANSACTION_KIND = "managed TritonAI Harness app";
 const MAC_APPLICATIONS_WRITE_PROBE_PREFIX = ".tritonai-harness-write-probe-";
 const MAC_REMOVED_ENTRY_PREFIX = ".tritonai-harness-removed-";
+const MAC_POINTER_STAGE_PREFIX = ".tritonai-harness-pointer-";
 const MAC_LEFTOVER_MIN_AGE_MS = 60 * 60 * 1000;
 // Earlier Installers wrote an unsigned shell launcher into Applications and kept the
 // signed app under ~/.agents/ucsd/apps. These names identify what upgrades must clean up.
@@ -413,7 +414,8 @@ function removeLegacyMacInstall({ paths, appPath, applicationsDirs, emit }) {
     MAC_APP_TRANSACTION_JOURNAL_FILE,
     MAC_APP_STAGE_PREFIX,
     MAC_APP_BACKUP_PREFIX,
-    MAC_REMOVED_ENTRY_PREFIX
+    MAC_REMOVED_ENTRY_PREFIX,
+    MAC_POINTER_STAGE_PREFIX
   ], emit);
   try {
     if (fs.existsSync(legacyAppsDir) && fs.readdirSync(legacyAppsDir).length === 0) fs.rmdirSync(legacyAppsDir);
@@ -440,12 +442,42 @@ function pointLegacyMacAppAt(legacyAppPath, appPath, emit) {
   } catch {
     // Treat an unreadable entry like any other previous copy.
   }
-  if (!removeLegacyMacEntry(legacyAppPath, `previous ${TRITONAI_APP_DISPLAY_NAME} copy`, emit)) return;
+  // Publish the pointer before letting go of the old copy: stage the link, move the copy aside,
+  // swap the link in, and restore the copy if the swap fails, so the path is never left empty.
+  const directory = path.dirname(legacyAppPath);
+  const suffix = crypto.randomBytes(6).toString("hex");
+  const stagedLink = path.join(directory, `${MAC_POINTER_STAGE_PREFIX}${suffix}`);
+  const retired = path.join(directory, `${MAC_REMOVED_ENTRY_PREFIX}${suffix}`);
   try {
-    fs.symlinkSync(appPath, legacyAppPath);
-    emit(`Pointed ${legacyAppPath} at ${appPath} so existing Dock icons and shortcuts keep working.`);
+    fs.symlinkSync(appPath, stagedLink);
   } catch (error) {
-    emit(`Could not leave a pointer at ${legacyAppPath}: ${error.message}`);
+    emit(`Kept the previous ${TRITONAI_APP_DISPLAY_NAME} copy at ${legacyAppPath}; could not stage a pointer: ${error.message}`);
+    return;
+  }
+  try {
+    fs.renameSync(legacyAppPath, retired);
+  } catch (error) {
+    fs.rmSync(stagedLink, { force: true });
+    emit(`Kept the previous ${TRITONAI_APP_DISPLAY_NAME} copy at ${legacyAppPath}: ${error.message}`);
+    return;
+  }
+  try {
+    fs.renameSync(stagedLink, legacyAppPath);
+  } catch (error) {
+    try {
+      fs.renameSync(retired, legacyAppPath);
+    } catch {
+      // Leave the retired copy for the next run's recovery sweep rather than guess.
+    }
+    fs.rmSync(stagedLink, { force: true });
+    emit(`Kept the previous ${TRITONAI_APP_DISPLAY_NAME} copy at ${legacyAppPath}; could not publish a pointer: ${error.message}`);
+    return;
+  }
+  emit(`Pointed ${legacyAppPath} at ${appPath} so existing Dock icons and shortcuts keep working.`);
+  try {
+    fs.rmSync(retired, { recursive: true, force: true });
+  } catch (error) {
+    emit(`Could not finish deleting the previous ${TRITONAI_APP_DISPLAY_NAME} copy at ${retired}: ${error.message}`);
   }
 }
 
@@ -648,6 +680,15 @@ function readMacHarnessBundleIdentifier(appPath, emit) {
   return runCapture(MACOS_PLUTIL_PATH, macHarnessBundleIdentifierPlistArgs(appPath), emit, { shell: false });
 }
 
+// Decides which running stable-bundle-id apps to quit. Kept dependency-free: its source is also
+// embedded in the AppKit script. A quarantined copy opened from Finder runs from a random
+// AppTranslocation folder, so match that by its exact stable bundle name; Nightly
+// ("TritonAI Harness (Nightly).app") shares the bundle id but never matches.
+function shouldQuitRunningMacHarness(bundlePath, targets) {
+  if (targets.indexOf(bundlePath) !== -1) return true;
+  return bundlePath.indexOf("/AppTranslocation/") !== -1 && /\/TritonAI Harness\.app$/.test(bundlePath);
+}
+
 async function stopRunningManagedMacApp({ emit, appPaths }: { emit: InstallerEmit; appPaths: ReadonlyArray<string> }) {
   if (process.platform !== "darwin") return;
   // Match the exact bundle paths being replaced or retired (and where symlinks lead), never the
@@ -662,9 +703,10 @@ async function stopRunningManagedMacApp({ emit, appPaths }: { emit: InstallerEmi
   const script = `
 ObjC.import("AppKit");
 const targets = ${JSON.stringify(targets)};
+const shouldQuit = ${shouldQuitRunningMacHarness.toString()};
 const running = () => $.NSRunningApplication
   .runningApplicationsWithBundleIdentifier("${MAC_APP_BUNDLE_ID}").js
-  .filter((app) => !app.bundleURL.isNil() && targets.includes(app.bundleURL.path.js));
+  .filter((app) => !app.bundleURL.isNil() && shouldQuit(app.bundleURL.path.js, targets));
 for (const app of running()) app.terminate;
 for (let attempt = 0; attempt < 75 && running().length; attempt += 1) {
   $.NSThread.sleepForTimeInterval(0.2);
@@ -1532,6 +1574,7 @@ module.exports = {
   verifyExpectedMacHarnessPublisher,
   installMacApp,
   removeLegacyMacInstall,
+  shouldQuitRunningMacHarness,
   canCreateEntriesIn,
   getBundledMacDmg,
   getBundledWindowsInstaller,
