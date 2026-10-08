@@ -123,6 +123,10 @@ function stageSkillsFromSource({ sourceRoot, sourceSubdir = "", vendorDir, sourc
       });
     }
 
+    if (sourceInfo && sourceInfo.dirty !== true && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(sourceInfo.commit || "")) {
+      copyCanonicalGitBytes(skillsSource, stagingDir, skillNames, sourceInfo.commit);
+    }
+
     const manifest = {
       ...createManagedSkillsManifest(skillNames),
       ...(sourceInfo ? { source: sanitizeSourceInfo(sourceInfo) } : {})
@@ -135,6 +139,34 @@ function stageSkillsFromSource({ sourceRoot, sourceSubdir = "", vendorDir, sourc
   }
 
   return { source: sanitizeSourceInfo(sourceInfo), skills: skillNames };
+}
+
+function copyCanonicalGitBytes(skillsSource, stagingDir, skillNames, commit) {
+  if (getGitValue(skillsSource, ["rev-parse", "HEAD"]) !== commit ||
+      getGitValue(skillsSource, ["status", "--porcelain"]) !== "") {
+    throw new Error("Canonical secure skills staging requires the identified clean Git checkout.");
+  }
+  const options = { cwd: skillsSource, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 };
+  const prefix = execFileSync("git", ["rev-parse", "--show-prefix"], {
+    ...options, encoding: "utf8"
+  }).replace(/\r?\n$/, "");
+  const entries = execFileSync("git", [
+    "ls-tree", "-r", "-z", "--full-tree", commit, "--",
+    ...skillNames.map((name) => `${prefix}${name}/`)
+  ], { ...options, encoding: "utf8" }).split("\0").filter(Boolean);
+
+  // Checkout filters (including Windows autocrlf) must not change release payload bytes.
+  for (const entry of entries) {
+    const separator = entry.indexOf("\t");
+    const [mode, type, object] = entry.slice(0, separator).split(" ");
+    const repositoryPath = entry.slice(separator + 1);
+    const stagedFile = path.join(stagingDir, repositoryPath.slice(prefix.length));
+    if (!fs.existsSync(stagedFile)) continue;
+    if (type !== "blob" || !["100644", "100755"].includes(mode) || !fs.lstatSync(stagedFile).isFile()) {
+      throw new Error(`Secure skills Git entry must be a regular file: ${repositoryPath}`);
+    }
+    fs.writeFileSync(stagedFile, execFileSync("git", ["cat-file", "blob", object], options));
+  }
 }
 
 function assertCanonicalLocalSecureSkillsSource(sourceRoot) {
@@ -327,6 +359,8 @@ module.exports = {
   assertCanonicalLocalSecureSkillsSource,
   assertCanonicalSecureSkillsRepository,
   assertReleaseSkillsSourceInfo,
+  cloneSecureRepository,
+  getLocalSourceInfo,
   findPackagedSkillNames,
   findSkillsSourceDir,
   findLocalSkillsSource,

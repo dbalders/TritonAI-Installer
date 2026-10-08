@@ -21,13 +21,16 @@ const {
   getEffectiveRepositoryUrl,
   sanitizeRepositoryUrl,
   readRequireCleanSource,
-  stageSkillsFromSource
+  stageSkillsFromSource,
+  cloneSecureRepository,
+  getLocalSourceInfo
 } = require("./prepare-skills-vendor");
 
 function main() {
   assertReleaseSourceRequirements();
   assertSecureRepositoryProvenance();
   assertRootSecureRepositoryStaging();
+  assertCanonicalGitBytesStaging();
   assertVendorActivationFailureRestoresPreviousBundle();
   assertRepositoryUrlSanitization();
   assertPreservesUnownedAndMigratesLegacyManifest();
@@ -292,6 +295,95 @@ function assertRepositoryUrlSanitization() {
     sanitizeRepositoryUrl("secret-token@github.com:dbalders/UCSD-Skills-Library-Secure.git?token=also-secret"),
     "github.com:dbalders/UCSD-Skills-Library-Secure.git"
   );
+}
+
+function assertCanonicalGitBytesStaging() {
+  const { createHash } = require("crypto");
+  const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  withTempRoot("tritonai-skills-git-bytes-", (tempRoot) => {
+    for (const subdir of ["", "nested skills"]) {
+      const repository = path.join(tempRoot, subdir ? "nested-repo" : "root-repo");
+      const skillRelative = path.posix.join(subdir, "secure-chart");
+      const skillRoot = path.join(repository, skillRelative);
+      writeSkill(skillRoot, "secure-chart", "canonical");
+      const chartRoot = path.join(skillRoot, "assets", "helm-chart");
+      fs.mkdirSync(chartRoot, { recursive: true });
+      const canonical = new Map();
+      for (let index = 0; index < 10; index += 1) {
+        canonical.set(`chart-${index}.yaml`, Buffer.from(`value: ${index}\nsecond: line\n`));
+      }
+      canonical.set("checksums.sha256", Buffer.from(
+        [...canonical].map(([name, bytes]) => `${hash(bytes)}  ${name}\n`).join("")
+      ));
+      canonical.set("binary.dat", Buffer.from([0, 13, 10, 255, 10]));
+      canonical.set("intentional-crlf.txt", Buffer.from("committed\r\nbytes\r\n"));
+      for (const [name, bytes] of canonical) fs.writeFileSync(path.join(chartRoot, name), bytes);
+      fs.writeFileSync(path.join(repository, ".gitattributes"),
+        "* text=auto\n*.dat -text\nintentional-crlf.txt -text\n");
+      const git = (args) => execFileSync("git", args, { cwd: repository, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      git(["init"]);
+      git(["-c", "core.autocrlf=false", "add", "."]);
+      git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Canonical fixture"]);
+      const commit = git(["rev-parse", "HEAD"]);
+      for (const autocrlf of ["false", "true"]) {
+        const checkout = path.join(tempRoot, `${subdir ? "nested" : "root"}-${autocrlf}`);
+        const previousParameters = process.env.GIT_CONFIG_PARAMETERS;
+        try {
+          process.env.GIT_CONFIG_PARAMETERS = `'core.autocrlf=${autocrlf}'`;
+          cloneSecureRepository(repository, git(["branch", "--show-current"]), checkout);
+        } finally {
+          if (previousParameters === undefined) delete process.env.GIT_CONFIG_PARAMETERS;
+          else process.env.GIT_CONFIG_PARAMETERS = previousParameters;
+        }
+        const sourceChart = path.join(checkout, skillRelative, "assets", "helm-chart");
+        const checkoutBytes = fs.readFileSync(path.join(sourceChart, "chart-0.yaml"));
+        assert.strictEqual(checkoutBytes.includes(Buffer.from("\r\n")), autocrlf === "true");
+        const checkoutHashes = [...canonical].map(([name]) => hash(fs.readFileSync(path.join(sourceChart, name))));
+        // A CI/local checkout and the clone fallback share the same staging boundary.
+        const localInfo = getLocalSourceInfo(checkout);
+        assert.strictEqual(localInfo.commit, commit);
+        assert.strictEqual(localInfo.dirty, false);
+        const sourceInfo = { type: "local", commit, dirty: localInfo.dirty };
+        const vendorDir = path.join(tempRoot, `vendor-${subdir ? "nested" : "root"}-${autocrlf}`);
+        stageSkillsFromSource({ sourceRoot: checkout, sourceSubdir: subdir, vendorDir, sourceInfo });
+        const stagedChart = path.join(vendorDir, "secure-chart", "assets", "helm-chart");
+        for (const [name, bytes] of canonical) {
+          assert.deepStrictEqual(fs.readFileSync(path.join(stagedChart, name)), bytes,
+            `Staging must preserve Git blob bytes for ${autocrlf}/${name}`);
+        }
+        for (const line of fs.readFileSync(path.join(stagedChart, "checksums.sha256"), "utf8").trim().split("\n")) {
+          const [expected, name] = line.split("  ");
+          assert.strictEqual(hash(fs.readFileSync(path.join(stagedChart, name))), expected);
+        }
+        assert.strictEqual(readJson(path.join(vendorDir, "manifest.json")).source.commit, commit);
+        const cloneVendor = `${vendorDir}-clone`;
+        stageSkillsFromSource({
+          sourceRoot: checkout, sourceSubdir: subdir, vendorDir: cloneVendor,
+          sourceInfo: { type: "git", commit, ref: git(["branch", "--show-current"]) }
+        });
+        for (const [name, bytes] of canonical) {
+          assert.deepStrictEqual(fs.readFileSync(path.join(cloneVendor, "secure-chart", "assets", "helm-chart", name)), bytes);
+        }
+        assert.strictEqual(readJson(path.join(cloneVendor, "manifest.json")).source.commit, commit);
+        assert.deepStrictEqual([...canonical].map(([name]) => hash(fs.readFileSync(path.join(sourceChart, name)))), checkoutHashes,
+          "Preparation must not rewrite the source checkout");
+        const previousManifest = fs.readFileSync(path.join(vendorDir, "manifest.json"));
+        assert.throws(() => stageSkillsFromSource({
+          sourceRoot: checkout, sourceSubdir: subdir, vendorDir,
+          sourceInfo: { ...sourceInfo, commit: "a".repeat(40) }
+        }), /identified clean Git checkout/);
+        assert.deepStrictEqual(fs.readFileSync(path.join(vendorDir, "manifest.json")), previousManifest);
+        fs.appendFileSync(path.join(checkout, skillRelative, "SKILL.md"), "development edit\n");
+        assert.throws(() => stageSkillsFromSource({
+          sourceRoot: checkout, sourceSubdir: subdir, vendorDir, sourceInfo
+        }), /identified clean Git checkout/);
+        assert.deepStrictEqual(fs.readFileSync(path.join(vendorDir, "manifest.json")), previousManifest);
+        assert.throws(() => assertReleaseSkillsSourceInfo({ ...sourceInfo, dirty: true }), /dirty/);
+        stageSkillsFromSource({ sourceRoot: checkout, sourceSubdir: subdir, vendorDir, sourceInfo: { ...sourceInfo, dirty: true } });
+        assert(fs.readFileSync(path.join(vendorDir, "secure-chart", "SKILL.md"), "utf8").includes("development edit"));
+      }
+    }
+  });
 }
 
 function assertRootSecureRepositoryStaging() {
