@@ -1,6 +1,6 @@
 # GitHub Installer releases
 
-The `Installer release` workflow builds macOS arm64 and Windows x64 on GitHub-hosted runners. Harness must already be published. The workflow creates a verified **draft**; publication remains a separate release action.
+The `Installer release` workflow builds macOS arm64 and Windows x64 on GitHub-hosted runners. Harness defaults to published stable assets. An explicit `workflow_artifacts` source also accepts immutable inputs from a successful stable Harness release workflow while both products remain drafts. The workflow creates a verified **draft**; publication remains a separate release action.
 
 ## One-time configuration
 
@@ -39,3 +39,13 @@ Installer 0.3.5 requires the Plugins `v0.1.8` catalog update (GitHub `1.0.2`, Go
 Select the successful stable `release.yml` run and exact tag commit after Harness publication; nightly validation runs do not satisfy the stable release prerequisite. Recheck the published artifacts and their retention before dispatch. Select a reviewed secure-skills commit separately; packaging enforces clean-source provenance and the exact selected commit.
 
 The optional `Request Installer release` workflow also dispatches the release using GitHub's built-in Actions token. It has no signing or private-input secrets. Both signing environments allow only the `main` branch and do not require per-build approval. Public publication remains a separate action after draft verification and UAT.
+
+## Build both products as drafts
+
+After Harness `release.yml` succeeds, set `harness_source=workflow_artifacts` with its exact stable version, successful run ID, tag commit and reviewed secure-skills commit. The existing release-input App uses only its current Actions read and Contents read permissions; no new credentials or permission grants are needed.
+
+Preflight verifies the successful stable workflow and public tag SHA, then freezes the run attempt and both platform artifact IDs, sizes and SHA-256 ZIP digests. Packaging downloads those artifact IDs through authenticated Actions access and verifies each complete ZIP before extraction. Existing manifest hashes, exact run-byte binding, plugin composition, bundled Codex policy, signatures, notarization and native boot gates still apply. Final verification rejects changed run attempts, artifact identities or tag source before creating the Installer draft.
+
+The workflow cannot inspect private Harness draft state with its read-only App. The release operator must verify that the intended Harness release remains a draft before dispatch and after both builds; this input mode establishes immutable workflow provenance, not release publication state. The Installer workflow always creates a draft.
+
+Do not create the Installer draft before dispatch: preflight rejects any existing Installer release. Commit the intended Installer package version on main first. The default `published` source retains the published-Harness requirement.

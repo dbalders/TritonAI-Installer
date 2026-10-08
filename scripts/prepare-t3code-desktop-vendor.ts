@@ -1,6 +1,7 @@
 import { verifyPackagedCodexPolicy } from "./verify-packaged-codex-policy";
 import { verifyHarnessRunArtifacts } from "./verify-harness-run-artifacts";
 const crypto = require("crypto");
+const { pathToFileURL } = require("node:url");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -45,12 +46,15 @@ function publishedPluginCompositionFile(platform, arch) {
 
 function readHarnessSourceEnvironment(env: NodeJS.ProcessEnv = {}) {
   const expectedVersion = env.TRITONAI_HARNESS_VERSION || "";
-  const releaseBase = env.TRITONAI_HARNESS_RELEASE_BASE || "";
+  const source = env.HARNESS_SOURCE || "published";
+  if (!["published", "workflow_artifacts"].includes(source)) throw new Error("Unknown Harness release source.");
+  if (source === "workflow_artifacts" && (!env.TRITONAI_HARNESS_RUN_ARTIFACT_DIR || !env.HARNESS_WORKFLOW_RECEIPT)) throw new Error("Workflow Harness requires authenticated run artifacts and a frozen provenance receipt.");
+  const releaseBase = source === "workflow_artifacts" ? pathToFileURL(path.resolve(env.TRITONAI_HARNESS_RUN_ARTIFACT_DIR!)).href : env.TRITONAI_HARNESS_RELEASE_BASE || "";
   return {
     expectedHarnessVersion: expectedVersion,
     defaultReleaseBase: releaseBase,
-    macReleaseBase: env.TRITONAI_HARNESS_MAC_RELEASE_BASE || releaseBase,
-    winReleaseBase: env.TRITONAI_HARNESS_WIN_RELEASE_BASE || releaseBase
+    macReleaseBase: source === "workflow_artifacts" ? releaseBase : env.TRITONAI_HARNESS_MAC_RELEASE_BASE || releaseBase,
+    winReleaseBase: source === "workflow_artifacts" ? releaseBase : env.TRITONAI_HARNESS_WIN_RELEASE_BASE || releaseBase
   };
 }
 

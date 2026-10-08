@@ -6,15 +6,23 @@ on:
       installer_version:
         description: Stable version matching package.json on main
         required: true
-        default: '0.3.5'
+        default: '0.3.6'
         type: string
       harness_version:
-        description: Published stable Harness version
+        description: Stable Harness version
         required: true
-        default: '0.3.5'
+        default: '0.3.6'
         type: string
+      harness_source:
+        description: Published stable assets or authenticated successful workflow artifacts
+        required: true
+        default: published
+        type: choice
+        options:
+          - published
+          - workflow_artifacts
       harness_run_id:
-        description: Successful Harness release.yml run that produced the published assets
+        description: Successful exact-source Harness release.yml run
         required: true
         type: string
       harness_commit:
