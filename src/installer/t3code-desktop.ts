@@ -370,6 +370,20 @@ function canCreateEntriesIn(directory) {
 // Cleanup runs only after the new app is active and is best-effort: a leftover legacy file must
 // not fail an install whose app is already in place.
 function removeLegacyMacInstall({ paths, appPath, applicationsDirs, emit }) {
+  // An earlier standard-account install left a real copy in ~/Applications. Now that the shared
+  // copy is installed, point the per-user one at it so its Dock icons open the current version,
+  // and finish a pointer swap an interrupted run left there. Runs before the leftover sweep so the
+  // evidence of an interrupted swap is still present. (Never the reverse: the shared copy must not
+  // be pointed into one account's home.)
+  const userAppPath = path.join(paths.homeDir, "Applications", MAC_MANAGED_APP_NAME);
+  if (path.resolve(userAppPath) !== path.resolve(appPath)) {
+    if (isStableMacHarnessBundle(userAppPath)) {
+      pointLegacyMacAppAt(userAppPath, appPath, emit);
+    } else if (!pathEntryExists(userAppPath) && hasInterruptedPointerSwap(path.dirname(userAppPath))) {
+      publishMissingLegacyPointer(userAppPath, appPath, emit);
+    }
+  }
+
   let survivingLauncher = null;
   for (const applicationsDir of [...new Set(applicationsDirs)]) {
     const candidate = path.join(applicationsDir, MAC_MANAGED_APP_NAME);
@@ -390,16 +404,9 @@ function removeLegacyMacInstall({ paths, appPath, applicationsDirs, emit }) {
       LEGACY_MAC_LAUNCHER_BACKUP_PREFIX,
       MAC_APPLICATIONS_WRITE_PROBE_PREFIX,
       MAC_REMOVED_ENTRY_PREFIX,
+      MAC_POINTER_STAGE_PREFIX,
       ...appTransactionLeftovers
     ], emit);
-  }
-
-  // An earlier standard-account install left a real copy in ~/Applications. Now that the shared
-  // copy is installed, point the per-user one at it so its Dock icons open the current version.
-  // (Never the reverse: the shared copy must not be pointed into one account's home.)
-  const userAppPath = path.join(paths.homeDir, "Applications", MAC_MANAGED_APP_NAME);
-  if (path.resolve(userAppPath) !== path.resolve(appPath) && isStableMacHarnessBundle(userAppPath)) {
-    pointLegacyMacAppAt(userAppPath, appPath, emit);
   }
 
   const legacyAppPath = getLegacyMacAppPath(paths);
@@ -449,8 +456,8 @@ function pathEntryExists(target) {
 
 function hasInterruptedPointerSwap(legacyAppsDir) {
   try {
-    return fs.readdirSync(legacyAppsDir).some((entry) =>
-      entry.startsWith(MAC_POINTER_STAGE_PREFIX) || entry.startsWith(MAC_REMOVED_ENTRY_PREFIX));
+    // Only a pointer swap stages these links, so one left behind means that swap was interrupted.
+    return fs.readdirSync(legacyAppsDir).some((entry) => entry.startsWith(MAC_POINTER_STAGE_PREFIX));
   } catch {
     return false;
   }

@@ -732,6 +732,19 @@ async function assertSharedInstallRedirectsThePerUserCopy() {
     });
     assert.strictEqual(readMacAppVersion(sharedApp), "bundled");
     assertPointsAt(userApp, sharedApp, "Dock icons for the earlier per-user copy must open the shared install");
+
+    // Interrupted mid-swap: the per-user copy was moved aside before its link was published.
+    fs.rmSync(userApp, { force: true });
+    const userAppsDir = path.dirname(userApp);
+    writeStableMacHarness(path.join(userAppsDir, ".tritonai-harness-removed-def456"), "earlier-standard-account-copy");
+    fs.symlinkSync(sharedApp, path.join(userAppsDir, ".tritonai-harness-pointer-def456"));
+    await installMacApp({
+      sourceAppPath: sourceApp,
+      paths,
+      emit: () => {},
+      runtime: { systemApplicationsDir, replaceApp: replaceMacAppWithoutHostChecks, readAppVersion: async () => null }
+    });
+    assertPointsAt(userApp, sharedApp, "a rerun must finish an interrupted per-user pointer swap");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
