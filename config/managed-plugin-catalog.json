@@ -3,8 +3,8 @@
   "kind": "tritonai-managed-plugin-catalog",
   "source": {
     "repository": "https://github.com/dbalders/TritonAI-Plugins.git",
-    "ref": "refs/tags/v0.1.9",
-    "commit": "eda09a6a2639aa3309597e56660eb29bae2b0f89"
+    "ref": "refs/tags/v0.1.10",
+    "commit": "6ed0360c7a4193694e0c21d684b99ba9827881bc"
   },
   "packages": [
     {
@@ -22,8 +22,8 @@
     {
       "pluginId": "kuali-build",
       "version": "1.1.0",
-      "digest": "1cb075c2591f925c39fad20d18c0d8b2c743ea5d64215c030766751ea8446820",
-      "manifestDigest": "3ea524184d89a59b6eb1befa3703ba0c690e86024378dc196d6b945b17d9afbf"
+      "digest": "babff004a6553228e08a50ea97acc539fc63d3afa66e8680214c3a15422917cf",
+      "manifestDigest": "038306455d102deb3d115a4d22566586c98c202b3c7344ea03e07994d3f6a098"
     },
     {
       "pluginId": "lucid",
