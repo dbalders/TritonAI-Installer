@@ -42,12 +42,6 @@
       "version": "1.1.2",
       "digest": "04d1b7b03e52109edb936009177ec295360d9ff9f4c88dc00c48759831decc37",
       "manifestDigest": "cb9f3983936f9fcea9bc29031a81884002c8acc4a4abcd024c014b0025f604a0"
-    },
-    {
-      "pluginId": "tableau",
-      "version": "1.1.0",
-      "digest": "8d66b498b2c5521ac8e09780b46283a8cb3a24661b73f3cbbaf59001b0cdd0fc",
-      "manifestDigest": "9447a651f9dee86010b4dae5857fb0f8ddc3388c48b2cb3f55959d6b720b59cf"
     }
   ]
 }
