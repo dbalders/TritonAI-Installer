@@ -178,8 +178,28 @@ function assertLocalCandidateCatalogSelection() {
     );
     assert.strictEqual(readPluginCatalogSelection({}, production).localCandidate, false);
     assert.strictEqual(readPluginCatalogSelection({}, production).catalogPath, managedPluginCatalogPath);
-    const nightlySelection = readPluginCatalogSelection({}, { production: true, nightly: true });
-    assert.strictEqual(nightlySelection.catalogPath, nightlyPluginCatalogPath);
+    assert.strictEqual(
+      readPluginCatalogSelection({}, { production: true, nightly: true }).catalogPath,
+      nightlyPluginCatalogPath
+    );
+    const reviewedProductionPath = path.join(tempRoot, "reviewed-production.json");
+    const reviewedNightlyPath = path.join(tempRoot, "reviewed-nightly.json");
+    const nightlyCatalog = validateManagedPluginCatalog({
+      ...candidateCatalog,
+      source: { ...candidateCatalog.source, ref: "refs/tags/v9.9.9", commit: "b".repeat(40) }
+    });
+    fs.writeFileSync(reviewedProductionPath, `${JSON.stringify(candidateCatalog)}\n`);
+    fs.writeFileSync(reviewedNightlyPath, `${JSON.stringify(nightlyCatalog)}\n`);
+    const productionSelection = readPluginCatalogSelection(
+      {}, production, reviewedProductionPath, reviewedNightlyPath
+    );
+    assert.strictEqual(productionSelection.catalogPath, reviewedProductionPath);
+    assert.deepStrictEqual(productionSelection.catalog, candidateCatalog);
+    const nightlySelection = readPluginCatalogSelection(
+      {}, { production: true, nightly: true }, reviewedProductionPath, reviewedNightlyPath
+    );
+    assert.strictEqual(nightlySelection.catalogPath, reviewedNightlyPath);
+    assert.deepStrictEqual(nightlySelection.catalog, nightlyCatalog);
     assert.strictEqual(nightlySelection.localCandidate, false);
   });
 }
