@@ -3,8 +3,8 @@
   "kind": "tritonai-managed-plugin-catalog",
   "source": {
     "repository": "https://github.com/dbalders/TritonAI-Plugins.git",
-    "ref": "refs/tags/v0.1.12",
-    "commit": "2a55b90b8a962047847426711c7fe7c1c83ed1d7"
+    "ref": "refs/tags/v0.1.13",
+    "commit": "70dbf7475d9b9b04994be7f103c977527ccb95bf"
   },
   "packages": [
     {
@@ -18,6 +18,12 @@
       "version": "1.1.2",
       "digest": "c72de5a5f109a5cc5b55460aa65ec9a7907e443031bbcc985241b3d4af96d2f5",
       "manifestDigest": "7192be7fca2692cedeccbab519067f0fb7f6010d0ec529b227267378c4f7e4a1"
+    },
+    {
+      "pluginId": "jira-data-center",
+      "version": "1.1.0",
+      "digest": "966e3bb5dfb08558dc135874cad2b23f238fc0c5ba444d1048b047d1734c5268",
+      "manifestDigest": "0b792a523a5e5d0572fb834bc66cd9be218716204725ab04bb1d9a8ced576c92"
     },
     {
       "pluginId": "kuali-build",
@@ -39,9 +45,9 @@
     },
     {
       "pluginId": "n8n",
-      "version": "1.1.2",
-      "digest": "04d1b7b03e52109edb936009177ec295360d9ff9f4c88dc00c48759831decc37",
-      "manifestDigest": "cb9f3983936f9fcea9bc29031a81884002c8acc4a4abcd024c014b0025f604a0"
+      "version": "1.1.3",
+      "digest": "0e1c3e04978cd29e1d4999fdff98130603eb57d876aa49c465bc93e53857b35b",
+      "manifestDigest": "d3356c4db8a32df557e84646a0fa26a8f5a2651637e63045e35165e239dbcb31"
     },
     {
       "pluginId": "tableau",
