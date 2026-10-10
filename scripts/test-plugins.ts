@@ -54,6 +54,10 @@ const managedPluginCatalogPath = path.join(
   "config",
   "managed-plugin-catalog.json"
 );
+const nightlyPluginCatalogPath = path.join(
+  path.dirname(managedPluginCatalogPath),
+  "managed-plugin-catalog.nightly.json"
+);
 
 function main() {
   assertCanonicalProvenance();
@@ -164,16 +168,55 @@ function assertLocalCandidateCatalogSelection() {
       assertComposition: (manifest) => assertCatalogComposition(selection.catalog, manifest)
     }), /catalog digests/);
     assert.deepStrictEqual(fs.readFileSync(path.join(vendorDir, "manifest.json")), originalVendor);
+    assert.throws(
+      () => readPluginCatalogSelection({ ...env, TRITONAI_PLUGIN_CATALOG_PATH: nightlyPluginCatalogPath }, production),
+      /separate from the reviewed/
+    );
+    assert.throws(
+      () => readPluginCatalogSelection(env, { production: true, nightly: true }),
+      /cannot be combined with --nightly/
+    );
     assert.strictEqual(readPluginCatalogSelection({}, production).localCandidate, false);
+    assert.strictEqual(readPluginCatalogSelection({}, production).catalogPath, managedPluginCatalogPath);
+    assert.strictEqual(
+      readPluginCatalogSelection({}, { production: true, nightly: true }).catalogPath,
+      nightlyPluginCatalogPath
+    );
+    const reviewedProductionPath = path.join(tempRoot, "reviewed-production.json");
+    const reviewedNightlyPath = path.join(tempRoot, "reviewed-nightly.json");
+    const nightlyCatalog = validateManagedPluginCatalog({
+      ...candidateCatalog,
+      source: { ...candidateCatalog.source, ref: "refs/tags/v9.9.9", commit: "b".repeat(40) }
+    });
+    fs.writeFileSync(reviewedProductionPath, `${JSON.stringify(candidateCatalog)}\n`);
+    fs.writeFileSync(reviewedNightlyPath, `${JSON.stringify(nightlyCatalog)}\n`);
+    const productionSelection = readPluginCatalogSelection(
+      {}, production, reviewedProductionPath, reviewedNightlyPath
+    );
+    assert.strictEqual(productionSelection.catalogPath, reviewedProductionPath);
+    assert.deepStrictEqual(productionSelection.catalog, candidateCatalog);
+    const nightlySelection = readPluginCatalogSelection(
+      {}, { production: true, nightly: true }, reviewedProductionPath, reviewedNightlyPath
+    );
+    assert.strictEqual(nightlySelection.catalogPath, reviewedNightlyPath);
+    assert.deepStrictEqual(nightlySelection.catalog, nightlyCatalog);
+    assert.strictEqual(nightlySelection.localCandidate, false);
   });
 }
 
 function assertLatestStableReleaseSelection() {
   const catalog = syntheticCatalog();
   const catalogIds = catalog.packages.map((plugin) => plugin.pluginId);
-  assert.deepStrictEqual(parseArguments([]), { latest: false, production: false });
-  assert.deepStrictEqual(parseArguments(["--latest"]), { latest: true, production: false });
-  assert.deepStrictEqual(parseArguments(["--production"]), { latest: false, production: true });
+  assert.deepStrictEqual(parseArguments([]), { latest: false, production: false, nightly: false });
+  assert.deepStrictEqual(parseArguments(["--latest"]), { latest: true, production: false, nightly: false });
+  assert.deepStrictEqual(parseArguments(["--production"]), { latest: false, production: true, nightly: false });
+  assert.deepStrictEqual(
+    parseArguments(["--production", "--nightly"]),
+    { latest: false, production: true, nightly: true }
+  );
+  assert.throws(() => parseArguments(["--nightly"]), /requires --production/);
+  assert.throws(() => parseArguments(["--latest", "--nightly"]), /requires --production/);
+  assert.throws(() => parseArguments(["--production", "--nightly", "--nightly"]), /only once/);
   assert.throws(() => parseArguments(["--latest", "--latest"]), /only once/);
   assert.throws(() => parseArguments(["--production", "--production"]), /only once/);
   assert.throws(() => parseArguments(["--latest", "--production"]), /one release selection mode/);
@@ -251,6 +294,8 @@ function assertLatestStableReleaseSelection() {
 }
 
 function assertReviewedPluginCatalog() {
+  const nightlyCatalog = readManagedPluginCatalog(nightlyPluginCatalogPath);
+  assert.strictEqual(validateManagedPluginCatalog(nightlyCatalog), nightlyCatalog);
   const catalog = readManagedPluginCatalog(managedPluginCatalogPath);
   assert.strictEqual(validateManagedPluginCatalog(catalog), catalog);
 

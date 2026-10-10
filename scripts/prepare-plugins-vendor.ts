@@ -23,6 +23,8 @@ const root = path.resolve(__dirname, "..", "..");
 const vendorDir = path.join(root, "vendor", "plugins");
 const requirementPath = path.join(root, "build", "managed-plugin-composition.generated.json");
 const managedPluginCatalogPath = path.join(root, "config", "managed-plugin-catalog.json");
+// Harness nightly builds read this catalog so plugins can be tested before stable approval.
+const nightlyPluginCatalogPath = path.join(root, "config", "managed-plugin-catalog.nightly.json");
 const PLUGIN_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const CONTRACT_ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 const TOOL_NAME = /^[a-z][a-z0-9_.-]*$/;
@@ -81,18 +83,23 @@ function main(env = process.env, args = process.argv.slice(2)) {
 
 function readPluginCatalogSelection(
   env: Record<string, string | undefined> = {},
-  options = { production: false },
-  defaultCatalogPath = managedPluginCatalogPath
+  options: { production: boolean; nightly?: boolean } = { production: false },
+  productionCatalogPath = managedPluginCatalogPath,
+  nightlyCatalogPath = nightlyPluginCatalogPath
 ) {
   const candidateFlag = (env.TRITONAI_LOCAL_RELEASE_CANDIDATE || "").trim();
   const candidatePath = (env.TRITONAI_PLUGIN_CATALOG_PATH || "").trim();
   if (!candidateFlag && !candidatePath) {
+    const catalogPath = options.nightly ? nightlyCatalogPath : productionCatalogPath;
     return {
-      catalog: readManagedPluginCatalog(defaultCatalogPath),
-      catalogPath: defaultCatalogPath,
+      catalog: readManagedPluginCatalog(catalogPath),
+      catalogPath,
       localCandidate: false,
       catalogSha256: null
     };
+  }
+  if (options.nightly) {
+    throw new Error("A local candidate plugin catalog cannot be combined with --nightly.");
   }
   if (candidateFlag !== "1" || !candidatePath || !options.production) {
     throw new Error(
@@ -103,8 +110,8 @@ function readPluginCatalogSelection(
   if (!path.isAbsolute(candidatePath)) {
     throw new Error("TRITONAI_PLUGIN_CATALOG_PATH must be an absolute path to the frozen local candidate catalog.");
   }
-  if (path.resolve(candidatePath) === path.resolve(defaultCatalogPath)) {
-    throw new Error("A local candidate catalog must be separate from the reviewed Installer plugin catalog.");
+  if ([productionCatalogPath, nightlyCatalogPath].some((reviewed) => path.resolve(candidatePath) === path.resolve(reviewed))) {
+    throw new Error("A local candidate catalog must be separate from the reviewed Installer plugin catalogs.");
   }
   const stat = safeLstat(candidatePath, "Local candidate plugin catalog");
   if (!stat.isFile() || stat.isSymbolicLink()) {
@@ -156,7 +163,7 @@ function markLocalReleaseCandidate(selection, candidateRoot = root) {
 
 function parseArguments(args) {
   const values = Array.from(args || [], (value) => String(value));
-  const supported = new Set(["--latest", "--production"]);
+  const supported = new Set(["--latest", "--production", "--nightly"]);
   const unsupported = values.filter((value) => !supported.has(value));
   if (unsupported.length > 0) {
     throw new Error(`Unsupported managed plugin preparation argument: ${unsupported[0]}.`);
@@ -168,10 +175,14 @@ function parseArguments(args) {
   }
   const latest = values.includes("--latest");
   const production = values.includes("--production");
+  const nightly = values.includes("--nightly");
   if (latest && production) {
     throw new Error("Managed plugin preparation accepts only one release selection mode.");
   }
-  return { latest, production };
+  if (nightly && !production) {
+    throw new Error("--nightly selects the nightly plugin catalog and requires --production.");
+  }
+  return { latest, production, nightly };
 }
 
 function selectPluginSourceInput(
