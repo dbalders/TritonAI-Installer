@@ -62,6 +62,13 @@ source tree never approves it for production.
 Standalone Harness releases consume this same catalog while they are built, so Harness-only
 updates carry the approved plugins without requiring users to run TritonAI Installer.
 
+Harness nightly builds instead read `config/managed-plugin-catalog.nightly.json`
+(`prepare-plugins-vendor.js --production --nightly`). It has the same schema and the same digest
+checks, and it is where a plugin, or a newer plugin release, goes first for nightly testers. A
+plugin reaches stable Harness and the Installer only when the same entry is added to
+`config/managed-plugin-catalog.json`. The nightly catalog never affects stable Harness or
+Installer packaging, and it cannot be combined with a local candidate catalog.
+
 For an exact rebuild or a preselected composition, set all three values below. Complete explicit
 pins override automatic latest-release selection. `TRITONAI_PLUGINS_REF` accepts a full Git
 commit SHA (identical to `TRITONAI_PLUGINS_COMMIT`) or a fully qualified tag/branch ref.
