@@ -9,7 +9,7 @@ const { spawn, execFileSync } = require('node:child_process');
 const { test } = require('node:test');
 const { failureExitCode } = require('./local-release.cjs');
 const { macReleaseIdentity, findKeptStage, getNotaryConfig, verifyPluginPayload, isolatedBootEnvironment,
-  withMountedDmg, verifyPackagedBoot, finalizeMacRelease, processSnapshot, trackBootProcesses } = require('./local-release-mac.cjs');
+  withMountedDmg, verifyPackagedBoot, finalizeMacRelease, processSnapshot, trackBootProcesses, stapleAccepted } = require('./local-release-mac.cjs');
 
 function fixture(t, version = '0.3.4') {
   const { productName } = macReleaseIdentity(version);
@@ -495,6 +495,125 @@ test('full finalization binds metadata after stapling, verifies payload and boot
   assert(validations.some(target => target.includes('verify-zip-')), 'the app inside the final ZIP must carry the staple');
   assert(validations.filter(target => target.endsWith('.app')).length >= 3, 'signed, DMG, and ZIP apps must all validate');
   assert.match(fs.readFileSync(path.join(f.release, 'latest-mac.yml'), 'utf8'), new RegExp(`size: ${'zip-from-app-stapled'.length}`));
+});
+
+test('finalization recovers a lost stapling connection on the accepted app and DMG without re-uploading', async (t) => {
+  const f = fixture(t);
+  const mock = packagingMocks(f);
+  const attempts = new Map();
+  const waits = [];
+  const report = await finalizeMacRelease({ harnessRoot: f.root, stageRoot: f.stageRoot, version: f.version, outputDir: f.release,
+    env: f.env, platform: 'darwin', packagingTools: mock.tools, wait: async (ms) => waits.push(ms),
+    verifyBoot: async () => ({ healthyForMs: 5000 }),
+    runCommand: (program, args, options) => {
+      if (program === 'xcrun' && args[1] === 'staple') {
+        const attempt = (attempts.get(args[2]) || 0) + 1;
+        attempts.set(args[2], attempt);
+        if (attempt === 1) throw Object.assign(new Error('Staple failed (exit 68).'), {
+          result: { status: 68, stderr: 'Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."' },
+        });
+        const receipt = path.join(f.stageRoot, args[2].endsWith('.app') ? 'notarization-app.json' : 'notarization-dmg.json');
+        assert.equal(JSON.parse(fs.readFileSync(receipt, 'utf8')).status, 'Accepted');
+      }
+      return mock.command(program, args, options);
+    },
+  });
+  assert.deepEqual([...attempts.values()], [2, 2]);
+  assert.deepEqual(waits, [10000, 10000]);
+  assert.equal(mock.calls.filter(call => call.program === 'vp').length, 1, 'must not re-sign the app');
+  assert.equal(mock.calls.filter(call => call.program === 'xcrun' && call.args[0] === 'notarytool').length, 2, 'must submit each artifact only once');
+  assert.deepEqual(report.appNotarization, { status: 'Accepted', id: 'notary-job' });
+  assert.deepEqual(report.notarization, { status: 'Accepted', id: 'notary-job' });
+});
+
+test('an accepted ticket that has not reached CloudKit is retried with bounded command time', async () => {
+  const waits = [];
+  let attempts = 0;
+  await stapleAccepted('same-signed.dmg', { status: 'Accepted' }, 'Staple fixture', (_program, args, options) => {
+    assert.deepEqual(args, ['stapler', 'staple', 'same-signed.dmg']);
+    assert.equal(options.capture, true);
+    assert.equal(options.timeout, 60000);
+    assert.equal(options.killSignal, 'SIGKILL');
+    if (++attempts === 1) throw Object.assign(new Error('Ticket lookup failed'), {
+      result: { status: 65, stdout: 'CloudKit query for same-signed.dmg failed due to "Record not found".\n' },
+    });
+    return { stdout: '' };
+  }, async (ms) => waits.push(ms));
+  assert.equal(attempts, 2);
+  assert.deepEqual(waits, [10000]);
+});
+
+for (const target of ['app', 'dmg']) {
+  test(`exhausted ${target} stapling preserves the accepted receipt and artifact without success proof`, async (t) => {
+    const f = fixture(t), mock = packagingMocks(f), waits = [], targets = [];
+    const failure = Object.assign(new Error('Staple failed (exit 68).'), {
+      result: { status: 68, stderr: 'Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."\n' },
+    });
+    await assert.rejects(finalizeMacRelease({ harnessRoot: f.root, stageRoot: f.stageRoot, version: f.version, outputDir: f.release,
+      env: f.env, platform: 'darwin', packagingTools: mock.tools, wait: async (ms) => waits.push(ms),
+      runCommand: (program, args, options) => {
+        if (program === 'xcrun' && args[1] === 'staple' && args[2].endsWith(`.${target}`)) {
+          targets.push(args[2]);
+          throw failure;
+        }
+        return mock.command(program, args, options);
+      },
+    }), error => error === failure);
+    assert.equal(targets.length, 4);
+    assert.equal(new Set(targets).size, 1, 'all attempts must use the same artifact');
+    assert(fs.existsSync(targets[0]), 'the signed artifact must remain available');
+    assert.deepEqual(waits, [10000, 30000, 60000]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.stageRoot, `notarization-${target}.json`), 'utf8')), { status: 'Accepted', id: 'notary-job' });
+    assert.equal(mock.calls.filter(call => call.program === 'xcrun' && call.args[0] === 'notarytool').length, target === 'app' ? 1 : 2);
+    assert(!fs.existsSync(path.join(f.release, 'latest-mac.yml')));
+    assert(!fs.existsSync(path.join(f.release, 'harness-mac-verification.json')));
+    assert(!mock.calls.some(call => call.args.includes('--artifact')));
+  });
+}
+
+test('stapling does not retry permanent, unknown, unauthenticated, or process failures', async () => {
+  const transientText = 'Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."';
+  const cases = [
+    { status: 64, stderr: 'Malformed options' },
+    { status: 65, stderr: 'The ticket data is invalid.' },
+    { status: 66, stderr: 'The path is not code-signed or is unsupported.' },
+    { status: 68, stderr: 'The path has not been previously notarized.' },
+    { status: 68, stderr: 'Error Domain=NSURLErrorDomain Code=-1012 "Authentication failed."' },
+    { status: 68, stderr: 'Error Domain=NSURLErrorDomain Code=-1200 "Secure connection failed."' },
+    { status: 73, stderr: 'Could not write ticket' },
+    { status: 77, stderr: 'The ticket has been revoked.' },
+    { status: 65, stderr: transientText },
+    { status: 68, stderr: transientText, error: { code: 'ETIMEDOUT' } },
+  ];
+  for (const result of cases) {
+    let attempts = 0;
+    const failure = Object.assign(new Error('fixture failure'), { result });
+    await assert.rejects(stapleAccepted('same-signed.dmg', { status: 'Accepted' }, 'Staple fixture', () => {
+      attempts++;
+      throw failure;
+    }, async () => assert.fail('permanent failure must not wait')), error => error === failure);
+    assert.equal(attempts, 1);
+  }
+  await assert.rejects(stapleAccepted('same-signed.dmg', { status: 'Invalid' }, 'Staple fixture', () => assert.fail('must not staple an unaccepted artifact')), /Accepted/);
+});
+
+test('successful staple recovery still requires strict ticket validation before packaging', async (t) => {
+  const f = fixture(t), mock = packagingMocks(f);
+  let attempts = 0, validations = 0;
+  await assert.rejects(finalizeMacRelease({ harnessRoot: f.root, stageRoot: f.stageRoot, version: f.version, outputDir: f.release,
+    env: f.env, platform: 'darwin', packagingTools: mock.tools, wait: async () => {},
+    runCommand: (program, args, options) => {
+      if (program === 'xcrun' && args[1] === 'staple' && ++attempts === 1) throw Object.assign(new Error('Staple failed'), {
+        result: { status: 68, stderr: 'Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."\n' },
+      });
+      if (program === 'xcrun' && args[1] === 'validate') { validations++; throw new Error('Stapled ticket validation failed'); }
+      return mock.command(program, args, options);
+    },
+  }), /ticket validation failed/);
+  assert.equal(attempts, 2);
+  assert.equal(validations, 1, 'must not retry a validation failure');
+  assert(!mock.calls.some(call => call.program === 'archive'));
+  assert(!fs.existsSync(path.join(f.release, 'harness-mac-verification.json')));
 });
 
 test('rejected notarization cannot emit successful proof or updater metadata', async (t) => {

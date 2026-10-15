@@ -37,7 +37,7 @@ function run(command, args, options = {}) {
     // Do not interpolate arguments or environment: notary arguments contain
     // credential references and must not leak into the release report.
     if (result.error || result.status !== 0) {
-      throw new Error(`${label} failed (${result.error?.code || `exit ${result.status}`}). See the stage log.`);
+      throw Object.assign(new Error(`${label} failed (${result.error?.code || `exit ${result.status}`}). See the stage log.`), { result });
     }
     return result;
   });
@@ -110,6 +110,31 @@ function notarize(file, label, notary, exec) {
   try { receipt = JSON.parse(result.stdout); } catch { throw new Error('Apple notarization did not return a valid JSON receipt.'); }
   if (receipt.status !== 'Accepted') throw new Error(`Apple notarization did not accept the ${label}.`);
   return receipt;
+}
+
+async function stapleAccepted(file, receipt, label, exec, wait = sleep) {
+  if (receipt?.status !== 'Accepted') throw new Error('Stapling requires an Accepted notarization receipt.');
+  const delays = [10000, 30000, 60000];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const result = exec('xcrun', ['stapler', 'staple', file], { capture: true, timeout: 60000, killSignal: 'SIGKILL', label });
+      if (result.stdout) process.stdout.write(result.stdout);
+      if (result.stderr) process.stderr.write(result.stderr);
+      return;
+    } catch (error) {
+      const result = error.result;
+      if (result?.stdout) process.stdout.write(result.stdout);
+      if (result?.stderr) process.stderr.write(result.stderr);
+      const diagnostics = `${result?.stdout || ''}\n${result?.stderr || ''}`;
+      // EX_NOHOST alone can mean an unnotarized artifact. Retry only an explicit
+      // network failure or a ticket lookup that has not caught up with Accepted.
+      const network = result?.status === 68 && /NSURLErrorDomain\s+Code=-(?:1001|1003|1004|1005|1006|1009)\b/.test(diagnostics);
+      const missingTicket = [65, 68].includes(result?.status) && /CloudKit query[^\n]*failed due to ["']Record not found["']/.test(diagnostics);
+      if (result?.error || (!network && !missingTicket) || attempt === delays.length) throw error;
+      process.stdout.write(`[harness-mac] ${label}: transient ticket lookup failure; retry ${attempt + 1}/${delays.length} in ${delays[attempt] / 1000}s using the same accepted artifact.\n`);
+      await wait(delays[attempt]);
+    }
+  }
 }
 
 async function fileInfo(file) {
@@ -469,7 +494,7 @@ async function verifyPackagedBoot({ appPath, stageRoot, version, electron, env, 
 }
 
 async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = process.env, runCommand = run,
-  packagingTools, verifyBoot = verifyPackagedBoot, platform = process.platform, configPath, outputDir }) {
+  packagingTools, verifyBoot = verifyPackagedBoot, platform = process.platform, configPath, outputDir, wait = sleep }) {
   if (platform !== 'darwin') throw new Error('Harness macOS finalization must run on macOS.');
   const { productName, updaterFile } = macReleaseIdentity(version);
   harnessRoot = fs.realpathSync(harnessRoot);
@@ -516,7 +541,8 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   exec('/usr/bin/ditto', ['-c', '-k', '--keepParent', signedApp, appSubmission], { label: 'Archive signed app for notarization' });
   let appReceipt;
   try { appReceipt = notarize(appSubmission, 'signed app', notary, exec); } finally { fs.rmSync(appSubmission, { force: true }); }
-  exec('xcrun', ['stapler', 'staple', signedApp], { label: 'Staple accepted signed app' });
+  fs.writeFileSync(path.join(stageRoot, 'notarization-app.json'), `${JSON.stringify(appReceipt, null, 2)}\n`, { mode: 0o600 });
+  await stapleAccepted(signedApp, appReceipt, 'Staple accepted signed app', exec, wait);
   exec('xcrun', ['stapler', 'validate', signedApp], { label: 'Validate stapled app notarization' });
   verifySignedApp(signedApp, identity, exec);
   // Electron Builder's ZIP predates the staple; rebuild it (and its blockmap) from the stapled app.
@@ -530,7 +556,8 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   }, productName);
   exec('codesign', ['--force', '--sign', `Developer ID Application: ${identity}`, '--timestamp', dmg], { label: 'Sign candidate DMG' });
   const receipt = notarize(dmg, 'candidate DMG', notary, exec);
-  exec('xcrun', ['stapler', 'staple', dmg], { label: 'Staple accepted candidate DMG' });
+  fs.writeFileSync(path.join(stageRoot, 'notarization-dmg.json'), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+  await stapleAccepted(dmg, receipt, 'Staple accepted candidate DMG', exec, wait);
   exec('xcrun', ['stapler', 'validate', dmg], { label: 'Validate stapled notarization' });
   exec('spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=4', dmg], { label: 'Assess candidate DMG with Gatekeeper' });
   exec('hdiutil', ['verify', dmg], { label: 'Verify final DMG integrity' });
@@ -569,7 +596,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
 }
 
 module.exports = { macReleaseIdentity, findKeptStage, getNotaryConfig, resolvePackagingTools, fileInfo, verifyPluginPayload, processSnapshot, trackBootProcesses,
-  createSignedDmg, withMountedDmg, isolatedBootEnvironment, ownsProcess, verifyPackagedBoot, finalizeMacRelease };
+  createSignedDmg, withMountedDmg, isolatedBootEnvironment, ownsProcess, verifyPackagedBoot, finalizeMacRelease, stapleAccepted };
 
 if (require.main === module) {
   const [harnessRoot, stageRoot, version, outputDir, ...extra] = process.argv.slice(2);

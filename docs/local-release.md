@@ -149,6 +149,14 @@ then checks the final app's update configuration and native binaries before crea
 DMG. Signing, notarization, packaged boot, payload checks, and final artifact proofs remain
 required. No unsigned Harness ZIP is generated and discarded.
 
+After Apple accepts the Harness app or DMG, stapling retries explicit network errors
+or a CloudKit ticket lookup reporting `Record not found` up to three times, after
+10, 30, and 60 seconds. Each stapler invocation is limited to 60 seconds. These
+retries use the same signed artifact without rebuilding or uploading it again.
+The Apple receipts remain in the Mac stage directory as `notarization-app.json`
+and `notarization-dmg.json`, including when stapling fails. Other stapler failures
+stop immediately, and strict ticket validation still gates the final artifacts.
+
 The Mac Installer packages a signed, notarized app directory directly, then creates,
 signs, notarizes, and verifies the final DMG. It does not generate a discarded Installer
 ZIP. Harness's updater ZIP remains a required release artifact.
