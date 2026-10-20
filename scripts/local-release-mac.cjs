@@ -85,7 +85,11 @@ function resolvePackagingTools(harnessRoot) {
   const desktopRequire = createRequire(path.join(harnessRoot, 'apps', 'desktop', 'package.json'));
   const builderRequire = createRequire(desktopRequire.resolve('electron-builder/package.json'));
   const libraryRequire = createRequire(builderRequire.resolve('app-builder-lib/package.json'));
+  const sharedRequire = createRequire(path.join(harnessRoot, 'packages', 'shared', 'package.json'));
+  const lexer = sharedRequire('es-module-lexer');
+  lexer.initSync();
   return {
+    parseImports: (source) => lexer.parse(source)[0],
     asar: libraryRequire('@electron/asar'),
     // Electron Builder 26.15 owns this implementation; app-builder-bin no longer exists.
     buildBlockMap: libraryRequire('./out/targets/blockmap/blockmap.js').buildBlockMap,
@@ -150,7 +154,7 @@ async function fileInfo(file) {
   return { fileName: path.basename(file), size, sha256: sha256.digest('hex'), sha512: sha512.digest('base64') };
 }
 
-function verifyPluginPayload(appPath, composition, asar, version) {
+function verifyPluginPayload(appPath, composition, asar, version, parseImports) {
   const archive = regularFile(path.join(appPath, 'Contents', 'Resources', 'app.asar'));
   const read = (entry) => asar.extractFile(archive, entry);
   const metadata = JSON.parse(read('package.json').toString('utf8'));
@@ -158,7 +162,28 @@ function verifyPluginPayload(appPath, composition, asar, version) {
   // Harness packages plugin files; the frozen manifest is an external proof.
   // Share exact inventory/hash checks across both platform artifact formats.
   const verified = verifyPluginArchive(archive, asar, composition, 'apps/server/dist/production-integrations/packages');
-  const server = read('apps/server/dist/bin.mjs').toString('utf8');
+  // The thin CLI entry loads the server lazily. Follow only literal ESM
+  // imports/re-exports emitted by the bundler; unrelated archive files cannot
+  // satisfy this check just because they contain a plugin marker.
+  const serverRoot = 'apps/server/dist/';
+  const pending = [`${serverRoot}bin.mjs`], visited = new Set(), modules = [];
+  while (pending.length) {
+    const entry = pending.pop();
+    if (visited.has(entry)) continue;
+    visited.add(entry);
+    let source;
+    try { source = read(path.normalize(entry)).toString('utf8'); }
+    catch (cause) { throw new Error(`Packaged backend module is missing: ${entry}`, { cause }); }
+    modules.push(source);
+    for (const { n: specifier } of parseImports(source)) {
+      if (!specifier?.startsWith('.')) continue;
+      if (!/\.[cm]?js$/.test(specifier)) continue;
+      const dependency = path.posix.normalize(path.posix.join(path.posix.dirname(entry), specifier));
+      if (!dependency.startsWith(serverRoot)) throw new Error(`Backend import is outside the packaged server: ${specifier}`);
+      pending.push(dependency);
+    }
+  }
+  const server = modules.join('\n');
   for (const marker of ['production-integrations', 'tritonai-harness-plugin-composition']) {
     if (!server.includes(marker)) throw new Error(`Packaged backend is missing plugin marker: ${marker}`);
   }
@@ -529,7 +554,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   exec(process.execPath, ['scripts/verify-macos-desktop-package.ts', dist, productName], { label: 'Verify signed Harness update configuration and native binaries' });
   const signedApp = path.join(dist, 'mac-arm64', `${productName}.app`);
   verifySignedApp(signedApp, identity, exec);
-  const stagedProof = verifyPluginPayload(signedApp, composition, tools.asar, version);
+  const stagedProof = verifyPluginPayload(signedApp, composition, tools.asar, version, tools.parseImports);
   const zipName = `TritonAI-Harness-${version}-arm64.zip`;
   const zip = path.join(output, zipName);
   const dmg = path.join(output, `TritonAI-Harness-${version}-arm64.dmg`);
@@ -552,7 +577,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   createSignedDmg(signedApp, dmg, stageRoot, exec);
   await withMountedDmg(dmg, stageRoot, exec, (app) => {
     verifySignedApp(app, identity, exec);
-    verifyPluginPayload(app, composition, tools.asar, version);
+    verifyPluginPayload(app, composition, tools.asar, version, tools.parseImports);
   }, productName);
   exec('codesign', ['--force', '--sign', `Developer ID Application: ${identity}`, '--timestamp', dmg], { label: 'Sign candidate DMG' });
   const receipt = notarize(dmg, 'candidate DMG', notary, exec);
@@ -564,7 +589,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
   const boot = await withMountedDmg(dmg, stageRoot, exec, async (app) => {
     verifySignedApp(app, identity, exec);
     exec('xcrun', ['stapler', 'validate', app], { label: 'Validate stapled app inside final DMG' });
-    verifyPluginPayload(app, composition, tools.asar, version);
+    verifyPluginPayload(app, composition, tools.asar, version, tools.parseImports);
     return verifyBoot({ appPath: app, stageRoot, version, electron: tools.electron, env, runCommand: exec });
   }, productName);
   const zipScratch = fs.mkdtempSync(path.join(stageRoot, 'verify-zip-'));
@@ -573,7 +598,7 @@ async function finalizeMacRelease({ harnessRoot, stageRoot, version, env = proce
     const zipApp = path.join(zipScratch, `${productName}.app`);
     verifySignedApp(zipApp, identity, exec);
     exec('xcrun', ['stapler', 'validate', zipApp], { label: 'Validate stapled app inside final updater ZIP' });
-    verifyPluginPayload(zipApp, composition, tools.asar, version);
+    verifyPluginPayload(zipApp, composition, tools.asar, version, tools.parseImports);
     const [zipAsar, signedAsar] = await Promise.all([zipApp, signedApp].map((app) => fileInfo(path.join(app, 'Contents', 'Resources', 'app.asar'))));
     if (zipAsar.sha256 !== signedAsar.sha256) throw new Error('Updater ZIP differs from the signed candidate app.');
   } finally { fs.rmSync(zipScratch, { recursive: true, force: true }); }

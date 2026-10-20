@@ -7,9 +7,13 @@ const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { spawn, execFileSync } = require('node:child_process');
 const { test } = require('node:test');
+const { initSync, parse } = require('es-module-lexer');
+initSync();
+const parseImports = (source) => parse(source)[0];
 const { failureExitCode } = require('./local-release.cjs');
-const { macReleaseIdentity, findKeptStage, getNotaryConfig, verifyPluginPayload, isolatedBootEnvironment,
+const { macReleaseIdentity, findKeptStage, getNotaryConfig, verifyPluginPayload: verifyPluginPayloadWithImports, isolatedBootEnvironment,
   withMountedDmg, verifyPackagedBoot, finalizeMacRelease, processSnapshot, trackBootProcesses, stapleAccepted } = require('./local-release-mac.cjs');
+const verifyPluginPayload = (...args) => verifyPluginPayloadWithImports(...args, parseImports);
 
 function fixture(t, version = '0.3.4') {
   const { productName } = macReleaseIdentity(version);
@@ -34,7 +38,7 @@ function fixture(t, version = '0.3.4') {
   const pluginsPath = 'apps/server/dist/production-integrations';
   const entries = {
     'package.json': Buffer.from(JSON.stringify({ version })),
-    'apps/server/dist/bin.mjs': Buffer.from('github production-integrations tritonai-harness-plugin-composition'),
+    'apps/server/dist/bin.mjs': Buffer.from('export const plugins = "github production-integrations tritonai-harness-plugin-composition";'),
     [`${pluginsPath}/packages/github/index.js`]: bytes,
   };
   const archivePaths = () => {
@@ -89,6 +93,38 @@ test('checks ASAR plugin bytes against the external proof without requiring an e
   const pluginFile = 'apps/server/dist/production-integrations/packages/github/index.js';
   f.entries[pluginFile] = Buffer.from('corrupted implementation');
   assert.throws(() => verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4'), /file differs/);
+});
+
+test('verifies plugin markers through reachable lazy and re-exported backend chunks', (t) => {
+  const f = fixture(t);
+  const entry = 'apps/server/dist/bin.mjs';
+  const cli = 'apps/server/dist/binCli-candidate.mjs';
+  const builtins = 'apps/server/dist/production-builtins.mjs';
+  const markers = f.entries[entry];
+  f.entries[entry] = Buffer.from(`/** @import {Options} from "../index.js" */
+const example = 'import("./missing.mjs")'; const cli = await import("./binCli-candidate.mjs"); cli.run();`);
+  f.entries[cli] = Buffer.from('export { run } from "./production-builtins.mjs";');
+  f.entries[builtins] = Buffer.from(`import "./binCli-candidate.mjs";\n${markers}`);
+  assert.equal(verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4').fileCount, 1);
+  delete f.entries[builtins];
+  assert.throws(() => verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4'), /backend module.*production-builtins/);
+});
+
+test('does not accept plugin markers or selected IDs from unreferenced backend chunks', (t) => {
+  const f = fixture(t);
+  const entry = 'apps/server/dist/bin.mjs';
+  f.entries['apps/server/dist/decoy.mjs'] = f.entries[entry];
+  f.entries[entry] = Buffer.from('export {};');
+  assert.throws(() => verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4'), /missing plugin marker/);
+  f.entries[entry] = Buffer.from('export const plugins = "production-integrations tritonai-harness-plugin-composition";');
+  assert.throws(() => verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4'), /missing selected plugin: github/);
+});
+
+test('rejects backend imports that escape the packaged server directory', (t) => {
+  const f = fixture(t);
+  f.entries['apps/server/dist/bin.mjs'] = Buffer.from('export { run } from "../unrelated.mjs";');
+  f.entries['apps/server/unrelated.mjs'] = Buffer.from('export const plugins = "github production-integrations tritonai-harness-plugin-composition";');
+  assert.throws(() => verifyPluginPayload(f.app, f.composition, f.asar, '0.3.4'), /outside the packaged server/);
 });
 
 test('rejects unlisted packaged plugin files and different manifests', (t) => {
@@ -446,7 +482,7 @@ function packagingMocks(f, status = 'Accepted') {
     }
     return { stdout: '' };
   };
-  return { calls, command, tools: { asar: f.asar, buildBlockMap: async (input, format, output) => {
+  return { calls, command, tools: { parseImports, asar: f.asar, buildBlockMap: async (input, format, output) => {
     assert.equal(format, 'gzip');
     assert.match(fs.readFileSync(input, 'utf8'), /-stapled$/);
     calls.push({ program: 'buildBlockMap', args: [input] });

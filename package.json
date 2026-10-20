@@ -94,6 +94,7 @@
     "@types/node": "22.20.1",
     "electron": "42.8.0",
     "electron-builder": "26.15.7",
+    "es-module-lexer": "2.1.0",
     "typescript": "7.0.2"
   }
 }
