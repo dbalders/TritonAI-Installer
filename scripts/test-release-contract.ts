@@ -238,30 +238,14 @@ function main() {
       packageJson.scripts["package:win-installer:signed"].endsWith("node dist/scripts/windows-signing.js"),
       "Future signed Windows packaging must end at the fail-closed signing and Authenticode gate"
     );
-    assert(
-      packageJson.scripts["package:win-installer"].indexOf("prepare:plugins-vendor:production:compiled")
-        < packageJson.scripts["package:win-installer"].indexOf("prepare:t3code-desktop-vendor:win:unsigned:compiled"),
-      "Windows packaging must use the reviewed production plugins before accepting a composed Harness release"
-    );
+    assert(!Object.keys(packageJson.scripts).some((name) => name.startsWith("prepare:plugins-vendor")),
+      "Installer must consume the published Harness proof without an independent plugin selection");
     assert(
       packageJson.scripts["package:win-installer"].includes("prepare:node-runtime:win:compiled"),
       "Windows packaging must prepare the pinned offline Node.js runtime"
     );
     assert(packageJson.scripts["package:win-installer"].includes("prepare-skills-vendor.js --require-clean"));
     assert(packageJson.scripts["package:win-installer:signed"].includes("prepare-skills-vendor.js --require-clean"));
-    assert.strictEqual(
-      packageJson.scripts["prepare:plugins-vendor:latest:compiled"],
-      "node dist/scripts/prepare-plugins-vendor.js --latest"
-    );
-    assert.strictEqual(
-      packageJson.scripts["prepare:plugins-vendor:production:compiled"],
-      "node dist/scripts/prepare-plugins-vendor.js --production"
-    );
-    assert.strictEqual(
-      packageJson.scripts["prepare:plugins-vendor"],
-      "npm run build && npm run prepare:plugins-vendor:compiled --",
-      "Explicit plugin preparation must forward release selectors such as --production"
-    );
     const macReleaseSource = fs.readFileSync(path.join(repoRoot, "scripts", "package-macos-release.ts"), "utf8");
     assert(macReleaseSource.includes('"--noextattr"'));
     assert(macReleaseSource.includes('"attach"'));
@@ -274,8 +258,8 @@ function main() {
     testNativeMacDmgCreation(tempRoot);
     testNotarizationRetry(tempRoot);
     assert(
-      macReleaseSource.includes('"--production"'),
-      "macOS release packaging must use the reviewed production plugins"
+      !macReleaseSource.includes("prepare-plugins-vendor"),
+      "macOS packaging must consume the published Harness plugin composition"
     );
     assert(
       macReleaseSource.includes('"prepare-node-runtime-vendor.js"), "mac-arm64"'),

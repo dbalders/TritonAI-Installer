@@ -64,7 +64,6 @@ const required = [
   "scripts/write-managed-config.ts",
   "scripts/verify-macos-bundled-resources.ts",
   "scripts/prepare-skills-vendor.ts",
-  "scripts/prepare-plugins-vendor.ts",
   "scripts/prepare-codex-cli-vendor.ts",
   "scripts/prepare-node-runtime-vendor.ts",
   "scripts/prepare-t3code-desktop-vendor.ts",
@@ -119,7 +118,6 @@ if (packageJson.license !== "MIT") {
 const windowsPackageScript = packageJson.scripts?.["package:win-installer"] || "";
 const signedWindowsPackageScript = packageJson.scripts?.["package:win-installer:signed"] || "";
 const nativeWindowsVerificationScript = packageJson.scripts?.["verify:win-installer:native"] || "";
-const explicitPluginPrepareScript = packageJson.scripts?.["prepare:plugins-vendor"] || "";
 for (const [name, script, ending] of [
   ["package:win-installer", windowsPackageScript, "node dist/scripts/package-windows-unsigned.js"],
   ["package:win-installer:signed", signedWindowsPackageScript, "node dist/scripts/windows-signing.js"]
@@ -138,19 +136,11 @@ if (!windowsPackageScript.includes("prepare:t3code-desktop-vendor:win:unsigned:c
 if (!signedWindowsPackageScript.includes("prepare:t3code-desktop-vendor:win:compiled")) {
   throw new Error("Signed Windows release packaging must explicitly bind the Authenticode Harness trust policy.");
 }
-for (const [name, script] of [
-  ["package:win-installer", windowsPackageScript],
-  ["package:win-installer:signed", signedWindowsPackageScript]
-]) {
-  if (!script.includes("prepare:plugins-vendor:production:compiled")) {
-    throw new Error(`${name} must use the reviewed production plugin catalog.`);
-  }
+if (Object.keys(packageJson.scripts).some((name) => name.startsWith("prepare:plugins-vendor"))) {
+  throw new Error("Installer must consume Harness composition proofs without selecting plugins.");
 }
 if (nativeWindowsVerificationScript !== "npm run build && node dist/scripts/verify-windows-unsigned-release.js") {
   throw new Error("Unsigned Windows native verification must run the exact-candidate verifier.");
-}
-if (explicitPluginPrepareScript !== "npm run build && npm run prepare:plugins-vendor:compiled --") {
-  throw new Error("Explicit plugin preparation must forward release selectors such as --production.");
 }
 
 for (const scriptName of [
@@ -160,10 +150,7 @@ for (const scriptName of [
   "prepare:t3code-desktop-vendor:win:unsigned:compiled",
   "prepare:codex-cli-vendor:win:compiled",
   "prepare:node-runtime:win:compiled",
-  "prepare:skills-vendor:compiled",
-  "prepare:plugins-vendor:compiled",
-  "prepare:plugins-vendor:latest:compiled",
-  "prepare:plugins-vendor:production:compiled"
+  "prepare:skills-vendor:compiled"
 ]) {
   const script = packageJson.scripts?.[scriptName] || "";
   if (!script || script.includes("npm run build")) {

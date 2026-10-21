@@ -26,9 +26,8 @@ only after Harness finishes; this workflow does not create or publish Harness.
 
 Existing vendoring then verifies the downloaded Harness version, size, SHA-512,
 platform-specific plugin composition and artifact binding, valid Authenticode
-signature, exact publisher and timestamp. Production plugins remain pinned by
-`config/managed-plugin-catalog.json`; a composition mismatch requires an explicit
-reviewed catalog update, never bypassing the check. Private secure skills are
+signature, exact publisher and timestamp. Plugin selection is owned by the selected Harness release; Installer validates its published
+composition proof without an independent plugin catalog. A missing or unbound proof fails closed. Private secure skills are
 checked out at the requested commit and staged with the existing clean-source gate.
 
 Electron Builder 26.15.7 uses `win.azureSignOptions` and `forceCodeSigning` to sign

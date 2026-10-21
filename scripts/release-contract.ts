@@ -104,7 +104,7 @@ function assertPublicReleaseInputs({ root = defaultRoot, env = process.env } = {
     || fs.existsSync(markerPath)) {
     throw new Error(
       "Local release candidates cannot use the public release contract or GitHub publication helper. "
-      + "Build the public release in a separate checkout using the reviewed Installer plugin catalog."
+      + "Build the public release in a separate checkout against a published Harness release and its composition proof."
     );
   }
 }

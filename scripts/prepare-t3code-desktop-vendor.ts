@@ -35,7 +35,6 @@ const {
 const macManifestFile = "latest-mac.yml";
 const winManifestFile = "latest.yml";
 const pluginCompositionFile = "tritonai-plugin-composition.json";
-const preparedPluginManifest = path.join(root, "vendor", "plugins", "manifest.json");
 
 function publishedPluginCompositionFile(platform, arch) {
   if ((platform !== "mac" && platform !== "win") || !/^[a-z0-9]+$/.test(arch)) {
@@ -62,6 +61,7 @@ function main() {
   const target = process.argv[2] || process.env.TRITONAI_HARNESS_VENDOR_TARGET || defaultTarget();
   const windowsTrustMode = readWindowsTrustMode(process.argv.slice(3));
   assertExplicitHarnessSource({ expectedVersion: expectedHarnessVersion, macReleaseBase, winReleaseBase, target });
+  markLocalReleaseCandidate(process.env);
 
   if (target === "mac-arm64") {
     prepareMacVendor("arm64");
@@ -97,7 +97,7 @@ function defaultTarget() {
 function prepareMacVendor(arch) {
   const stage = stageMacVendor(arch);
   try {
-    activateStagedVendors([stage]);
+    activatePreparedVendors([stage]);
     console.log(`Prepared ${path.relative(root, path.join(stage.vendorDir, stage.assetName))}`);
   } finally {
     fs.rmSync(stage.stagingDir, { recursive: true, force: true });
@@ -138,7 +138,7 @@ function stageMacVendor(arch) {
 function prepareWindowsVendor(arch, trustMode = "authenticode") {
   const stage = stageWindowsVendor(arch, trustMode);
   try {
-    activateStagedVendors([stage]);
+    activatePreparedVendors([stage]);
     console.log(`Prepared ${path.relative(root, path.join(stage.vendorDir, stage.assetName))}`);
   } finally {
     fs.rmSync(stage.stagingDir, { recursive: true, force: true });
@@ -209,11 +209,6 @@ function downloadAndVerifyPluginComposition(
   expectedArtifact,
   publishedFileName
 ) {
-  if (!fs.existsSync(preparedPluginManifest)) {
-    throw new Error(
-      "Managed plugin preparation is missing. Run prepare:plugins-vendor with an explicit ref, commit, and plugin selection before vendoring TritonAI Harness."
-    );
-  }
   const target = path.join(stagingDir, pluginCompositionFile);
   try {
     downloadManifest(`${releaseBase}/${publishedFileName}`, target);
@@ -225,7 +220,6 @@ function downloadAndVerifyPluginComposition(
     );
   }
   return verifyPluginCompositionProof({
-    expectedManifestPath: preparedPluginManifest,
     proofPath: target,
     harnessVersion,
     artifactPath,
@@ -234,23 +228,18 @@ function downloadAndVerifyPluginComposition(
 }
 
 function verifyPluginCompositionProof({
-  expectedManifestPath,
   proofPath,
   harnessVersion,
   artifactPath,
   expectedArtifact
 }) {
-  const expected = validateManagedPluginBundleManifest(
-    JSON.parse(fs.readFileSync(expectedManifestPath, "utf8")),
-    "Prepared managed plugin manifest"
-  );
   let actual;
   try {
     actual = JSON.parse(fs.readFileSync(proofPath, "utf8"));
   } catch (error) {
     throw new Error(`TritonAI Harness ${pluginCompositionFile} is not valid JSON: ${error.message}`);
   }
-  assertMatchingPluginComposition(expected, actual, `TritonAI Harness ${harnessVersion} plugin composition`);
+  actual = validateManagedPluginBundleManifest(actual, `TritonAI Harness ${harnessVersion} plugin composition`);
   const artifact = {
     fileName: path.basename(artifactPath),
     size: fs.statSync(artifactPath).size,
@@ -269,7 +258,7 @@ function prepareAllVendors(windowsTrustMode = "authenticode") {
     stages.push(stageMacVendor("arm64"));
     stages.push(stageWindowsVendor("x64", windowsTrustMode));
     assertMatchingManifestVersions(stages.map((stage) => stage.version));
-    activateStagedVendors(stages);
+    activatePreparedVendors(stages);
     for (const stage of stages) {
       console.log(`Prepared ${path.relative(root, path.join(stage.vendorDir, stage.assetName))}`);
     }
@@ -311,44 +300,105 @@ function createSiblingTempDir(target, prefix) {
   return fs.mkdtempSync(path.join(parent, prefix));
 }
 
+function activatePreparedVendors(stages, requirementPath = path.join(root, "build", "managed-plugin-composition.generated.json")) {
+  if (!stages.length) throw new Error("No verified Harness vendors to activate.");
+  const compositions = stages.map((stage) => validateManagedPluginBundleManifest(
+    JSON.parse(fs.readFileSync(path.join(stage.stagingDir, pluginCompositionFile), "utf8")),
+    "Staged Harness plugin composition"
+  ));
+  for (const composition of compositions.slice(1)) {
+    assertMatchingPluginComposition(compositions[0], composition, "macOS and Windows Harness plugin composition");
+  }
+  const markerRoot = createSiblingTempDir(requirementPath, ".harness-proof-requirement-");
+  const marker = path.join(markerRoot, "requirement.json");
+  try {
+    fs.writeFileSync(marker, `${JSON.stringify({ version: 1, required: true }, null, 2)}\n`);
+    activateStagedVendors([...stages, { stagingDir: marker, vendorDir: requirementPath, requirement: true }]);
+  } finally {
+    fs.rmSync(markerRoot, { recursive: true, force: true });
+  }
+}
+
+// This is a publication-refusal marker, not a second plugin selection authority.
+// The frozen local controller validates its catalog against the Harness composition.
+function markLocalReleaseCandidate(env, candidateRoot = root) {
+  const flag = env.TRITONAI_LOCAL_RELEASE_CANDIDATE;
+  const catalogPath = env.TRITONAI_PLUGIN_CATALOG_PATH;
+  if (!flag && !catalogPath) return null;
+  if (flag !== "1" || !catalogPath || !path.isAbsolute(catalogPath)) {
+    throw new Error("Local release candidate requires TRITONAI_LOCAL_RELEASE_CANDIDATE=1 and an absolute TRITONAI_PLUGIN_CATALOG_PATH.");
+  }
+  const stat = fs.lstatSync(catalogPath);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Local candidate catalog must be a regular file.");
+  const marker = path.join(candidateRoot, "artifacts", "local-release-candidate.json");
+  fs.mkdirSync(path.dirname(marker), { recursive: true });
+  fs.writeFileSync(marker, `${JSON.stringify({
+    schemaVersion: 1,
+    kind: "tritonai-local-release-candidate",
+    pluginCatalog: { path: catalogPath, sha256: crypto.createHash("sha256").update(fs.readFileSync(catalogPath)).digest("hex") }
+  }, null, 2)}\n`);
+  return marker;
+}
+
 function activateStagedVendors(stages) {
   const activated = [];
-  let completed = false;
+  let preserveBackups = false;
   try {
     for (const stage of stages) {
       const backupRoot = createSiblingTempDir(stage.vendorDir, ".harness-vendor-backup-");
       const previous = path.join(backupRoot, path.basename(stage.vendorDir));
-      const record = { ...stage, backupRoot, previous, previousMoved: false };
+      const record = { ...stage, backupRoot, previous, previousMoved: false, activated: false };
       activated.push(record);
       if (fs.existsSync(stage.vendorDir)) {
         fs.renameSync(stage.vendorDir, previous);
         record.previousMoved = true;
       }
       fs.renameSync(stage.stagingDir, stage.vendorDir);
+      record.activated = true;
     }
-    completed = true;
   } catch (error) {
     const rollbackErrors = [];
+    // Quarantine the complete failed generation before restoring any prior state.
+    // Removing large payloads in place could leave a partially deleted public tree.
     for (const record of [...activated].reverse()) {
-      fs.rmSync(record.vendorDir, { recursive: true, force: true });
-      if (record.previousMoved) {
+      if (!record.activated) continue;
+      try {
+        fs.renameSync(record.vendorDir, path.join(record.backupRoot, "failed-vendor"));
+        record.activated = false;
+      } catch (rollbackError) {
+        rollbackErrors.push(`${record.vendorDir}: ${rollbackError.message}`);
+      }
+    }
+    if (!rollbackErrors.length) {
+      // The requirement marker is last. An optional marker must never accompany
+      // payloads whose rollback failed, even if a different platform restored.
+      for (const record of activated) {
+        if (!record.previousMoved) continue;
         try {
           fs.renameSync(record.previous, record.vendorDir);
           record.previousMoved = false;
         } catch (rollbackError) {
-          rollbackErrors.push(`${record.vendorDir}: ${rollbackError.message}; backup kept at ${record.previous}`);
+          rollbackErrors.push(`${record.vendorDir}: ${rollbackError.message}`);
+          break;
         }
       }
     }
-    if (rollbackErrors.length > 0) {
-      throw new Error(`${error.message} Vendor rollback failures: ${rollbackErrors.join("; ")}`);
+    if (rollbackErrors.length) {
+      preserveBackups = true;
+      const requirement = stages.find((stage) => stage.requirement);
+      if (requirement) {
+        try {
+          fs.writeFileSync(requirement.vendorDir, `${JSON.stringify({ version: 1, required: true })}\n`);
+        } catch (markerError) {
+          rollbackErrors.push(`Could not retain required-proof marker: ${markerError.message}`);
+        }
+      }
+      throw new Error(`${error.message} Vendor rollback failures: ${rollbackErrors.join("; ")}; recovery backups kept at ${activated.map((record) => record.backupRoot).join(", ")}`);
     }
     throw error;
   } finally {
-    for (const record of activated) {
-      if (completed || !record.previousMoved) {
-        fs.rmSync(record.backupRoot, { recursive: true, force: true });
-      }
+    if (!preserveBackups) {
+      for (const record of activated) fs.rmSync(record.backupRoot, { recursive: true, force: true });
     }
   }
 }
@@ -590,6 +640,8 @@ module.exports = {
   downloadManifest,
   downloadVerified,
   activateStagedVendors,
+  activatePreparedVendors,
+  markLocalReleaseCandidate,
   downloadAndVerifyPluginComposition,
   assertExplicitHarnessSource,
   assertMatchingManifestVersions,

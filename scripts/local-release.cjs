@@ -40,7 +40,9 @@ function parseArgs(args) {
   if (!options.help && !VERSION.test(options.version || '')) throw new Error('Supply the release version, e.g. npm run release:local -- 0.3.4');
   if (options.jobs !== undefined && !['1', '2'].includes(options.jobs)) throw new Error('--jobs must be 1 or 2');
   if (options.scope !== undefined && !['harness', 'full'].includes(options.scope)) throw new Error('--scope must be harness or full');
-  if (options.scope === 'harness' && options.skills !== undefined) throw new Error('--skills applies only to --scope full');
+  if (options.scope === 'harness') for (const name of ['skills', 'installer']) {
+    if (options[name] !== undefined) throw new Error(`--${name} applies only to --scope full`);
+  }
   return options;
 }
 
@@ -241,7 +243,7 @@ async function preflight(settings, { disk = true, directory, frozenCandidate, sc
     if (!/^v24\./.test(version)) problems.push(`Node 24 is required; selected ${version}. Set profile.node.`);
   }
   for (const [name, repo] of Object.entries(repos)) {
-    if (scope === 'harness' && name === 'skills') continue;
+    if (scope === 'harness' && ['skills', 'installer'].includes(name)) continue;
     try { if (git(repo, 'rev-parse', '--show-toplevel') !== fs.realpathSync(repo)) throw new Error(); }
     catch { problems.push(`Missing ${name} repository: ${repo}`); }
   }
@@ -304,16 +306,19 @@ async function freeze(options, settings, ready) {
   const scope = options.scope || 'full';
   const installerEnvironment = frozenInstallerEnvironment({ scope, installerEnvironment: ready.installerEnvironment });
   const sources = {};
-  for (const name of (scope === 'harness' ? ['harness', 'installer'] : ['harness', 'installer', 'skills'])) sources[name] = { repo: settings.repos[name], ...resolveRef(settings.repos[name], options[name] || 'main') };
+  for (const name of (scope === 'harness' ? ['harness'] : ['harness', 'installer', 'skills'])) sources[name] = { repo: settings.repos[name], ...resolveRef(settings.repos[name], options[name] || 'main') };
   const requireSourceFile = (name, file, message) => {
     try { git(sources[name].repo, 'cat-file', '-e', `${sources[name].commit}:${file}`); }
     catch { throw new Error(message); }
   };
   requireSourceFile('harness', 'scripts/verify-macos-desktop-package.ts', 'Selected Harness predates single-pass local Mac packaging. Select its matching commit with --harness.');
-  if (scope === 'harness') requireSourceFile('installer', 'tsconfig.plugin-producer.json', 'Selected Installer predates Harness-only composition preparation. Select its matching commit with --installer.');
-  const installerPackage = JSON.parse(git(sources.installer.repo, 'show', `${sources.installer.commit}:package.json`));
-  if (!installerPackage.scripts?.['release:local']) throw new Error('Selected Installer commit predates the local release workflow. Merge the workflow changes, or select their exact local commit with --installer.');
-  const catalog = JSON.parse(git(sources.installer.repo, 'show', `${sources.installer.commit}:config/managed-plugin-catalog.json`));
+  requireSourceFile('harness', '.github/scripts/prepare-managed-plugins.cjs', 'Selected Harness predates Harness-owned plugin composition. Select a matching commit with --harness; use the original controller for older frozen candidates.');
+  requireSourceFile('harness', '.github/scripts/finalize-macos-release.cjs', 'Selected Harness lacks its Mac release finalizer. Select a matching commit with --harness.');
+  if (scope !== 'harness') {
+    const installerPackage = JSON.parse(git(sources.installer.repo, 'show', `${sources.installer.commit}:package.json`));
+    if (!installerPackage.scripts?.['release:local']) throw new Error('Selected Installer commit predates the local release workflow. Select its matching commit with --installer.');
+  }
+  const catalog = JSON.parse(git(sources.harness.repo, 'show', `${sources.harness.commit}:config/managed-plugin-catalog.json`));
   sources.plugins = { repo: settings.repos.plugins, ...resolveRef(settings.repos.plugins, options.plugins || catalog.source.commit) };
   const pluginIds = catalog.packages.map(p => p.pluginId);
   for (const id of pluginIds) if (!ready.configuration[id] || Array.isArray(ready.configuration[id]) || typeof ready.configuration[id] !== 'object') throw new Error(`Plugin configuration is missing '${id}' in ${settings.profile.pluginConfigurationFile}`);
@@ -347,7 +352,7 @@ function assertResumeSelections(candidate, options) {
 async function main(args = process.argv.slice(2)) {
   const options = parseArgs(args);
   if (options.help) {
-    console.log('Usage: npm run release:local -- VERSION [--plugins TAG|BRANCH|SHA] [--skills TAG|BRANCH|SHA]\n  --scope harness|full             Default: full; Harness-only skips Installer and skills\n  --harness REF / --installer REF   Default: latest remote main\n  --profile FILE                   Default: ~/.config/tritonai/release.json\n  --check / --plan / --status       Inspect without building\n  --output DIR / --fresh            New candidate location; otherwise resume same version\n  --jobs 1|2                       Default: parallel Mac and Windows\nNo tags, uploads, releases, or publication. Plugin default: Installer catalog; skills default: main.');
+    console.log('Usage: npm run release:local -- VERSION [--plugins TAG|BRANCH|SHA] [--skills TAG|BRANCH|SHA]\n  --scope harness|full             Default: full; Harness-only skips Installer and skills\n  --harness REF / --installer REF   Default: latest remote main\n  --profile FILE                   Default: ~/.config/tritonai/release.json\n  --check / --plan / --status       Inspect without building\n  --output DIR / --fresh            New candidate location; otherwise resume same version\n  --jobs 1|2                       Default: parallel Mac and Windows\nNo tags, uploads, releases, or publication. Plugin default: Harness catalog; skills default: main.');
     return;
   }
   const settings = profileFor(options);

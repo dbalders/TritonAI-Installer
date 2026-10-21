@@ -27,7 +27,7 @@ test('simple version command and explicit plugin/skills refs have strict argumen
   assert.throws(() => parseArgs(['0.3.4', '--publish']), /Unknown/);
   assert.equal(parseArgs(['0.3.4', '--scope', 'harness']).scope, 'harness');
   assert.throws(() => parseArgs(['0.3.4', '--scope', 'nightly']), /harness or full/);
-  assert.throws(() => parseArgs(['0.3.4', '--scope', 'harness', '--skills', 'main']), /only to --scope full/);
+  for (const selector of ['--skills', '--installer']) assert.throws(() => parseArgs(['0.3.4', '--scope', 'harness', selector, 'main']), /only to --scope full/);
 });
 test('main comes from fresh remote; tag and full SHA selection never use stale local main', t => {
   const root = fixture(t), origin = repo(root, 'origin'), checkout = path.join(root, 'checkout');
@@ -89,7 +89,8 @@ test('freeze persists Installer configuration and resume ignores changed profile
   save(path.join(origin, 'package.json'), { version: '0.3.3', scripts: { 'release:local': 'node scripts/local-release.cjs' } });
   save(path.join(origin, 'config/managed-plugin-catalog.json'), { source: { commit: original }, packages: [{ pluginId: 'github' }] });
   save(path.join(origin, 'scripts/verify-macos-desktop-package.ts'), {});
-  save(path.join(origin, 'tsconfig.plugin-producer.json'), {});
+  save(path.join(origin, '.github/scripts/prepare-managed-plugins.cjs'), {});
+  save(path.join(origin, '.github/scripts/finalize-macos-release.cjs'), {});
   git(origin, 'add', '.'); git(origin, 'commit', '-m', 'release configuration fixture');
   execFileSync('git', ['clone', origin, checkout], { stdio: 'pipe' });
   const configurationFile = path.join(root, 'plugin-config.json'), keyFile = path.join(root, 'notary-key');
@@ -101,10 +102,10 @@ test('freeze persists Installer configuration and resume ignores changed profile
   const candidate = await freeze({ version: '0.3.4', plugins: 'main' }, settings, ready);
   // Harness-only selection succeeds without a skills repository or Installer configuration.
   const harnessCandidate = await freeze({ version: '0.3.4', plugins: 'main', scope: 'harness' },
-    { ...settings, repos: { ...settings.repos, skills: '/nonexistent/skills' } }, { ...ready, installerEnvironment: undefined });
+    { ...settings, repos: { ...settings.repos, installer: '/nonexistent/installer', skills: '/nonexistent/skills' } }, { ...ready, installerEnvironment: undefined });
   assert.equal(harnessCandidate.scope, 'harness');
   assert.equal(harnessCandidate.sources.skills, undefined);
-  assert(harnessCandidate.sources.installer.commit, 'the composition producer remains pinned');
+  assert.equal(harnessCandidate.sources.installer, undefined, 'Harness-only candidates do not resolve Installer source');
   assert.deepEqual(frozenInstallerEnvironment(harnessCandidate), {});
   assert.throws(() => assertResumeSelections(harnessCandidate, { version: '0.3.4' }), /scope differs/);
   assert.doesNotThrow(() => assertResumeSelections(harnessCandidate, { version: '0.3.4', scope: 'harness' }));
@@ -304,7 +305,7 @@ test('Harness-only recipe has no Installer or skills work and handoff preserves 
   const root = fixture(t), file = path.join(root, 'candidate.json');
   const sources = Object.fromEntries(['harness', 'installer', 'plugins'].map(k => [k, { commit: 'a'.repeat(40) }]));
   save(file, { scope: 'harness', version: '0.3.4', sources, tools: { node: process.execPath }, toolIdentities: {}, notary: { keyFile: '/fixture/key' } });
-  const dirs = Object.fromEntries(['harness-mac', 'harness-win', 'plugins', 'composition-producer'].map(k => [k, path.join(root, k)]));
+  const dirs = Object.fromEntries(['harness-mac', 'harness-win', 'plugins'].map(k => [k, path.join(root, k)]));
   const prepared = { dirs, commits: { harness: 'a'.repeat(40) }, pluginInput: '/fixture/plugins', pluginHash: 'c'.repeat(64), catalogPath: path.join(root, 'catalog.json'), catalogHash: 'd'.repeat(64) };
   save(path.join(root, 'prepared.json'), prepared); save(prepared.catalogPath, { packages: [] });
   const recipe = makeBuildRecipe(file, prepared);
@@ -314,7 +315,7 @@ test('Harness-only recipe has no Installer or skills work and handoff preserves 
   for (const step of recipe.steps) for (const need of step.needs) assert(ids.has(need));
   const handoff = recipe.steps.find(step => step.id === 'handoff');
   assert.deepEqual(handoff.needs, ['harness-mac', 'harness-win']);
-  assert(recipe.steps.every(step => step.sources.some(source => source.path === dirs['composition-producer'])));
+  assert(recipe.steps.every(step => step.sources.every(source => source.path === dirs.plugins)));
   const { stage, harnessFiles } = require('./local-release-stages.cjs');
   for (const platform of ['mac', 'win']) for (const name of harnessFiles('0.3.4', platform)) {
     const artifact = path.join(root, 'harness', platform, name);

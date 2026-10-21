@@ -32,9 +32,12 @@ The final Windows job rechecks signatures and both boot proofs, generates `SHA25
 
 An existing release blocks a new build, including an existing draft. Inspect failed runs and any partially created draft before retrying. Do not delete or replace a public release to bypass this guard. A run can be retried from failed jobs before draft creation; an already-created partial draft requires deliberate reconciliation with the original candidate bytes using the existing publisher.
 
-## Harness prerequisites for Installer 0.3.5
+## Harness prerequisites
 
-Installer 0.3.5 requires the Plugins `v0.1.8` catalog update (GitHub `1.0.2`, Google Workspace `1.1.1`, Microsoft 365 `1.3.1`, n8n `1.1.2`) through the [managed plugin catalog](../config/managed-plugin-catalog.json). Publish a stable Harness `0.3.5` with that exact plugin composition before dispatching the Installer release. Harness `0.3.4` and any Harness `0.3.5` build composed from Plugins `v0.1.7` contain earlier compositions and cannot satisfy this catalog.
+Publish and verify the matching stable Harness release before dispatching Installer. Harness owns
+the reviewed plugin catalogs; its release must include platform-specific composition proofs bound
+to the exact final Mac and Windows assets. Installer consumes those proofs with its pinned Harness
+version and has no second plugin catalog to update.
 
 Select the successful stable `release.yml` run and exact tag commit after Harness publication; nightly validation runs do not satisfy the stable release prerequisite. Recheck the published artifacts and their retention before dispatch. Select a reviewed secure-skills commit separately; packaging enforces clean-source provenance and the exact selected commit.
 
