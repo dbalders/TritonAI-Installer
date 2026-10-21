@@ -347,13 +347,19 @@ function activateStagedVendors(stages) {
     for (const stage of stages) {
       const backupRoot = createSiblingTempDir(stage.vendorDir, ".harness-vendor-backup-");
       const previous = path.join(backupRoot, path.basename(stage.vendorDir));
-      const record = { ...stage, backupRoot, previous, previousMoved: false, activated: false };
-      activated.push(record);
-      if (fs.existsSync(stage.vendorDir)) {
-        fs.renameSync(stage.vendorDir, previous);
+      activated.push({ ...stage, backupRoot, previous, previousMoved: false, activated: false });
+    }
+    // Back up policy before touching any payload. A failure during an earlier
+    // platform activation must retain the old marker as part of recovery too.
+    const backupOrder = [...activated].sort((left, right) => Number(Boolean(right.requirement)) - Number(Boolean(left.requirement)));
+    for (const record of backupOrder) {
+      if (fs.existsSync(record.vendorDir)) {
+        fs.renameSync(record.vendorDir, record.previous);
         record.previousMoved = true;
       }
-      fs.renameSync(stage.stagingDir, stage.vendorDir);
+    }
+    for (const record of activated) {
+      fs.renameSync(record.stagingDir, record.vendorDir);
       record.activated = true;
     }
   } catch (error) {

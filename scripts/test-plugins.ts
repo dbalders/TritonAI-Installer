@@ -327,7 +327,7 @@ function assertCandidatePublicationMarker() {
   });
 }
 
-function assertFailedRollbackRetainsRequiredProofAndBackups() {
+function assertFailedRollbackRetainsRequiredProofAndBackups(failAtMarker = true) {
   withTempRoot("tritonai-proof-quarantine-failure-", (tempRoot) => {
     const requirementPath = path.join(tempRoot, "requirement.json");
     const previousMarker = '{"version":1,"required":false}\n';
@@ -342,7 +342,8 @@ function assertFailedRollbackRetainsRequiredProofAndBackups() {
     });
     const rename = fs.renameSync;
     fs.renameSync = (source, target) => {
-      if (target === requirementPath && path.basename(source) === "requirement.json") throw new Error("injected marker activation failure");
+      if (failAtMarker && target === requirementPath && path.basename(source) === "requirement.json") throw new Error("injected marker activation failure");
+      if (!failAtMarker && source === stages[1].stagingDir) throw new Error("injected Windows activation failure");
       if (source === stages[0].vendorDir && path.basename(target) === "failed-vendor") throw new Error("injected quarantine failure");
       return rename(source, target);
     };
@@ -369,4 +370,5 @@ assertPublishedProofConsumption();
 assertAtomicProofActivation();
 assertCandidatePublicationMarker();
 assertFailedRollbackRetainsRequiredProofAndBackups();
+assertFailedRollbackRetainsRequiredProofAndBackups(false);
 console.log("Managed Harness composition proof consumer tests passed.");
