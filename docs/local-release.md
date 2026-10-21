@@ -6,7 +6,7 @@ From the Installer checkout containing this workflow:
 npm run release:local -- 0.3.4
 ```
 
-The command fetches Harness and Installer `origin/main`, selects the Installer catalog's
+The command fetches Harness and Installer `origin/main`, selects the Harness catalog's
 plugin commit and the secure skills repository's `origin/main`, freezes those commits, and
 builds macOS arm64 and unsigned Windows x64 candidates. Dirty development checkouts are
 preserved: work happens in isolated detached worktrees. Only release version files are
@@ -21,10 +21,11 @@ npm run release:local -- 0.3.4 --scope harness
 
 `--scope full` is the default. `--scope harness` builds and verifies both Harness platforms,
 but excludes Installer dependency installs, tests, app compilation, packaging, and skills
-checkout/validation. It still pins the Installer repository as the owner of the reviewed
-plugin catalog and composition producer. Only that small producer is compiled, using
-Harness's installed TypeScript compiler and Node types. Windows packaging tools also
-resolve from Harness's Electron Builder dependency, so Installer dependencies are unnecessary.
+checkout/validation. Plugin selection, staging, and Mac finalization come from the exact frozen
+Harness source. Harness-only candidates do not resolve or check out Installer. Windows packaging
+tools also resolve from Harness's Electron Builder dependency. Select a Harness revision containing
+these owned tools; older frozen candidates require their original controller, while `--fresh`
+selects current source and creates a separate candidate.
 
 The intended cadence is Harness nightlies plus full releases, with Installer only on full
 releases alongside the matching verified Harness. This local scope switch does not create a

@@ -76,7 +76,7 @@ async function prepare(candidateFile) {
   const candidate = read(candidateFile), root = path.dirname(candidateFile), { sources, tools } = candidate;
   const kinds = candidate.scope === 'harness' ? ['harness'] : ['harness', 'installer'];
   const inputs = candidate.scope === 'harness' ? ['plugins'] : ['plugins', 'skills'];
-  const dirs = Object.fromEntries([...kinds.flatMap(kind => [`${kind}-mac`, `${kind}-win`]), ...inputs, ...(candidate.scope === 'harness' ? ['composition-producer'] : [])].map(id => [id, path.join(root, 'worktrees', id)]));
+  const dirs = Object.fromEntries([...kinds.flatMap(kind => [`${kind}-mac`, `${kind}-win`]), ...inputs].map(id => [id, path.join(root, 'worktrees', id)]));
   fs.mkdirSync(path.join(root, 'inputs'), { recursive: true });
   fs.mkdirSync(path.join(root, 'proof'), { recursive: true });
   for (const kind of inputs) {
@@ -99,39 +99,33 @@ async function prepare(candidateFile) {
     ensureWorktree(sources[kind], dirs[`${kind}-win`], commits[kind]);
     if (git(dirs[`${kind}-win`], 'rev-parse', 'HEAD') !== commits[kind] || git(dirs[`${kind}-win`], 'status', '--porcelain')) throw new Error(`${kind} Windows worktree differs from frozen version commit.`);
   }
-  const producerRoot = dirs['composition-producer'] || dirs['installer-mac'];
-  if (candidate.scope === 'harness') {
-    ensureWorktree(sources.installer, producerRoot);
-    if (git(producerRoot, 'rev-parse', 'HEAD') !== sources.installer.commit || git(producerRoot, 'status', '--porcelain')) throw new Error('Plugin composition producer checkout changed; inspect before resuming.');
-    // Compile only the pinned composition producer, using Harness's installed
-    // compiler and Node types. No Installer dependencies or app build are needed.
-    await command(dirs['harness-mac'], [tools.vp, 'exec', 'tsgo', '--project', path.join(producerRoot, 'tsconfig.plugin-producer.json'), '--typeRoots', path.join(dirs['harness-mac'], 'node_modules/@types')]);
-  } else await command(producerRoot, ['npm', 'run', 'build']);
-  const vendor = require(path.join(producerRoot, 'dist/scripts/prepare-plugins-vendor.js'));
-  if (!vendor.createLocalCandidatePluginCatalog) throw new Error('Selected Installer lacks local candidate support. Select a version containing the release workflow changes.');
+  const producerRoot = dirs['harness-mac'];
+  const producerScript = '.github/scripts/prepare-managed-plugins.cjs';
+  const vendor = require(path.join(producerRoot, producerScript));
+  if (!vendor.createLocalCandidatePluginCatalog) throw new Error('Selected Harness lacks local candidate composition support. Use --fresh with a matching Harness source, or the original controller for older frozen candidates.');
   const pluginInput = path.join(root, 'inputs/plugins');
   const catalogPath = path.join(root, 'inputs/plugin-catalog.json');
   if (!fs.existsSync(catalogPath)) {
-    await command(producerRoot, [tools.node, 'dist/scripts/prepare-plugins-vendor.js'], {
+    await command(producerRoot, [tools.node, producerScript], {
       ...process.env, TRITONAI_LOCAL_RELEASE_CANDIDATE: '', TRITONAI_PLUGIN_CATALOG_PATH: '',
       TRITONAI_PLUGINS_SOURCE: dirs.plugins, TRITONAI_PLUGINS_REF: sources.plugins.commit,
       TRITONAI_PLUGINS_COMMIT: sources.plugins.commit, TRITONAI_PLUGIN_IDS: candidate.pluginIds.join(',')
     });
-    const manifest = read(path.join(producerRoot, 'vendor/plugins/manifest.json'));
+    const manifest = read(path.join(producerRoot, '.release-input/plugins/manifest.json'));
     if (candidate.catalogSelection) {
       const catalog = read(path.join(producerRoot, 'config/managed-plugin-catalog.json'));
       // The commit pin is immutable; compare package bytes independently of branch spelling.
       const actual = vendor.createLocalCandidatePluginCatalog(manifest);
       if (JSON.stringify(actual.packages) !== JSON.stringify(catalog.packages) || actual.source.commit !== catalog.source.commit) throw new Error('Selected default plugin bytes differ from the reviewed catalog.');
     }
-    const generated = path.join(producerRoot, 'vendor/plugins');
+    const generated = path.join(producerRoot, '.release-input/plugins');
     if (fs.existsSync(pluginInput)) {
       if (await treeHash(pluginInput) !== await treeHash(generated)) throw new Error(`Incomplete plugin input differs at ${pluginInput}; inspect before resuming preparation.`);
     } else fs.cpSync(generated, pluginInput, { recursive: true, dereference: false });
     save(catalogPath, vendor.createLocalCandidatePluginCatalog(manifest));
   }
   const frozen = read(path.join(pluginInput, 'manifest.json'));
-  require(path.join(producerRoot, 'dist/src/installer/plugin-catalog.js')).assertCatalogComposition(read(catalogPath), frozen);
+  require(path.join(producerRoot, '.github/scripts/managed-plugins/plugin-catalog.cjs')).assertCatalogComposition(read(catalogPath), frozen);
   save(path.join(root, 'prepared.json'), { dirs, commits, pluginInput, catalogPath,
     pluginHash: await treeHash(pluginInput), catalogHash: await treeHash(catalogPath) });
 }
@@ -151,7 +145,7 @@ function installerFiles(version, platform) {
 function makeBuildRecipe(candidateFile, prepared) {
   const c = read(candidateFile), root = path.dirname(candidateFile), { dirs, commits } = prepared;
   const kinds = c.scope === 'harness' ? ['harness'] : ['harness', 'installer'];
-  const inputSources = [{ path: dirs.plugins, commit: c.sources.plugins.commit }, ...(c.scope === 'harness' ? [{ path: dirs['composition-producer'], commit: c.sources.installer.commit }] : [{ path: dirs.skills, commit: c.sources.skills.commit }])];
+  const inputSources = [{ path: dirs.plugins, commit: c.sources.plugins.commit }, ...(c.scope === 'harness' ? [] : [{ path: dirs.skills, commit: c.sources.skills.commit }])];
   const inputFiles = [candidateFile, path.join(root, 'prepared.json'), ...fs.readdirSync(__dirname).filter(n => /^local-release.*\.cjs$/.test(n)).map(n => path.join(__dirname, n)),
     { path: prepared.pluginInput, sha256: prepared.pluginHash }, { path: prepared.catalogPath, sha256: prepared.catalogHash }, { path: c.notary.keyFile, sha256: c.notary.keySha256 }, ...Object.values(c.toolIdentities)];
   const steps = [];
@@ -218,7 +212,7 @@ async function stage(id, candidateFile) {
     // otherwise discovers those files without loading apps/server/vite.config.ts.
     // Platform packaging compiles desktop/server/web with the frozen managed
     // configuration. A generic workspace build here is discarded by those builds.
-    const commands = kind === 'harness' ? [[c.tools.vp, 'check'], [c.tools.vp, 'run', 'typecheck'],
+    const commands = kind === 'harness' ? [[c.tools.vp, 'check'], [c.tools.vp, 'run', 'typecheck'], [c.tools.vp, 'run', 'test:release-inputs'],
       [c.tools.vp, 'test', 'run', '--maxWorkers=2', '--exclude', 'apps/server/**'],
       [c.tools.vp, 'test', 'run', '--root', 'apps/server', '--maxWorkers=1']]
       : kind === 'installer' ? [['npm', 'test']] : [['corepack', 'pnpm', 'readiness:local']];
@@ -251,7 +245,7 @@ async function stage(id, candidateFile) {
       const args = [c.tools.node, 'scripts/build-desktop-artifact.ts', '--platform', platform, '--target', platform === 'mac' ? 'zip' : 'nsis', '--arch', platform === 'mac' ? 'arm64' : 'x64', '--output-dir', out];
       if (platform === 'mac') args.push('--keep-stage', '--stage-only');
       await command(cwd, args, env);
-      if (platform === 'mac') await command(cwd, [c.tools.node, path.join(__dirname, 'local-release-mac.cjs'), cwd, env.TMPDIR, c.version, out], { ...env, ...macSigningEnvironment(c) });
+      if (platform === 'mac') await command(cwd, [c.tools.node, path.join(cwd, '.github/scripts/finalize-macos-release.cjs'), cwd, env.TMPDIR, c.version, out], { ...env, ...macSigningEnvironment(c) });
       else {
         const artifact = path.join(out, `TritonAI-Harness-${c.version}-x64.exe`);
         const proof = await require('./local-release-payload.cjs').verifyWindowsHarness({ artifact, outputDirectory: out, composition: read(path.join(p.pluginInput, 'manifest.json')), version: c.version, harnessRoot: dirs['harness-mac'] });

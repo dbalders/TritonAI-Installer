@@ -45,11 +45,10 @@ function main() {
   copyFile("README.md", path.join(resourcesApp, "README.md"));
   prepareManagedConfig();
   copyFile("build/managed-config.generated.json", path.join(resourcesApp, "managed-config.json"));
-  preparePluginsVendor();
-  copyFile("build/managed-plugin-composition.generated.json", path.join(resourcesApp, "managed-plugin-composition.json"));
   prepareSkillsVendor();
   copyTree(path.join(root, "vendor", "skills"), path.join(resourcesApp, "vendor", "skills"));
   prepareT3CodeDesktopVendor();
+  copyFile("build/managed-plugin-composition.generated.json", path.join(resourcesApp, "managed-plugin-composition.json"));
   copyTree(path.join(root, "vendor", "t3code-desktop", "win-x64"), path.join(resourcesApp, "vendor", "t3code-desktop", "win-x64"));
   prepareCodexCliVendor();
   copyTree(path.join(root, "vendor", "codex-cli", "win-x64"), path.join(resourcesApp, "vendor", "codex-cli", "win-x64"));
@@ -70,13 +69,6 @@ function main() {
 
 function prepareSkillsVendor() {
   execFileSync(process.execPath, [path.join(root, "dist", "scripts", "prepare-skills-vendor.js")], {
-    cwd: root,
-    stdio: "inherit"
-  });
-}
-
-function preparePluginsVendor() {
-  execFileSync(process.execPath, [path.join(root, "dist", "scripts", "prepare-plugins-vendor.js")], {
     cwd: root,
     stdio: "inherit"
   });
