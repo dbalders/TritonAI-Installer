@@ -258,6 +258,15 @@ function assertPublishedProofConsumption() {
   });
 }
 
+function writeStagedPlatformProof(stagingDir, target) {
+  const isMac = target.startsWith("mac");
+  const artifactPath = path.join(stagingDir, `TritonAI-Harness-0.3.7-${isMac ? "arm64.dmg" : "x64.exe"}`);
+  fs.writeFileSync(artifactPath, `final signed ${target} artifact bytes`);
+  const proof = { ...compositionFixture(), artifacts: [artifactBinding(artifactPath)] };
+  fs.writeFileSync(path.join(stagingDir, pluginCompositionFile), JSON.stringify(proof));
+  return proof;
+}
+
 function assertAtomicProofActivation() {
   withTempRoot("tritonai-proof-activation-", (tempRoot) => {
     const requirementPath = path.join(tempRoot, "build", "managed-plugin-composition.generated.json");
@@ -269,16 +278,18 @@ function assertAtomicProofActivation() {
       const vendorDir = path.join(tempRoot, `vendor-${target}`);
       fs.mkdirSync(stagingDir); fs.mkdirSync(vendorDir);
       fs.writeFileSync(path.join(vendorDir, "previous"), target);
-      fs.writeFileSync(path.join(stagingDir, pluginCompositionFile), JSON.stringify(compositionFixture()));
-      return { stagingDir, vendorDir };
+      const proof = writeStagedPlatformProof(stagingDir, target);
+      return { stagingDir, vendorDir, target, proof };
     });
+    assert.notDeepStrictEqual(stages[0].proof.artifacts, stages[1].proof.artifacts,
+      "matching compositions must accept the distinct final Mac and Windows artifact bindings");
     const winProof = path.join(stages[1].stagingDir, pluginCompositionFile);
-    const different = compositionFixture(); different.source.commit = "d".repeat(40);
+    const different = structuredClone(stages[1].proof); different.source.commit = "d".repeat(40);
     fs.writeFileSync(winProof, JSON.stringify(different));
     assert.throws(() => activatePreparedVendors(stages, requirementPath), /does not match the exact/);
     for (const stage of stages) assert(fs.existsSync(path.join(stage.vendorDir, "previous")));
     assert.strictEqual(fs.readFileSync(requirementPath, "utf8"), previousMarker);
-    fs.writeFileSync(winProof, JSON.stringify(compositionFixture()));
+    fs.writeFileSync(winProof, JSON.stringify(stages[1].proof));
 
     // Fail after both platform payloads move, while activating the required-proof marker.
     const rename = fs.renameSync;
@@ -294,7 +305,7 @@ function assertAtomicProofActivation() {
     // Recreate staging payloads after rollback, then commit the entire generation.
     for (const stage of stages) {
       fs.mkdirSync(stage.stagingDir);
-      fs.writeFileSync(path.join(stage.stagingDir, pluginCompositionFile), JSON.stringify(compositionFixture()));
+      writeStagedPlatformProof(stage.stagingDir, stage.target);
     }
     activatePreparedVendors(stages, requirementPath);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(requirementPath, "utf8")), { version: 1, required: true });
@@ -337,7 +348,7 @@ function assertFailedRollbackRetainsRequiredProofAndBackups(failAtMarker = true)
       const vendorDir = path.join(tempRoot, `vendor-${platform}`);
       fs.mkdirSync(stagingDir); fs.mkdirSync(vendorDir);
       fs.writeFileSync(path.join(vendorDir, "previous"), platform);
-      fs.writeFileSync(path.join(stagingDir, pluginCompositionFile), JSON.stringify(compositionFixture()));
+      writeStagedPlatformProof(stagingDir, platform);
       return { stagingDir, vendorDir };
     });
     const rename = fs.renameSync;
