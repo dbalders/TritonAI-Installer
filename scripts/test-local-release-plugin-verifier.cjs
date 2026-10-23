@@ -71,6 +71,8 @@ function fixture(t) {
   fs.mkdirSync(path.join(pkg, 'skills/github'), { recursive: true });
   fs.writeFileSync(path.join(pkg, 'skills/github/SKILL.md'), '---\nname: github\ndescription: Read github data.\n---\n# GitHub\n');
   git(repo, 'init', '-b', 'main'); git(repo, 'config', 'user.name', 'Fixture'); git(repo, 'config', 'user.email', 'fixture@example.invalid');
+  // Keep frozen fixture bytes stable across restore on runners with CRLF defaults.
+  git(repo, 'config', 'core.autocrlf', 'false');
   git(repo, 'add', '.'); git(repo, 'commit', '-m', 'reviewed payload');
   const payloadCommit = git(repo, 'rev-parse', 'HEAD'), pluginInput = path.join(root, 'inputs/plugins');
   fs.mkdirSync(path.dirname(pluginInput), { recursive: true });
