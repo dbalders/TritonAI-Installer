@@ -4,6 +4,7 @@ const fs = require("fs");
 const http = require("http");
 const os = require("os");
 const path = require("path");
+const { spawn } = require("child_process");
 
 const { getPaths } = require("../src/installer/paths");
 const {
@@ -18,6 +19,7 @@ const {
   findBundledNodeArchive,
   getNodeDistribution,
   getNodeRuntimePaths,
+  installNodeRuntimeFromArchive,
   recoverInterruptedNodeRuntime,
   runExtractionCommand,
   shouldFallbackWindowsExtraction
@@ -27,6 +29,11 @@ const { writeDirectoryTransactionJournal } = require("../src/installer/directory
 async function main() {
   assertReviewedNodeArchiveDigests();
   await assertPackagedRuntimeIsRequiredAndInstalledTransactionally();
+  await assertWindowsRuntimeRenamesRetryTransientErrors();
+  await assertWindowsRuntimeBackupAndRollbackRetry();
+  await assertRuntimeRenameFailuresStayBounded();
+  await assertFailedRollbackRetainsRecovery();
+  await assertNativeWindowsRuntimeLockCanBeReleased();
   assertInterruptedRuntimeActivationRestoresPreviousRuntime();
   await assertInterruptedDownloadRetriesWithoutPoisoningTarget();
   await assertDownloadTotalTimeoutPreservesExistingTarget();
@@ -43,6 +50,193 @@ function assertReviewedNodeArchiveDigests() {
   });
   assert.strictEqual(getNodeDistribution("darwin", "arm64").sha256, NODE_ARCHIVE_SHA256["mac-arm64"]);
   assert.strictEqual(getNodeDistribution("win32", "x64").sha256, NODE_ARCHIVE_SHA256["win-x64"]);
+}
+
+async function withRuntimeRenameFixture(platform, run) {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-node-rename-"));
+  const paths = getPaths(path.join(tempRoot, "home"), platform);
+  const arch = platform === "win32" ? "x64" : "arm64";
+  const nodePaths = getNodeRuntimePaths(paths, platform, arch);
+  const archivePath = path.join(tempRoot, "runtime.archive");
+  fs.writeFileSync(archivePath, "fixture archive");
+  const expectedSha256 = crypto.createHash("sha256").update("fixture archive").digest("hex");
+  const install = ({ emit = (_message) => {}, afterExtraction = async (_home) => {} } = {}) =>
+    installNodeRuntimeFromArchive({
+      archivePath, expectedSha256, paths, platform, arch, nodePaths, emit,
+      archiveExtractor: async ({ destination }) => {
+        const home = path.join(destination, nodePaths.nodeDirName);
+        writeFakeNodeRuntime(home, platform);
+        await afterExtraction(home);
+      }
+    });
+  const rename = fs.renameSync;
+  try {
+    await run({ tempRoot, paths, nodePaths, install, rename });
+  } finally {
+    fs.renameSync = rename;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertWindowsRuntimeRenamesRetryTransientErrors() {
+  for (const code of ["EPERM", "EACCES", "EBUSY"]) {
+    await withRuntimeRenameFixture("win32", async ({ paths, nodePaths, install, rename }) => {
+      let attempts = 0;
+      const messages: string[] = [];
+      fs.renameSync = (from, to) => {
+        if (to === nodePaths.nodeHome && from.includes(NODE_STAGE_PREFIX) && ++attempts === 1) {
+          throw Object.assign(new Error("temporary rename denial"), { code });
+        }
+        return rename(from, to);
+      };
+      await install({ emit: (message) => messages.push(message) });
+      assert.strictEqual(attempts, 2, `${code} must be retried`);
+      assert(messages.some((message) => message.includes(code) && message.includes("retrying")));
+      assert.strictEqual(fs.readFileSync(nodePaths.nodeBinary, "utf8"), "node");
+      assert.strictEqual(JSON.parse(fs.readFileSync(nodePaths.runtimeMarker, "utf8")).target, "win-x64");
+      assert.deepStrictEqual(fs.readdirSync(paths.nodeRoot), [nodePaths.nodeDirName]);
+    });
+  }
+}
+
+async function assertWindowsRuntimeBackupAndRollbackRetry() {
+  await withRuntimeRenameFixture("win32", async ({ paths, nodePaths, install, rename }) => {
+    await install();
+    fs.writeFileSync(nodePaths.nodeBinary, "previous node");
+    let backups = 0;
+    let rollbacks = 0;
+    const failure = Object.assign(new Error("activation failed"), { code: "EIO" });
+    fs.renameSync = (from, to) => {
+      if (from === nodePaths.nodeHome && ++backups === 1) {
+        throw Object.assign(new Error("backup locked"), { code: "EBUSY" });
+      }
+      if (from.includes(NODE_STAGE_PREFIX)) throw failure;
+      if (from.includes(NODE_BACKUP_PREFIX) && ++rollbacks === 1) {
+        throw Object.assign(new Error("rollback locked"), { code: "EACCES" });
+      }
+      return rename(from, to);
+    };
+    await assert.rejects(install(), (error) => error === failure);
+    assert.strictEqual(backups, 2);
+    assert.strictEqual(rollbacks, 2);
+    assert.strictEqual(fs.readFileSync(nodePaths.nodeBinary, "utf8"), "previous node");
+    assert.deepStrictEqual(fs.readdirSync(paths.nodeRoot), [nodePaths.nodeDirName]);
+  });
+}
+
+async function assertRuntimeRenameFailuresStayBounded() {
+  for (const { platform, code, previous, attempts: expectedAttempts } of [
+    { platform: "win32", code: "EPERM", previous: false, attempts: 6 },
+    { platform: "win32", code: "EPERM", previous: true, attempts: 6 },
+    { platform: "win32", code: "ENOENT", previous: false, attempts: 1 },
+    { platform: "win32", code: "EIO", previous: false, attempts: 1 },
+    { platform: "darwin", code: "EPERM", previous: false, attempts: 1 }
+  ]) {
+    await withRuntimeRenameFixture(platform, async ({ paths, nodePaths, install, rename }) => {
+      if (previous) {
+        await install();
+        fs.writeFileSync(nodePaths.nodeBinary, "previous node");
+      }
+      const failure = Object.assign(new Error("rename denied"), { code });
+      let attempts = 0;
+      const messages: string[] = [];
+      fs.renameSync = (from, to) => {
+        if (from.includes(NODE_STAGE_PREFIX)) {
+          attempts += 1;
+          throw failure;
+        }
+        return rename(from, to);
+      };
+      await assert.rejects(install({ emit: (message) => messages.push(message) }), (error) => error === failure);
+      assert.strictEqual(attempts, expectedAttempts);
+      assert.strictEqual(messages.length, expectedAttempts - 1);
+      if (previous) assert.strictEqual(fs.readFileSync(nodePaths.nodeBinary, "utf8"), "previous node");
+      else assert(!fs.existsSync(nodePaths.nodeHome), "a failed activation must not appear installed");
+      assert.deepStrictEqual(fs.readdirSync(paths.nodeRoot), previous ? [nodePaths.nodeDirName] : []);
+    });
+  }
+}
+
+async function assertFailedRollbackRetainsRecovery() {
+  await withRuntimeRenameFixture("win32", async ({ paths, nodePaths, install, rename }) => {
+    await install();
+    fs.writeFileSync(nodePaths.nodeBinary, "previous node");
+    let rollbacks = 0;
+    fs.renameSync = (from, to) => {
+      if (from.includes(NODE_STAGE_PREFIX)) throw new Error("activation failed");
+      if (from.includes(NODE_BACKUP_PREFIX)) {
+        rollbacks += 1;
+        throw Object.assign(new Error("rollback locked"), { code: "EPERM" });
+      }
+      return rename(from, to);
+    };
+    await assert.rejects(install(), /Rollback also failed: rollback locked/);
+    assert.strictEqual(rollbacks, 6);
+    assert(fs.existsSync(path.join(paths.nodeRoot, NODE_TRANSACTION_JOURNAL_FILE)));
+    fs.renameSync = rename;
+    recoverInterruptedNodeRuntime({ paths, nodePaths, platform: "win32", arch: "x64", emit: () => {} });
+    assert.strictEqual(fs.readFileSync(nodePaths.nodeBinary, "utf8"), "previous node");
+    assert.deepStrictEqual(fs.readdirSync(paths.nodeRoot), [nodePaths.nodeDirName]);
+  });
+}
+
+async function assertNativeWindowsRuntimeLockCanBeReleased() {
+  if (process.platform !== "win32") return;
+  await withRuntimeRenameFixture("win32", async ({ tempRoot, nodePaths, install }) => {
+    const releasePath = path.join(tempRoot, "release-lock");
+    let holder;
+    let closed;
+    let retries = 0;
+    try {
+      await install({
+        afterExtraction: async (home) => {
+          // FileShare.ReadWrite deliberately omits Delete, preventing the directory rename.
+          holder = spawn(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+            "$ErrorActionPreference='Stop'; "
+            + "$handle=[IO.File]::Open($env:TRITONAI_TEST_LOCK_FILE,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite); "
+            + "try { [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); "
+            + "$deadline=[DateTime]::UtcNow.AddSeconds(15); "
+            + "while (!(Test-Path -LiteralPath $env:TRITONAI_TEST_RELEASE_FILE) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 } "
+            + "} finally { $handle.Dispose() }"
+          ], {
+            windowsHide: true,
+            env: { ...process.env, TRITONAI_TEST_LOCK_FILE: path.join(home, "node.exe"), TRITONAI_TEST_RELEASE_FILE: releasePath }
+          });
+          closed = new Promise((resolve) => holder.once("close", resolve));
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("Windows lock fixture did not become ready")), 10_000);
+            let output = "";
+            let stderr = "";
+            const finish = (error = null) => { clearTimeout(timer); error ? reject(error) : resolve(); };
+            holder.stdout.on("data", (chunk) => {
+              output += chunk.toString();
+              if (output.includes("LOCKED")) finish();
+            });
+            holder.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+            holder.once("error", finish);
+            holder.once("close", (code) => finish(new Error(`Windows lock fixture exited (${code}): ${stderr}`)));
+          });
+        },
+        emit: (message) => {
+          if (message.includes("retrying")) {
+            retries += 1;
+            fs.writeFileSync(releasePath, "release");
+          }
+        }
+      });
+      assert(retries > 0, "a real Windows file handle must block the initial activation");
+      assert.strictEqual(fs.readFileSync(nodePaths.nodeBinary, "utf8"), "node");
+      assert(fs.existsSync(nodePaths.runtimeMarker));
+      console.log("Native Windows Node runtime lock/retry test passed.");
+    } finally {
+      if (holder) {
+        fs.writeFileSync(releasePath, "release");
+        const timer = setTimeout(() => holder.kill(), 5_000);
+        try { await closed; } finally { clearTimeout(timer); }
+      }
+    }
+  });
 }
 
 async function assertExtractionWatchdogTerminatesTimedOutProcess() {
