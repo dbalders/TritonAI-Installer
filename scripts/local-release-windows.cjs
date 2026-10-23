@@ -9,9 +9,13 @@ const NSIS_VERSION = '3.0.4.1';
 const NSIS_SHA256 = 'e277b7378931b74392015f5ad6b1d744dcd8a347baa4480350a75ebeab8d8e3d';
 const NSIS_ARCHIVE_SHA256 = '9877df902530f96357d13a7a31ae2b9df67f48b11ffc9a1700a7c961574ec5fa';
 const RESOURCES_ARCHIVE_SHA256 = '593a9a92ef958321293ac6a2ee61e64bf1bd543142a5bd6b3d310709cc924103';
-const BUILDER_VERSION = '26.15.7';
+const BUILDER_VERSIONS = ['26.15.7', '26.16.1'];
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+
+function assertBuilderVersion(version) {
+  if (!BUILDER_VERSIONS.includes(version)) throw new Error(`Windows toolchain expects app-builder-lib ${BUILDER_VERSIONS.join(' or ')}, found ${version}. Validate the pinned NSIS integration before changing the release toolchain version.`);
+}
 
 function run(file, args, { env, cwd, input, timeout = 180000, label = path.basename(file), log = () => {}, progressInterval = 30000, includeStderr = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -278,7 +282,7 @@ async function prepareWindowsToolchain({ root, harnessRoot, installerRoot, candi
     downloader = path.join(path.dirname(packageFile), 'out/util/electronGet.js');
   } catch { throw new Error(`Install dependencies in ${packagingRoot} before preparing the Windows toolchain.`); }
   const version = JSON.parse(fs.readFileSync(packageFile, 'utf8')).version;
-  if (version !== BUILDER_VERSION) throw new Error(`Windows toolchain expects app-builder-lib ${BUILDER_VERSION}, found ${version}. Validate the pinned NSIS integration before changing the release toolchain version.`);
+  assertBuilderVersion(version);
   const templateSource = path.join(path.dirname(packageFile), 'templates', 'nsis');
   const templateSha256 = hashTree(templateSource);
   const childEnv = { ...env, ELECTRON_BUILDER_CACHE: cache, WINEPREFIX: prefix, WINEDEBUG: '-all', WINEDLLOVERRIDES: 'winemenubuilder.exe=d' };
@@ -356,4 +360,4 @@ async function prepareWindowsToolchain({ root, harnessRoot, installerRoot, candi
   return { env: overlay, receipt };
 }
 
-module.exports = { prepareWindowsToolchain, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256, runTool: run, initializeWinePrefix, resolveWineServer };
+module.exports = { prepareWindowsToolchain, assertBuilderVersion, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256, runTool: run, initializeWinePrefix, resolveWineServer };
