@@ -28,6 +28,7 @@ const NODE_STAGE_PREFIX = ".node-runtime-stage-";
 const NODE_BACKUP_PREFIX = ".node-runtime-backup-";
 const NODE_TRANSACTION_KIND = "managed Node.js runtime";
 const EXTRACTION_TIMEOUT_MS = 10 * 60 * 1000;
+const NODE_RENAME_RETRY_DELAYS_MS = [100, 200, 400, 800, 1_600];
 
 interface NodeBundleOptions {
   platform?: NodeJS.Platform;
@@ -277,10 +278,10 @@ async function installNodeRuntimeFromArchive({
     });
 
     if (fs.existsSync(nodePaths.nodeHome)) {
-      fs.renameSync(nodePaths.nodeHome, previousNodeHome);
+      await renameNodeRuntime(nodePaths.nodeHome, previousNodeHome, platform, emit);
       previousMoved = true;
     }
-    fs.renameSync(stagedNodeHome, nodePaths.nodeHome);
+    await renameNodeRuntime(stagedNodeHome, nodePaths.nodeHome, platform, emit);
     replacementActivated = true;
     if (!isInstalledNodeRuntime(nodePaths, platform, arch)) {
       throw new Error(`Activated Node.js runtime is incomplete: ${nodePaths.nodeHome}`);
@@ -290,7 +291,7 @@ async function installNodeRuntimeFromArchive({
     if (previousMoved) {
       try {
         fs.rmSync(nodePaths.nodeHome, { recursive: true, force: true });
-        fs.renameSync(previousNodeHome, nodePaths.nodeHome);
+        await renameNodeRuntime(previousNodeHome, nodePaths.nodeHome, platform, emit);
         previousMoved = false;
       } catch (rollbackError) {
         throw new Error(
@@ -309,6 +310,23 @@ async function installNodeRuntimeFromArchive({
     }
     // A completed rollback must not leave a journal pointing at deleted recovery directories.
     if (replacementCompleted || !previousMoved) fs.rmSync(journalPath, { force: true });
+  }
+}
+
+async function renameNodeRuntime(from, to, platform, emit) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (error) {
+      // Windows scanners and other open handles can briefly deny a directory move.
+      // Keep activation atomic; persistent failures still follow the existing rollback.
+      if (platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(error && error.code)
+        || attempt >= NODE_RENAME_RETRY_DELAYS_MS.length) throw error;
+      const delayMs = NODE_RENAME_RETRY_DELAYS_MS[attempt];
+      emit(`Windows could not move the managed Node.js runtime (${error.code}); retrying in ${delayMs}ms (${attempt + 1}/${NODE_RENAME_RETRY_DELAYS_MS.length}).`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
   }
 }
 
