@@ -36,9 +36,28 @@ function stageFixture({ sourceRoot, vendorDir, selectedIds, source }) {
 }
 const producer = { stagePluginsFromSource: stageFixture };
 const git = (repo, ...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim();
+let emittedWindowsIdentity = false;
+function emitWindowsFixtureIdentity(input, originalTempInput, expectedHead) {
+  if (process.platform !== 'win32' || emittedWindowsIdentity) return;
+  emittedWindowsIdentity = true;
+  const rawGitRoot = git(input, 'rev-parse', '--show-toplevel');
+  const capture = read => {
+    try { return read(); } catch (error) { return { error: error.code || error.name }; }
+  };
+  const describe = value => ({ jsRealpath: capture(() => fs.realpathSync(value)),
+    nativeRealpath: capture(() => fs.realpathSync.native(value)), stat: capture(() => {
+      const stats = fs.statSync(value, { bigint: true });
+      return { dev: String(stats.dev), ino: String(stats.ino), directory: stats.isDirectory() };
+    }) });
+  // Only paths and identities inside this newly created test fixture are emitted.
+  console.log('Windows verifier fixture identity: ' + JSON.stringify({ node: process.version, architecture: process.arch, input, originalTempInput, rawGitRoot,
+    selected: describe(input), originalTemp: describe(originalTempInput), gitRoot: describe(rawGitRoot),
+    head: git(input, 'rev-parse', 'HEAD'), expectedHead }));
+}
 
 function fixture(t) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-plugin-verifier-')));
+  const originalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'release-plugin-verifier-'));
+  const root = fs.realpathSync.native(originalRoot);
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const repo = path.join(root, 'tool'), pkg = path.join(repo, 'plugins/github');
   fs.mkdirSync(pkg, { recursive: true });
@@ -71,6 +90,7 @@ function fixture(t) {
   git(harness, 'add', '.'); git(harness, 'commit', '-m', 'frozen Harness producer');
   prepared.commits.harness = git(harness, 'rev-parse', 'HEAD');
   for (const name of ['installer-win', 'harness-win', 'skills']) prepared.dirs[name] = path.join(root, name);
+  emitWindowsFixtureIdentity(tool.repo, path.join(originalRoot, 'tool'), tool.commit);
   return { root, repo, pkg, tool, candidate, prepared, payloadCommit };
 }
 
@@ -79,35 +99,49 @@ test('verifier requires a clean checkout at one explicit full local commit', t =
   assert.deepEqual(validatePluginVerificationTool(f.tool), f.tool);
   for (const value of [null, {}, { repo: 'relative', commit: f.tool.commit }, { ...f.tool, commit: 'main' }, { ...f.tool, extra: true }])
     assert.throws(() => validatePluginVerificationTool(value), /absolute repo and full commit/);
-  assert.throws(() => validatePluginVerificationTool({ ...f.tool, commit: f.payloadCommit }), /exact frozen commit/);
-  assert.throws(() => validatePluginVerificationTool({ ...f.tool, repo: f.pkg }), /exact frozen commit/);
+  assert.throws(() => validatePluginVerificationTool({ ...f.tool, commit: f.payloadCommit }), /exact frozen commit.*HEAD mismatch/);
+  assert.throws(() => validatePluginVerificationTool({ ...f.tool, repo: f.pkg }), /exact frozen commit.*repository root mismatch/);
   fs.writeFileSync(path.join(f.repo, 'untracked'), 'drift');
   assert.throws(() => validatePluginVerificationTool(f.tool), /must be clean/);
 });
 
-test('verifier resolves Git root spelling to filesystem identity on Windows', () => {
+test('verifier uses native identity when JavaScript realpath preserves Windows short names', () => {
   const source = fs.readFileSync(path.join(__dirname, 'local-release-plugin-verifier.cjs'), 'utf8');
-  const repo = 'C:\\Work\\Repository', gitRoot = 'c:/work/repository', commit = 'a'.repeat(40);
-  const calls = [], module = { exports: {} };
-  runInNewContext(source, { module, require: name => {
-    if (name === 'node:fs') return { realpathSync: value => {
-      assert.ok([repo, gitRoot].includes(value));
-      return repo;
-    } };
-    if (name === 'node:path') return path.win32;
-    if (name === 'node:child_process') return { execFileSync: (exe, args) => {
-      assert.equal(exe, 'git'); assert.deepEqual(Array.from(args.slice(0, 2)), ['-C', repo]);
-      const command = Array.from(args.slice(2)); calls.push(command);
-      if (command.join(' ') === 'rev-parse --show-toplevel') return gitRoot + '\n';
-      if (command.join(' ') === 'rev-parse HEAD') return commit + '\n';
-      assert.deepEqual(command, ['status', '--porcelain=v1', '--untracked-files=all']); return '';
-    } };
-    if (name === 'node:assert/strict') return assert;
-    throw new Error(`Unexpected fixture dependency: ${name}`);
-  } });
-  const result = module.exports.validatePluginVerificationTool({ repo, commit });
-  assert.equal(result.repo, repo); assert.equal(result.commit, commit);
-  assert.deepEqual(calls, [['rev-parse', '--show-toplevel'], ['rev-parse', 'HEAD'], ['status', '--porcelain=v1', '--untracked-files=all']]);
+  const short = String.raw`C:\Users\RUNNER~1\AppData\Local\Temp\verifier-fixture\tool`;
+  const canonical = String.raw`C:\Users\runneradmin\AppData\Local\Temp\verifier-fixture\tool`;
+  const gitRoot = 'c:/Users/runneradmin/AppData/Local/Temp/verifier-fixture/tool', commit = 'a'.repeat(40);
+  for (const input of [short, canonical]) {
+    const calls = [], nativeCalls = [], module = { exports: {} };
+    const realpathSync = value => path.win32.normalize(value);
+    realpathSync.native = value => {
+      assert.ok([short, canonical, gitRoot].includes(value)); nativeCalls.push(value); return canonical;
+    };
+    assert.notEqual(realpathSync(short), realpathSync(gitRoot));
+    runInNewContext(source, { module, require: name => {
+      if (name === 'node:fs') return { realpathSync };
+      if (name === 'node:path') return path.win32;
+      if (name === 'node:child_process') return { execFileSync: (exe, args) => {
+        assert.equal(exe, 'git'); assert.equal(args[0], '-C'); assert.ok([short, canonical].includes(args[1]));
+        const command = Array.from(args.slice(2)); calls.push(command);
+        if (command.join(' ') === 'rev-parse --show-toplevel') return gitRoot + '\n';
+        if (command.join(' ') === 'rev-parse HEAD') return commit + '\n';
+        assert.deepEqual(command, ['status', '--porcelain=v1', '--untracked-files=all']); return '';
+      } };
+      if (name === 'node:assert/strict') return assert;
+      throw new Error(`Unexpected fixture dependency: ${name}`);
+    } });
+    const result = module.exports.validatePluginVerificationTool({ repo: input, commit });
+    assert.equal(result.repo, canonical); assert.equal(result.commit, commit);
+    assert.deepEqual(nativeCalls, [input, gitRoot]);
+    assert.deepEqual(calls, [['rev-parse', '--show-toplevel'], ['rev-parse', 'HEAD'], ['status', '--porcelain=v1', '--untracked-files=all']]);
+  }
+});
+
+test('verifier accepts a filesystem alias only for the exact repository root', t => {
+  const f = fixture(t), alias = path.join(f.root, 'tool-alias');
+  fs.symlinkSync(f.repo, alias, 'junction');
+  assert.deepEqual(validatePluginVerificationTool({ ...f.tool, repo: alias }), f.tool);
+  assert.throws(() => validatePluginVerificationTool({ ...f.tool, repo: path.join(alias, 'plugins/github') }), /repository root mismatch/);
 });
 
 test('resume checks the frozen verifier identity and rejects source drift', async t => {

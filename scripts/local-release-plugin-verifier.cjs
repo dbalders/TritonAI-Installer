@@ -10,9 +10,10 @@ function validatePluginVerificationTool(input) {
     || Object.keys(input).sort().join(',') !== 'commit,repo'
     || typeof input.repo !== 'string' || !path.isAbsolute(input.repo)
     || !/^[a-f0-9]{40}$/.test(input.commit || '')) throw new Error('pluginVerificationTool requires an absolute repo and full commit SHA.');
-  const repo = fs.realpathSync(input.repo);
+  const repo = fs.realpathSync.native(input.repo);
   const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  if (fs.realpathSync(git('rev-parse', '--show-toplevel')) !== repo || git('rev-parse', 'HEAD') !== input.commit) throw new Error('Plugin verification tool must be at its exact frozen commit.');
+  if (fs.realpathSync.native(git('rev-parse', '--show-toplevel')) !== repo) throw new Error('Plugin verification tool must be at its exact frozen commit (repository root mismatch).');
+  if (git('rev-parse', 'HEAD') !== input.commit) throw new Error('Plugin verification tool must be at its exact frozen commit (HEAD mismatch).');
   if (git('status', '--porcelain=v1', '--untracked-files=all')) throw new Error('Plugin verification tool must be clean.');
   return { repo, commit: input.commit };
 }

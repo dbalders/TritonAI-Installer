@@ -115,7 +115,7 @@ test('freeze persists Installer configuration and resume ignores changed profile
   ready.installerEnvironment.UCSD_AI_BASE_URL = 'https://also-changed.example.test';
   const saved = JSON.parse(fs.readFileSync(candidateFile, 'utf8'));
   settings.profile.pluginVerificationTool = { repo: '/changed/profile/path', commit: 'f'.repeat(40) };
-  assert.equal(saved.pluginVerificationTool.repo, fs.realpathSync(checkout));
+  assert.equal(saved.pluginVerificationTool.repo, fs.realpathSync.native(checkout));
   assert.equal(saved.pluginVerificationTool.commit, git(checkout, 'rev-parse', 'HEAD'));
   await assert.doesNotReject(assertToolIdentities(saved));
   const frozen = frozenInstallerEnvironment(saved);
