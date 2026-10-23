@@ -7,7 +7,26 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
-const { prepareWindowsToolchain, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256, runTool, initializeWinePrefix, resolveWineServer } = require('./local-release-windows.cjs');
+const { prepareWindowsToolchain, assertBuilderVersion, verifyCompiler, translatePaths, launcherSource, NSIS_SHA256, runTool, initializeWinePrefix, resolveWineServer } = require('./local-release-windows.cjs');
+
+test('only the validated exact Electron Builder versions are supported', () => {
+  for (const version of ['26.15.7', '26.16.1']) assert.doesNotThrow(() => assertBuilderVersion(version));
+  for (const version of ['26.15.8', '26.16.0', '26.16.2', '27.0.0', '26.16.1-beta.1', undefined]) assert.throws(() => assertBuilderVersion(version), /Validate the pinned NSIS integration/);
+});
+
+test('unsupported builder fails before a Wine process or download starts', async (t) => {
+  if (process.platform !== 'darwin') return t.skip('macOS cross-build toolchain');
+  const root = fixture(t), installer = path.join(root, 'installer'), library = path.join(installer, 'node_modules/app-builder-lib');
+  fs.mkdirSync(library, { recursive: true });
+  fs.writeFileSync(path.join(installer, 'package.json'), '{}');
+  fs.writeFileSync(path.join(library, 'package.json'), '{"version":"26.16.2"}');
+  const started = path.join(root, 'wine-started'), wine = path.join(root, 'wine');
+  fs.writeFileSync(wine, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(started)},'started');`, { mode: 0o755 });
+  const logs = [];
+  await assert.rejects(prepareWindowsToolchain({ root: path.join(root, 'tools'), candidateRoot: root, installerRoot: installer, wine, log: line => logs.push(line) }), /found 26.16.2/);
+  assert.equal(fs.existsSync(started), false);
+  assert.deepEqual(logs, []);
+});
 
 function fixture(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tritonai-windows-helper-')));

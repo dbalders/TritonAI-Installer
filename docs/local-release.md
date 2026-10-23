@@ -23,7 +23,13 @@ npm run release:local -- 0.3.4 --scope harness
 but excludes Installer dependency installs, tests, app compilation, packaging, and skills
 checkout/validation. Plugin selection, staging, and Mac finalization come from the exact frozen
 Harness source. Harness-only candidates do not resolve or check out Installer. Windows packaging
-tools also resolve from Harness's Electron Builder dependency. Select a Harness revision containing
+tools resolve from each app's own locked Electron Builder dependency. Harness and Installer
+use separate candidate-owned NSIS caches, Wine prefixes, templates, launchers, and receipts,
+so different validated builder versions cannot replace one another's templates. The supported
+exact versions are 26.15.7 and 26.16.1; the compiler and resource archive hashes remain pinned.
+Per-app receipts and their input digest are embedded in the handoff report. Windows
+tooling and packaging snapshots bind the matching frozen Mac packaging source as well.
+Harness-only runs prepare only the Harness toolchain. Select a Harness revision containing
 these owned tools; older frozen candidates require their original controller, while `--fresh`
 selects current source and creates a separate candidate.
 

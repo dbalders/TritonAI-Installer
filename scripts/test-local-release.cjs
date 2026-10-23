@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { parseArgs, resolveRef, profileFor, rustTools, cleanEnvironment, installerConfigurationEnvironment, frozenInstallerEnvironment, inspectHostCommands, assertResumeSelections, candidateEnvironment, macSigningEnvironment, freeze, freezeTools, assertToolIdentities, hash, save, failureExitCode } = require('./local-release.cjs');
-const { makeBuildRecipe, assertVersionOnly, executeWithEnvironment } = require('./local-release-stages.cjs');
+const { makeBuildRecipe, windowsToolchainOptions, platformEnvironment, assertVersionOnly, executeWithEnvironment } = require('./local-release-stages.cjs');
 const { run } = require('./release-runner.cjs');
 
 function fixture(t) {
@@ -227,6 +227,74 @@ test('recipe allows both platforms and their downstream installers to overlap wi
   assert.ok(stage('handoff').outputs.some(f => f.endsWith('installer-win-verification.json')));
   assert.ok(stage('handoff').outputs.some(f => f.endsWith('.exe')));
   assert.ok(stage('harness-win').inputs.some(f => f.sha256 === 'e'.repeat(64)));
+  assert.deepEqual(stage('windows-tools').needs, ['harness-checks'], 'preparation already installs both app dependencies; source binding is separate');
+  for (const id of ['windows-tools', 'installer-win']) assert(stage(id).sources.some(source => source.path === dirs['installer-mac'] && source.commit === 'a'.repeat(40)));
+  assert(stage('harness-win').sources.some(source => source.path === dirs['harness-mac']));
+  assert(stage('handoff').inputs.includes(path.join(root, 'proof/windows-tools.json')));
+  assert(!stage('harness-checks').inputs.includes(path.join(root, 'proof/windows-tools.json')), 'handoff input must not alias all stage input arrays');
+});
+
+test('Windows tools reject InstallerMac source drift before running or reusing tooling', async t => {
+  const root = fixture(t), file = path.join(root, 'candidate.json');
+  const dirs = Object.fromEntries(['harness-mac', 'installer-mac', 'plugins', 'skills'].map(name => [name, repo(root, name)]));
+  dirs['harness-win'] = path.join(root, 'harness-win'); dirs['installer-win'] = path.join(root, 'installer-win');
+  const commits = { harness: git(dirs['harness-mac'], 'rev-parse', 'HEAD'), installer: git(dirs['installer-mac'], 'rev-parse', 'HEAD') };
+  save(file, { version: '0.3.8', sources: { plugins: { commit: git(dirs.plugins, 'rev-parse', 'HEAD') }, skills: { commit: git(dirs.skills, 'rev-parse', 'HEAD') } }, tools: { node: process.execPath }, toolIdentities: {}, notary: { keyFile: '/fixture/key', keySha256: 'b'.repeat(64) } });
+  const prepared = { dirs, commits, pluginInput: '/fixture/plugins', catalogPath: '/fixture/catalog' };
+  const step = makeBuildRecipe(file, prepared).steps.find(step => step.id === 'windows-tools');
+  // Isolate this consuming stage's source binding from unrelated fixture inputs.
+  const plan = { schemaVersion: 1, steps: [{ ...step, needs: [], inputs: [] }] };
+  let calls = 0;
+  const options = { executeCommand: async () => { calls++; save(step.outputs[0], { fixture: true }); } };
+  fs.writeFileSync(path.join(dirs['installer-mac'], 'package.json'), '{"version":"changed"}');
+  await assert.rejects(run(plan, path.join(root, 'state'), options), /Release source must be clean/);
+  assert.equal(calls, 0);
+  git(dirs['installer-mac'], 'checkout', '--', 'package.json');
+  await run(plan, path.join(root, 'state'), options); assert.equal(calls, 1);
+  fs.writeFileSync(path.join(dirs['installer-mac'], 'package.json'), '{"version":"changed"}');
+  await assert.rejects(run(plan, path.join(root, 'state'), options), /Release source must be clean/);
+  assert.equal(calls, 1);
+});
+
+test('Windows applications retain their own locked builder and isolated toolchain roots', () => {
+  const root = path.resolve('/fixture/candidate'), dirs = { 'harness-mac': path.join(root, 'harness-mac'), 'installer-mac': path.join(root, 'installer-mac') };
+  const c = { scope: 'full', tools: { wine: '/fixture/wine' } }, p = { dirs };
+  const harness = windowsToolchainOptions(root, 'harness', c, p), installer = windowsToolchainOptions(root, 'installer', c, p);
+  assert.equal(harness.harnessRoot, dirs['harness-mac']);
+  assert.equal(harness.installerRoot, undefined);
+  assert.equal(installer.installerRoot, dirs['installer-mac']);
+  assert.equal(installer.harnessRoot, undefined);
+  assert.notEqual(harness.root, installer.root);
+  for (const options of [harness, installer]) { assert.equal(options.candidateRoot, root); assert.equal(options.wine, c.tools.wine); }
+  assert.throws(() => windowsToolchainOptions(root, 'other', c, p), /Invalid Windows toolchain/);
+  assert.throws(() => windowsToolchainOptions(root, 'installer', { ...c, scope: 'harness' }, p), /Invalid Windows toolchain/);
+  assert.throws(() => windowsToolchainOptions(root, 'installer', c, { dirs: {} }), /Missing installer packaging source/);
+});
+
+test('Windows packaging binds each environment to its own prepared receipt and rejects swapped or legacy receipts', async t => {
+  const root = fixture(t), configurationFile = path.join(root, 'configuration.json');
+  save(configurationFile, { github: {} });
+  const c = { scope: 'full', version: '0.3.8', configurationFile, configurationSha256: hash('{"github":{}}'), pluginIds: ['github'], tools: {} };
+  const p = { dirs: { 'harness-mac': path.join(root, 'harness-mac'), 'installer-mac': path.join(root, 'installer-mac') } };
+  const receipt = { harness: { electronBuilderVersion: '26.16.1', templateSha256: 'harness-templates' }, installer: { electronBuilderVersion: '26.15.7', templateSha256: 'installer-templates' } };
+  const file = path.join(root, 'proof/windows-tools.json');
+  save(file, { schemaVersion: 2, toolchains: receipt });
+  const moduleFile = require.resolve('./local-release-windows.cjs');
+  const original = require(moduleFile), entry = require.cache[moduleFile];
+  t.after(() => { entry.exports = original; });
+  entry.exports = { ...original, prepareWindowsToolchain: async options => {
+    const kind = options.harnessRoot ? 'harness' : 'installer';
+    return { receipt: receipt[kind], env: { WINEPREFIX: path.join(options.root, 'wineprefix') } };
+  } };
+  for (const kind of ['harness', 'installer']) {
+    const env = await platformEnvironment(root, 'win', c, p, kind);
+    assert.equal(env.WINEPREFIX, path.join(root, 'toolchains/win', kind, 'wineprefix'));
+  }
+  save(file, { schemaVersion: 2, toolchains: { harness: receipt.installer, installer: receipt.harness } });
+  await assert.rejects(platformEnvironment(root, 'win', c, p, 'harness'), /Windows harness toolchain changed/);
+  await assert.rejects(platformEnvironment(root, 'win', c, p, 'installer'), /Windows installer toolchain changed/);
+  save(file, receipt.harness);
+  await assert.rejects(platformEnvironment(root, 'win', c, p, 'harness'), /Windows harness toolchain changed/);
 });
 
 test('plan reports the selected packaging platforms and agrees with recipe handoff', t => {
@@ -369,15 +437,25 @@ test('Harness-only recipe has no Installer or skills work and handoff preserves 
   for (const step of recipe.steps) for (const need of step.needs) assert(ids.has(need));
   const handoff = recipe.steps.find(step => step.id === 'handoff');
   assert.deepEqual(handoff.needs, ['harness-mac', 'harness-win']);
-  assert(recipe.steps.every(step => step.sources.every(source => source.path === dirs.plugins)));
+  assert(recipe.steps.every(step => step.sources.every(source => [dirs.plugins, dirs['harness-mac']].includes(source.path))));
+  assert.deepEqual(recipe.steps.find(step => step.id === 'windows-tools').needs, ['harness-checks']);
+  assert(recipe.steps.find(step => step.id === 'windows-tools').sources.some(source => source.path === dirs['harness-mac']));
   const { stage, harnessFiles } = require('./local-release-stages.cjs');
   for (const platform of ['mac', 'win']) for (const name of harnessFiles('0.3.4', platform)) {
     const artifact = path.join(root, 'harness', platform, name);
     fs.mkdirSync(path.dirname(artifact), { recursive: true }); fs.writeFileSync(artifact, `fixture ${name}`);
   }
+  const toolsFile = path.join(root, 'proof/windows-tools.json');
+  save(toolsFile, { schemaVersion: 1 });
+  await assert.rejects(stage('handoff', file), /matching per-app toolchain receipts/);
+  assert.equal(fs.existsSync(path.join(root, 'handoff')), false);
+  const toolchains = { schemaVersion: 2, toolchains: { harness: { electronBuilderVersion: '26.16.1', templateSha256: 'fixture' } } };
+  save(toolsFile, toolchains);
   await stage('handoff', file);
   const report = JSON.parse(fs.readFileSync(path.join(root, 'handoff/report.json')));
   assert.equal(report.scope, 'harness');
+  assert.deepEqual(report.windows.toolchainReceipt, toolchains);
+  assert.equal(report.windows.toolchainReceiptSha256, require('node:crypto').createHash('sha256').update(fs.readFileSync(toolsFile)).digest('hex'));
   assert.equal(report.artifacts.length, harnessFiles('0.3.4', 'mac').length + harnessFiles('0.3.4', 'win').length);
   assert(report.artifacts.every(artifact => artifact.path.includes(`${path.sep}harness${path.sep}`)));
   assert(report.artifacts.every(artifact => /^[a-f0-9]{64}$/.test(artifact.sha256)));
