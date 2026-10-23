@@ -48,6 +48,23 @@ and digests from that commit. `--skills` selects the secure skills repository ve
 ambiguous tag/branch name requires `refs/tags/NAME` or `refs/heads/NAME`. There is no local
 branch fallback when a remote ref is missing.
 
+When released plugin payloads need a newer local verifier, the profile may specify
+`pluginVerificationTool: { "repo": "/absolute/reviewed-plugin-checkout", "commit": "FULL_40_CHARACTER_SHA" }`.
+The checkout must be trusted, clean, and at that exact commit. This selects verification
+code, independently of the catalog's approved payload commit. Preparation freezes a
+separate verifier worktree; resume checks its identity and the runner fingerprints both
+sources. The exact frozen Harness composition producer compares every selected package's
+inventory and digests before and after the verifier's complete `readiness:local` gate.
+Any payload difference fails verification. The original payload source and bytes remain
+the production input; the handoff records the separate verifier and its parity receipts.
+
+Controlled automation may set the frozen candidate's optional `platforms` field to
+`["mac"]`, `["win"]`, or both, before its first runner execution. Omission selects both;
+empty, duplicate, or unknown selections fail. This limits assembly and handoff, while
+source preparation, checks, and tool prerequisites remain cross-platform. `--plan` and
+`--check` report the selected packaging stages. There is no platform CLI switch; changing
+a candidate after runner execution invalidates its recipe and input fingerprints.
+
 ## Configure the release host once
 
 Save `~/.config/tritonai/release.json` (or supply `--profile /absolute/file.json`):
@@ -123,11 +140,11 @@ a new timestamped candidate with newly resolved sources; `--output /absolute/new
 chooses a specific location. A forcibly killed process may leave a lock: confirm its recorded
 PID and children have stopped before removing that candidate's lock.
 
-The source test gate runs non-server tests with two workers, then runs the server
-suite with its own serial SQLite/Git test configuration. Both groups must pass.
-Source checks run lint and typecheck as well. Compilation happens in each platform's
-packaging stage using its exact managed configuration; source checks do not run an
-additional workspace build that packaging would discard.
+The Harness source gate runs the frozen source's canonical `preflight` and
+`preflight:desktop` commands in sequence. Both must pass before packaging. The plugin
+gate then runs complete `readiness:local` against that exact clean Harness commit;
+full candidates also run the Installer's `npm test`. Compilation happens in each
+platform's packaging stage using its exact managed configuration.
 The Installer's npm publication-date check deduplicates package/version lookups within
 one invocation and queries at most six at a time. Every invocation still queries npm;
 missing dates and registry errors still fail the gate.
