@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { run, treeHash } = require('./release-runner.cjs');
+const { validatePluginVerificationTool } = require('./local-release-plugin-verifier.cjs');
 
 const SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -231,6 +232,8 @@ function inspectHostCommands(tools, { platform = process.platform, find = execut
 async function preflight(settings, { disk = true, directory, frozenCandidate, scope = frozenCandidate?.scope || 'full' } = {}) {
   const { profile, tools, repos } = settings;
   const problems = [];
+  try { validatePluginVerificationTool(frozenCandidate ? frozenCandidate.pluginVerificationTool : profile.pluginVerificationTool); }
+  catch (error) { problems.push(error.message); }
   let installerEnvironment;
   try { installerEnvironment = scope === 'harness' ? {} : frozenCandidate ? frozenInstallerEnvironment(frozenCandidate) : installerConfigurationEnvironment(profile.installerConfiguration); }
   catch (error) { problems.push(error.message); }
@@ -296,6 +299,7 @@ async function freezeTools(tools) {
 }
 
 async function assertToolIdentities(candidate) {
+  validatePluginVerificationTool(candidate.pluginVerificationTool);
   if (!candidate.toolIdentities) throw new Error('Candidate predates executable pinning; use --fresh.');
   for (const [name, identity] of Object.entries(candidate.toolIdentities)) {
     if (candidate.tools[name] !== identity.path || await treeHash(identity.path) !== identity.sha256) throw new Error(`${name} executable changed; use --fresh.`);
@@ -324,6 +328,7 @@ async function freeze(options, settings, ready) {
   for (const id of pluginIds) if (!ready.configuration[id] || Array.isArray(ready.configuration[id]) || typeof ready.configuration[id] !== 'object') throw new Error(`Plugin configuration is missing '${id}' in ${settings.profile.pluginConfigurationFile}`);
   const configuration = Object.fromEntries(pluginIds.map(id => [id, ready.configuration[id]]));
   return { schemaVersion: 1, scope, version: options.version, sources, pluginIds, catalogSelection: !options.plugins,
+    ...(settings.profile.pluginVerificationTool !== undefined ? { pluginVerificationTool: validatePluginVerificationTool(settings.profile.pluginVerificationTool) } : {}),
     ...await freezeTools(settings.tools), profileFile: settings.profileFile, configurationFile: settings.profile.pluginConfigurationFile,
     configurationSha256: hash(JSON.stringify(configuration)), installerEnvironment, developerId: ready.identity,
     notary: { ...ready.notary, keySha256: await treeHash(ready.notary.keyFile) },
@@ -347,6 +352,16 @@ function assertResumeSelections(candidate, options) {
   if ((candidate.scope || 'full') !== (options.scope || 'full')) throw new Error('Candidate scope differs; repeat --scope or use another --output.');
   if (candidate.version !== options.version) throw new Error('Candidate version differs; use another --output.');
   for (const name of ['harness', 'installer', 'plugins', 'skills']) if (options[name] && options[name] !== candidate.sources[name]?.selection) throw new Error(`${name} selection differs from this frozen candidate. Use --fresh.`);
+}
+
+function releasePlan(candidate, directory) {
+  const { buildPlatforms } = require('./local-release-stages.cjs');
+  const platforms = buildPlatforms(candidate);
+  const kinds = candidate.scope === 'harness' ? ['harness'] : ['harness', 'installer'];
+  return { version: candidate.version, scope: candidate.scope || 'full', directory,
+    sources: candidate.sources, pluginVerificationTool: candidate.pluginVerificationTool,
+    pluginIds: candidate.pluginIds, platforms,
+    stages: ['prepare', 'validate-inputs', 'source-checks', ...kinds.map(kind => platforms.map(platform => `${kind}-${platform}`).join(' + ')), 'handoff'], published: false };
 }
 
 async function main(args = process.argv.slice(2)) {
@@ -377,7 +392,7 @@ async function main(args = process.argv.slice(2)) {
     candidate = await freeze(options, settings, ready);
   }
   const env = candidateEnvironment(candidate);
-  if (options.check || options.plan) { console.log(JSON.stringify({ version: candidate.version, scope: candidate.scope || 'full', directory, sources: candidate.sources, pluginIds: candidate.pluginIds, stages: ['prepare', 'validate-inputs', 'source-checks', 'harness-mac + harness-win', ...(candidate.scope === 'harness' ? [] : ['installer-mac + installer-win']), 'handoff'], published: false }, null, 2)); return; }
+  if (options.check || options.plan) { console.log(JSON.stringify(releasePlan(candidate, directory), null, 2)); return; }
   if (!fs.existsSync(candidateFile)) {
     if (fs.existsSync(directory)) throw new Error(`Unrecognized existing directory: ${directory}; select another --output.`);
     save(candidateFile, candidate);
@@ -387,6 +402,7 @@ async function main(args = process.argv.slice(2)) {
   const command = [candidate.tools.node, path.join(__dirname, 'local-release-stages.cjs')];
   const scripts = fs.readdirSync(__dirname).filter(name => /^local-release.*\.cjs$/.test(name)).map(name => path.join(__dirname, name));
   const prepare = { schemaVersion: 1, steps: [{ id: 'prepare', cwd: directory, git: false,
+    sources: candidate.pluginVerificationTool ? [{ path: candidate.pluginVerificationTool.repo, commit: candidate.pluginVerificationTool.commit }] : [],
     commands: [[...command, 'prepare', candidateFile]], inputs: [candidateFile, ...scripts, ...Object.values(candidate.toolIdentities)], outputs: ['prepared.json'] }] };
   await run(prepare, path.join(directory, 'prepare.run'), { jobs: 1, environment: env, executeCommand: executeWithEnvironment(env) });
   const recipe = makeBuildRecipe(candidateFile, read(path.join(directory, 'prepared.json')));
@@ -398,4 +414,4 @@ async function main(args = process.argv.slice(2)) {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = failureExitCode(error); });
-module.exports = { parseArgs, executable, resolveRef, profileFor, rustTools, cleanEnvironment, installerConfigurationEnvironment, frozenInstallerEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, failureExitCode, main };
+module.exports = { parseArgs, executable, resolveRef, profileFor, rustTools, cleanEnvironment, installerConfigurationEnvironment, frozenInstallerEnvironment, inspectHostCommands, preflight, freeze, freezeTools, assertToolIdentities, candidateEnvironment, macSigningEnvironment, assertResumeSelections, save, read, git, hash, failureExitCode, releasePlan, main };

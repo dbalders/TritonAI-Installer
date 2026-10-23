@@ -97,6 +97,7 @@ test('freeze persists Installer configuration and resume ignores changed profile
   save(configurationFile, { github: {} }); fs.writeFileSync(keyFile, 'fixture');
   const settings = { profileFile: path.join(root, 'profile.json'), profile: { pluginConfigurationFile: configurationFile, installerConfiguration: { baseUrl: 'https://api.example.test/v1' } },
     repos: Object.fromEntries(['harness', 'installer', 'plugins', 'skills'].map(name => [name, checkout])), tools: { node: process.execPath } };
+  settings.profile.pluginVerificationTool = { repo: checkout, commit: git(checkout, 'rev-parse', 'HEAD') };
   const ready = { configuration: { github: {} }, identity: 'Fixture', notary: { keyFile }, installerEnvironment: installerConfigurationEnvironment(settings.profile.installerConfiguration) };
   await assert.rejects(freeze({ version: '0.3.4', plugins: 'main', harness: original }, settings, ready), /predates single-pass/);
   const candidate = await freeze({ version: '0.3.4', plugins: 'main' }, settings, ready);
@@ -113,6 +114,10 @@ test('freeze persists Installer configuration and resume ignores changed profile
   settings.profile.installerConfiguration.baseUrl = 'https://changed.example.test';
   ready.installerEnvironment.UCSD_AI_BASE_URL = 'https://also-changed.example.test';
   const saved = JSON.parse(fs.readFileSync(candidateFile, 'utf8'));
+  settings.profile.pluginVerificationTool = { repo: '/changed/profile/path', commit: 'f'.repeat(40) };
+  assert.equal(saved.pluginVerificationTool.repo, fs.realpathSync(checkout));
+  assert.equal(saved.pluginVerificationTool.commit, git(checkout, 'rev-parse', 'HEAD'));
+  await assert.doesNotReject(assertToolIdentities(saved));
   const frozen = frozenInstallerEnvironment(saved);
   assert.deepEqual(frozen, { UCSD_AI_BASE_URL: 'https://api.example.test/v1' });
   assert.deepEqual(candidate.installerEnvironment, frozen);
@@ -222,6 +227,55 @@ test('recipe allows both platforms and their downstream installers to overlap wi
   assert.ok(stage('handoff').outputs.some(f => f.endsWith('installer-win-verification.json')));
   assert.ok(stage('handoff').outputs.some(f => f.endsWith('.exe')));
   assert.ok(stage('harness-win').inputs.some(f => f.sha256 === 'e'.repeat(64)));
+});
+
+test('plan reports the selected packaging platforms and agrees with recipe handoff', t => {
+  const { releasePlan } = require('./local-release.cjs');
+  const root = fixture(t), file = path.join(root, 'candidate.json');
+  const sources = Object.fromEntries(['harness', 'installer', 'plugins', 'skills'].map(k => [k, { commit: 'a'.repeat(40) }]));
+  const dirs = Object.fromEntries(['harness-mac', 'harness-win', 'installer-mac', 'installer-win', 'plugins', 'skills'].map(k => [k, path.join(root, k)]));
+  const prepared = { dirs, commits: { harness: 'a'.repeat(40), installer: 'b'.repeat(40) }, pluginInput: '/fixture/plugins', catalogPath: '/fixture/catalog' };
+  for (const scope of [undefined, 'harness']) for (const selection of [undefined, ['win'], ['mac'], ['win', 'mac']]) {
+    const c = { version: '0.3.8', scope, ...(selection === undefined ? {} : { platforms: selection }), sources,
+      pluginIds: ['github'], tools: { node: process.execPath }, toolIdentities: {}, notary: { keyFile: '/fixture/key' } };
+    save(file, c);
+    const platforms = selection || ['mac', 'win'], kinds = scope === 'harness' ? ['harness'] : ['harness', 'installer'];
+    const plan = releasePlan(c, root), recipe = makeBuildRecipe(file, prepared);
+    assert.deepEqual(plan.platforms, platforms);
+    assert.deepEqual(plan.stages, ['prepare', 'validate-inputs', 'source-checks', ...kinds.map(kind => platforms.map(p => `${kind}-${p}`).join(' + ')), 'handoff']);
+    assert.equal(plan.scope, scope || 'full'); assert.equal(plan.published, false);
+    assert.deepEqual(recipe.steps.find(s => s.id === 'handoff').needs, platforms.map(p => `${kinds.at(-1)}-${p}`));
+    for (const platform of ['mac', 'win']) for (const kind of kinds) {
+      assert.equal(recipe.steps.some(s => s.id === `${kind}-${platform}`), platforms.includes(platform));
+      assert.equal(recipe.steps.find(s => s.id === 'handoff').outputs.some(output => output.includes(`${path.sep}handoff${path.sep}${platform}${path.sep}${kind}${path.sep}`)), platforms.includes(platform));
+    }
+    for (const id of ['harness-checks', 'plugins-checks', ...(scope === 'harness' ? [] : ['installer-checks'])]) assert.ok(recipe.steps.some(s => s.id === id));
+  }
+  for (const platforms of [null, false, '', [], ['win', 'win'], ['linux'], 'win']) {
+    assert.throws(() => releasePlan({ platforms }, root), /select mac and\/or win/);
+  }
+});
+
+test('Harness source stage runs both canonical gates in sequence', async t => {
+  const { stage } = require('./local-release-stages.cjs');
+  const timingKeys = ['TRITONAI_RELEASE_TIMING_FILE', 'TRITONAI_RELEASE_TIMING_STAGE'];
+  const timing = timingKeys.map(key => process.env[key]);
+  t.after(() => timingKeys.forEach((key, i) => { if (timing[i] === undefined) delete process.env[key]; else process.env[key] = timing[i]; }));
+  const root = fs.realpathSync(fixture(t)), file = path.join(root, 'candidate.json'), calls = path.join(root, 'calls.jsonl'), script = path.join(root, 'run');
+  const record = `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args: [require('node:path').basename(process.argv[1]), ...process.argv.slice(2)], cwd: process.cwd() }) + '\\n');\n`;
+  fs.writeFileSync(script, record);
+  save(file, { sources: { harness: { commit: 'a'.repeat(40) } }, tools: { vp: process.execPath } });
+  save(path.join(root, 'prepared.json'), { dirs: { 'harness-mac': root }, commits: { harness: 'a'.repeat(40) } });
+  await stage('harness-checks', file);
+  assert.deepEqual(fs.readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse), [
+    { args: ['run', 'preflight'], cwd: root }, { args: ['run', 'preflight:desktop'], cwd: root },
+  ]);
+  assert.ok(fs.existsSync(path.join(root, 'proof/harness-checks.json')));
+  fs.rmSync(calls); fs.rmSync(path.join(root, 'proof/harness-checks.json'));
+  fs.writeFileSync(script, record + 'process.exit(1);\n');
+  await assert.rejects(stage('harness-checks', file), /failed/);
+  assert.deepEqual(fs.readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse), [{ args: ['run', 'preflight'], cwd: root }]);
+  assert.ok(!fs.existsSync(path.join(root, 'proof/harness-checks.json')));
 });
 
 test('notarization credentials are supplied only to explicit macOS signing commands', t => {
