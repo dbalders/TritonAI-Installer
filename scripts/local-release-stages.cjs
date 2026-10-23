@@ -208,7 +208,7 @@ async function platformEnvironment(root, platform, c, p) {
   return env;
 }
 
-async function stage(id, candidateFile) {
+async function stage(id, candidateFile, { executeCheck = command } = {}) {
   process.env.TRITONAI_RELEASE_TIMING_FILE = path.join(path.dirname(candidateFile), `${id === 'prepare' ? 'prepare' : 'build'}.run`, 'timings.jsonl');
   process.env.TRITONAI_RELEASE_TIMING_STAGE = id;
   if (id === 'prepare') return prepare(candidateFile);
@@ -230,7 +230,7 @@ async function stage(id, candidateFile) {
     // configuration. A generic workspace build here is discarded by those builds.
     const commands = kind === 'harness' ? [[c.tools.vp, 'run', 'preflight'], [c.tools.vp, 'run', 'preflight:desktop']]
       : kind === 'installer' ? [['npm', 'test']] : [['corepack', 'pnpm', 'readiness:local']];
-    for (const argv of commands) await command(cwd, argv, { ...process.env, TRITONAI_HARNESS_ROOT: dirs['harness-mac'], TRITONAI_HARNESS_COMMIT: p.commits.harness });
+    for (const argv of commands) await executeCheck(cwd, argv, { ...process.env, TRITONAI_HARNESS_ROOT: dirs['harness-mac'], TRITONAI_HARNESS_COMMIT: p.commits.harness });
     if (before) {
       const after = verifyPluginVerificationParity(c, p, root);
       save(path.join(root, `proof/${id}.json`), { completedAt: new Date().toISOString(), sources: c.sources,

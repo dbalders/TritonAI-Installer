@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { runInNewContext } = require('node:vm');
 const { validatePluginVerificationTool, verifyPluginVerificationParity } = require('./local-release-plugin-verifier.cjs');
 const { assertToolIdentities, save } = require('./local-release.cjs');
 const { makeBuildRecipe, stage } = require('./local-release-stages.cjs');
@@ -79,8 +80,34 @@ test('verifier requires a clean checkout at one explicit full local commit', t =
   for (const value of [null, {}, { repo: 'relative', commit: f.tool.commit }, { ...f.tool, commit: 'main' }, { ...f.tool, extra: true }])
     assert.throws(() => validatePluginVerificationTool(value), /absolute repo and full commit/);
   assert.throws(() => validatePluginVerificationTool({ ...f.tool, commit: f.payloadCommit }), /exact frozen commit/);
+  assert.throws(() => validatePluginVerificationTool({ ...f.tool, repo: f.pkg }), /exact frozen commit/);
   fs.writeFileSync(path.join(f.repo, 'untracked'), 'drift');
   assert.throws(() => validatePluginVerificationTool(f.tool), /must be clean/);
+});
+
+test('verifier resolves Git root spelling to filesystem identity on Windows', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'local-release-plugin-verifier.cjs'), 'utf8');
+  const repo = 'C:\\Work\\Repository', gitRoot = 'c:/work/repository', commit = 'a'.repeat(40);
+  const calls = [], module = { exports: {} };
+  runInNewContext(source, { module, require: name => {
+    if (name === 'node:fs') return { realpathSync: value => {
+      assert.ok([repo, gitRoot].includes(value));
+      return repo;
+    } };
+    if (name === 'node:path') return path.win32;
+    if (name === 'node:child_process') return { execFileSync: (exe, args) => {
+      assert.equal(exe, 'git'); assert.deepEqual(Array.from(args.slice(0, 2)), ['-C', repo]);
+      const command = Array.from(args.slice(2)); calls.push(command);
+      if (command.join(' ') === 'rev-parse --show-toplevel') return gitRoot + '\n';
+      if (command.join(' ') === 'rev-parse HEAD') return commit + '\n';
+      assert.deepEqual(command, ['status', '--porcelain=v1', '--untracked-files=all']); return '';
+    } };
+    if (name === 'node:assert/strict') return assert;
+    throw new Error(`Unexpected fixture dependency: ${name}`);
+  } });
+  const result = module.exports.validatePluginVerificationTool({ repo, commit });
+  assert.equal(result.repo, repo); assert.equal(result.commit, commit);
+  assert.deepEqual(calls, [['rev-parse', '--show-toplevel'], ['rev-parse', 'HEAD'], ['status', '--porcelain=v1', '--untracked-files=all']]);
 });
 
 test('resume checks the frozen verifier identity and rejects source drift', async t => {
@@ -123,20 +150,36 @@ test('recipe binds verifier source and serializes its full gate after Harness te
 });
 
 test('plugins stage runs complete readiness in verifier cwd and records pre/post parity', async t => {
-  const f = fixture(t), file = path.join(f.root, 'candidate.json'), bin = path.join(f.root, 'bin'), args = path.join(f.root, 'arguments.json');
-  fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, 'corepack'), `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(args)}, JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd(),host:process.env.TRITONAI_HARNESS_COMMIT}));\n`, { mode: 0o755 });
-  const original = process.env.PATH; process.env.PATH = bin + path.delimiter + original;
-  t.after(() => { process.env.PATH = original; });
+  const f = fixture(t), file = path.join(f.root, 'candidate.json');
+  let executions = 0;
+  const executeCheck = async (cwd, argv, env) => {
+    executions += 1;
+    assert.equal(cwd, f.tool.repo);
+    assert.deepEqual(argv, ['corepack', 'pnpm', 'readiness:local']);
+    assert.equal(env.TRITONAI_HARNESS_ROOT, f.prepared.dirs['harness-mac']);
+    assert.equal(env.TRITONAI_HARNESS_COMMIT, f.prepared.commits.harness);
+  };
   save(file, f.candidate); save(path.join(f.root, 'prepared.json'), f.prepared);
-  await stage('plugins-checks', file);
-  assert.deepEqual(JSON.parse(fs.readFileSync(args)), { argv: ['pnpm', 'readiness:local'], cwd: f.tool.repo, host: f.prepared.commits.harness });
+  await stage('plugins-checks', file, { executeCheck });
+  assert.equal(executions, 1);
   const proof = JSON.parse(fs.readFileSync(path.join(f.root, 'proof/plugins-checks.json')));
   assert.equal(proof.sources.plugins.commit, f.payloadCommit); assert.equal(proof.verificationTool.commit, f.tool.commit);
   assert.equal(proof.parity.before.packages[0].digest, proof.parity.after.packages[0].digest);
   fs.rmSync(path.join(f.root, 'proof/plugins-checks.json'));
-  fs.writeFileSync(path.join(bin, 'corepack'), `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(path.join(f.pkg, 'README.md'))}, 'mutated during gate');\n`, { mode: 0o755 });
-  await assert.rejects(stage('plugins-checks', file), /must be clean/);
+  await assert.rejects(stage('plugins-checks', file, { executeCheck: async (...args) => {
+    await executeCheck(...args);
+    fs.writeFileSync(path.join(f.pkg, 'README.md'), 'mutated during gate');
+  } }), /must be clean/);
+  assert.equal(executions, 2);
+  assert.ok(!fs.existsSync(path.join(f.root, 'proof/plugins-checks.json')));
+  // A dirty verifier must fail before the readiness command can run.
+  await assert.rejects(stage('plugins-checks', file, { executeCheck }), /must be clean/);
+  assert.equal(executions, 2);
+  git(f.repo, 'restore', '--', 'plugins/github/README.md');
+  await assert.rejects(stage('plugins-checks', file, { executeCheck: async (...args) => {
+    await executeCheck(...args); throw new Error('controlled readiness failure');
+  } }), /controlled readiness failure/);
+  assert.equal(executions, 3);
   assert.ok(!fs.existsSync(path.join(f.root, 'proof/plugins-checks.json')));
 });
 
