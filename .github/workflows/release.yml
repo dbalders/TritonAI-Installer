@@ -220,6 +220,16 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain"
           rm "$RUNNER_TEMP/release.p12"
+      - name: Use TCP for Apple notarization ticket delivery
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Hosted macOS HTTP/3 ticket lookups can fail after notarization succeeds.
+          # https://github.com/actions/runner-images/issues/14924
+          # This rule is limited to this disposable release-job runner.
+          printf '%s\n' 'block return out quick proto udp from any to any port 443' | sudo pfctl -f -
+          sudo pfctl -E
       - name: Package signed and notarized Mac DMG and verify native boot
         if: matrix.platform == 'mac'
         shell: bash
