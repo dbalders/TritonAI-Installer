@@ -9,6 +9,10 @@ const release = { draft: false, prerelease: false, tag_name: 'v0.3.4', assets: [
 const tag = { sha: selection.commit };
 test('only manual canonical main can request stable signing validation', () => {
   assert.equal(selection.installerVersion, '0.3.4');
+  assert.equal(validateInputs({ ...env, GITHUB_REPOSITORY: 'UCSD/TritonAI-Installer' }).installerVersion, '0.3.4');
+  for (const repository of ['UCSD/TritonAI-Harness', 'ucsd-evil/TritonAI-Installer', 'UCSD/TritonAI-Installer-fork']) {
+    assert.throws(() => validateInputs({ ...env, GITHUB_REPOSITORY: repository }), /restricted to manual runs/, repository);
+  }
   for (const [key, value] of Object.entries({ GITHUB_REPOSITORY: 'someone/fork', GITHUB_REF: 'refs/pull/1/merge', GITHUB_EVENT_NAME: 'pull_request_target', INSTALLER_VERSION: '01.2.3', HARNESS_VERSION: '0.3.4-nightly.1', HARNESS_RUN_ID: '1\ninjected', HARNESS_COMMIT: 'main', SKILLS_COMMIT: 'main' })) {
     assert.throws(() => validateInputs({ ...env, [key]: value }), undefined, key);
   }

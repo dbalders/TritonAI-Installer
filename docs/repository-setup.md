@@ -50,6 +50,18 @@ dbalders/TritonAI-Installer
 
 Do not commit local automation docs, scripts, secrets, or generated state. `.gitignore` blocks the known private local paths.
 
+## Moving To The UCSD Organization
+
+The Installer, Harness, and secure skills repositories move from `dbalders` to the [UCSD organization](https://github.com/UCSD) together. Release workflows and scripts derive the owner from the running workflow (`github.repository_owner` / `GITHUB_REPOSITORY_OWNER`) and accept only `dbalders` or `UCSD`, so they work on either side of the transfer. Local release runs default to `dbalders`; set `TRITONAI_RELEASE_REPOSITORY_OWNER=UCSD` after the transfer.
+
+Before transferring:
+
+- Pause release requests; a release started between two transfers would look for Harness or secure skills under the wrong owner.
+- Install the TritonAI Harness GitHub App on the UCSD organization with access to Harness (Actions read) and UCSD-Skills-Library-Secure (Contents read).
+- Add Entra federated credentials for `repo:UCSD/TritonAI-Installer:environment:windows-signing` and `repo:UCSD/TritonAI-Harness:environment:windows-signing` beside the existing `dbalders` subjects.
+
+Released Installers download Harness from `github.com/dbalders/TritonAI-Harness/releases/latest/download`, which GitHub redirects after the transfer. Never create a repository or fork with an old name under `dbalders`; that replaces the redirect.
+
 ## Release Setup
 
 Release packaging uses local signing credentials and generated config that are intentionally not committed:

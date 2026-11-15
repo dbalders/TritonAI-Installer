@@ -53,7 +53,7 @@ env:
 jobs:
   preflight:
     environment: macos-signing
-    if: github.repository == 'dbalders/TritonAI-Installer' && github.ref == 'refs/heads/main'
+    if: contains(fromJSON('["dbalders/TritonAI-Installer","UCSD/TritonAI-Installer"]'), github.repository) && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -72,7 +72,7 @@ jobs:
         with:
           app-id: ${{ vars.RELEASE_INPUT_APP_ID }}
           private-key: ${{ secrets.RELEASE_INPUT_APP_PRIVATE_KEY }}
-          owner: dbalders
+          owner: ${{ github.repository_owner }}
           repositories: TritonAI-Harness
           permission-contents: read
           permission-actions: read
@@ -115,7 +115,7 @@ jobs:
       id-token: write
     env:
       TRITONAI_HARNESS_VERSION: ${{ inputs.harness_version }}
-      TRITONAI_HARNESS_RELEASE_BASE: https://github.com/dbalders/TritonAI-Harness/releases/download/v${{ inputs.harness_version }}
+      TRITONAI_HARNESS_RELEASE_BASE: https://github.com/${{ github.repository_owner }}/TritonAI-Harness/releases/download/v${{ inputs.harness_version }}
       TRITONAI_HARNESS_RUN_ARTIFACT_DIR: ${{ github.workspace }}/.release-input/harness-run
       UCSD_SKILLS_SOURCE: ${{ github.workspace }}/.release-input/secure-skills
       UCSD_AI_BASE_URL: ${{ secrets.UCSD_AI_BASE_URL }}
@@ -141,7 +141,7 @@ jobs:
         with:
           app-id: ${{ vars.RELEASE_INPUT_APP_ID }}
           private-key: ${{ secrets.RELEASE_INPUT_APP_PRIVATE_KEY }}
-          owner: dbalders
+          owner: ${{ github.repository_owner }}
           repositories: TritonAI-Harness
           permission-actions: read
       - name: Mint read-only secure-skills token
@@ -150,7 +150,7 @@ jobs:
         with:
           app-id: ${{ vars.RELEASE_INPUT_APP_ID }}
           private-key: ${{ secrets.RELEASE_INPUT_APP_PRIVATE_KEY }}
-          owner: dbalders
+          owner: ${{ github.repository_owner }}
           repositories: UCSD-Skills-Library-Secure
           permission-contents: read
       - name: Download frozen Harness workflow provenance
@@ -168,14 +168,14 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: inputs.harness_source != 'workflow_artifacts'
         with:
-          repository: dbalders/TritonAI-Harness
+          repository: ${{ github.repository_owner }}/TritonAI-Harness
           run-id: ${{ inputs.harness_run_id }}
           name: ${{ matrix.artifact }}
           path: .release-input/harness-run
           github-token: ${{ steps.harness_token.outputs.token }}
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          repository: dbalders/UCSD-Skills-Library-Secure
+          repository: ${{ github.repository_owner }}/UCSD-Skills-Library-Secure
           ref: ${{ inputs.skills_commit }}
           path: .release-input/secure-skills
           token: ${{ steps.skills_token.outputs.token }}
@@ -310,7 +310,7 @@ jobs:
         with:
           app-id: ${{ vars.RELEASE_INPUT_APP_ID }}
           private-key: ${{ secrets.RELEASE_INPUT_APP_PRIVATE_KEY }}
-          owner: dbalders
+          owner: ${{ github.repository_owner }}
           repositories: TritonAI-Harness
           permission-contents: read
           permission-actions: read

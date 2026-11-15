@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const {
+  GITHUB_REPOSITORY,
   buildDesiredReleaseAssets,
   createGitHubClient,
   planAssetReconciliation,
@@ -134,7 +135,7 @@ function assertLookupStatusHandling() {
       assert(args.includes("tag=v0.2.5"));
       return { status: 0, stdout: JSON.stringify({ data: { repository: { release: match } } }), stderr: "" };
     }
-    assert.deepStrictEqual(args, ["api", "repos/dbalders/TritonAI-Installer/releases/1"]);
+    assert.deepStrictEqual(args, ["api", `repos/${GITHUB_REPOSITORY}/releases/1`]);
     return { status: 0, stdout: JSON.stringify(release), stderr: "" };
   });
   assert.strictEqual(clientFor(null).lookupRelease("v0.2.5"), null);

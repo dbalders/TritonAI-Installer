@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { run, treeHash } = require('./release-runner.cjs');
+const { releaseRepository } = require('./release-repository-owner.cjs');
 
 const SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -335,7 +336,7 @@ function candidateEnvironment(candidate) {
   const serialized = JSON.stringify(Object.fromEntries(candidate.pluginIds.map(id => [id, config[id]])));
   if (hash(serialized) !== candidate.configurationSha256) throw new Error('Plugin configuration changed. Use --fresh for a new candidate.');
   return { ...cleanEnvironment(process.env, candidate.tools),
-    TRITONAI_PLUGIN_CONFIGURATION_JSON: serialized, T3CODE_DESKTOP_UPDATE_REPOSITORY: 'dbalders/TritonAI-Harness' };
+    TRITONAI_PLUGIN_CONFIGURATION_JSON: serialized, T3CODE_DESKTOP_UPDATE_REPOSITORY: releaseRepository('TritonAI-Harness') };
 }
 
 function macSigningEnvironment(candidate) {

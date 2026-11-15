@@ -13,8 +13,9 @@ const {
 } = require("../src/installer/secure-skills-provenance");
 
 const root = path.resolve(__dirname, "..", "..");
+const { releaseRepository } = require(path.join(root, "scripts", "release-repository-owner.cjs"));
 const localSourceOverride = process.env.UCSD_SKILLS_SOURCE;
-const repo = process.env.UCSD_SKILLS_REPO || "https://github.com/dbalders/UCSD-Skills-Library-Secure.git";
+const repo = process.env.UCSD_SKILLS_REPO || `https://github.com/${releaseRepository("UCSD-Skills-Library-Secure")}.git`;
 const ref = process.env.UCSD_SKILLS_REF || "main";
 const sourceSubdir = process.env.UCSD_SKILLS_SUBDIR || "";
 const vendorDir = path.join(root, "vendor", "skills");

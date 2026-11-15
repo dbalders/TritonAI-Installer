@@ -12,7 +12,8 @@ const {
 const root = path.resolve(__dirname, "..", "..");
 const tag = process.argv[2];
 const pkg = require(path.join(root, "package.json"));
-const GITHUB_REPOSITORY = "dbalders/TritonAI-Installer";
+const { releaseRepository } = require(path.join(root, "scripts", "release-repository-owner.cjs"));
+const GITHUB_REPOSITORY = releaseRepository("TritonAI-Installer");
 
 function main() {
   assertPublicReleaseInputs({ root });

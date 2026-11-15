@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   validate:
-    if: github.repository == 'dbalders/TritonAI-Installer' && github.ref == 'refs/heads/main'
+    if: contains(fromJSON('["dbalders/TritonAI-Installer","UCSD/TritonAI-Installer"]'), github.repository) && github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 60
     environment: windows-signing
@@ -74,7 +74,7 @@ jobs:
         with:
           app-id: ${{ vars.RELEASE_INPUT_APP_ID }}
           private-key: ${{ secrets.RELEASE_INPUT_APP_PRIVATE_KEY }}
-          owner: dbalders
+          owner: ${{ github.repository_owner }}
           repositories: TritonAI-Harness
           permission-actions: read
       - name: Mint read-only secure-skills token
@@ -83,7 +83,7 @@ jobs:
         with:
           app-id: ${{ vars.RELEASE_INPUT_APP_ID }}
           private-key: ${{ secrets.RELEASE_INPUT_APP_PRIVATE_KEY }}
-          owner: dbalders
+          owner: ${{ github.repository_owner }}
           repositories: UCSD-Skills-Library-Secure
           permission-contents: read
       - name: Check protected environment configuration
@@ -99,7 +99,7 @@ jobs:
       - name: Download immutable inputs from the selected Harness run
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          repository: dbalders/TritonAI-Harness
+          repository: ${{ github.repository_owner }}/TritonAI-Harness
           run-id: ${{ inputs.harness_run_id }}
           name: desktop-win-x64
           path: .release-input/harness-run
@@ -107,7 +107,7 @@ jobs:
       - name: Checkout pinned private secure skills
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          repository: dbalders/UCSD-Skills-Library-Secure
+          repository: ${{ github.repository_owner }}/UCSD-Skills-Library-Secure
           ref: ${{ inputs.skills_commit }}
           path: .release-input/secure-skills
           token: ${{ steps.skills_token.outputs.token }}

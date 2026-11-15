@@ -2,12 +2,13 @@
 
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
+const { isAcceptedReleaseRepository, releaseRepository } = require('./release-repository-owner.cjs');
 const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA = /^[a-f0-9]{40}$/;
 
 function validateInputs(env) {
-  if (env.GITHUB_REPOSITORY !== 'dbalders/TritonAI-Installer' || env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_EVENT_NAME !== 'workflow_dispatch') {
-    throw new Error('Signing validation is restricted to manual runs on dbalders/TritonAI-Installer main.');
+  if (!isAcceptedReleaseRepository(env.GITHUB_REPOSITORY, 'TritonAI-Installer') || env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_EVENT_NAME !== 'workflow_dispatch') {
+    throw new Error('Signing validation is restricted to manual runs on dbalders/TritonAI-Installer or UCSD/TritonAI-Installer main.');
   }
   if (!STABLE_VERSION.test(env.INSTALLER_VERSION || '') || !STABLE_VERSION.test(env.HARNESS_VERSION || '')) {
     throw new Error('Installer and Harness versions must be explicit stable semantic versions.');
@@ -63,7 +64,8 @@ function bindWorkflowReceipt(receipt, receiptPath, requireExisting = false) {
 
 function main(env = process.env) {
   const selection = validateInputs(env);
-  const api = suffix => JSON.parse(execFileSync('gh', ['api', `repos/dbalders/TritonAI-Harness/${suffix}`], { encoding: 'utf8' }));
+  const harness = releaseRepository('TritonAI-Harness', env);
+  const api = suffix => JSON.parse(execFileSync('gh', ['api', `repos/${harness}/${suffix}`], { encoding: 'utf8' }));
   const run = api(`actions/runs/${selection.runId}`);
   const tag = api(`commits/v${selection.harnessVersion}`);
   if (selection.harnessSource === 'workflow_artifacts') {
@@ -72,7 +74,7 @@ function main(env = process.env) {
   } else {
     assertHarnessRelease(selection, run, api(`releases/tags/v${selection.harnessVersion}`), tag);
   }
-  fs.appendFileSync(env.GITHUB_ENV, `TRITONAI_HARNESS_VERSION=${selection.harnessVersion}\nTRITONAI_HARNESS_RELEASE_BASE=https://github.com/dbalders/TritonAI-Harness/releases/download/v${selection.harnessVersion}\n`);
+  fs.appendFileSync(env.GITHUB_ENV, `TRITONAI_HARNESS_VERSION=${selection.harnessVersion}\nTRITONAI_HARNESS_RELEASE_BASE=https://github.com/${harness}/releases/download/v${selection.harnessVersion}\n`);
   console.log(`Verified successful Harness run ${selection.runId}, tag v${selection.harnessVersion}, commit ${selection.commit}. Vendoring will verify hashes, plugin composition, publisher and timestamp.`);
 }
 

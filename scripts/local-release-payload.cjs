@@ -21,7 +21,7 @@ function validateFrozenComposition(composition) {
   const { source } = composition;
   const commit = /^[a-f0-9]{40}$/;
   if (composition.version !== 1 || composition.kind !== 'tritonai-harness-plugin-composition'
-    || source.repository !== 'https://github.com/dbalders/TritonAI-Plugins.git'
+    || !['https://github.com/dbalders/TritonAI-Plugins.git', 'https://github.com/UCSD/TritonAI-Plugins.git'].includes(source.repository)
     || typeof source.commit !== 'string' || !commit.test(source.commit)
     || typeof source.ref !== 'string'
     || !(commit.test(source.ref) || /^refs\/(?:heads|tags)\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/.test(source.ref))
