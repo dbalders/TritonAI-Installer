@@ -35,6 +35,17 @@ test('current Harness ASAR packages verify against the external manifest without
   assert.deepEqual(verifyPluginArchive(archive, asar, composition), { files: 1, pluginIds: ['github'] });
 });
 
+test('frozen compositions from either Plugins owner verify; other owners do not', async t => {
+  for (const repository of ['https://github.com/dbalders/TritonAI-Plugins.git', 'https://github.com/UCSD/TritonAI-Plugins.git']) {
+    const { archive, composition } = await fixture(t, (_plugins, _source, value) => { value.source.repository = repository; });
+    assert.deepEqual(verifyPluginArchive(archive, asar, composition).pluginIds, ['github']);
+  }
+  for (const repository of ['https://github.com/someone/TritonAI-Plugins.git', 'https://github.com/ucsd/TritonAI-Plugins.git']) {
+    const { archive, composition } = await fixture(t, (_plugins, _source, value) => { value.source.repository = repository; });
+    assert.throws(() => verifyPluginArchive(archive, asar, composition));
+  }
+});
+
 test('optional embedded manifest is accepted only when it matches the frozen composition', async t => {
   const matching = await fixture(t, (plugins, _source, composition) => fs.writeFileSync(path.join(plugins, 'manifest.json'), JSON.stringify(composition)));
   assert.equal(verifyPluginArchive(matching.archive, asar, matching.composition).files, 1);

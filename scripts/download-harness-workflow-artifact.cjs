@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync, execFileSync } = require('node:child_process');
 const { validateInputs } = require('./validate-windows-signing-inputs.cjs');
+const { releaseRepository } = require('./release-repository-owner.cjs');
 
 function sha256(file) {
   const hash = crypto.createHash('sha256');
@@ -16,11 +17,11 @@ function sha256(file) {
   return hash.digest('hex');
 }
 
-function downloadZip(artifactId, destination) {
+function downloadZip(artifactId, destination, env = process.env) {
   const fd = fs.openSync(destination, 'wx');
   try {
     // gh follows the signed download redirect without logging credentials/URLs.
-    const result = spawnSync('gh', ['api', `repos/dbalders/TritonAI-Harness/actions/artifacts/${artifactId}/zip`], { stdio: ['ignore', fd, 'pipe'] });
+    const result = spawnSync('gh', ['api', `repos/${releaseRepository('TritonAI-Harness', env)}/actions/artifacts/${artifactId}/zip`], { stdio: ['ignore', fd, 'pipe'] });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`Harness artifact download failed: ${String(result.stderr || '').trim()}`);
   } finally { fs.closeSync(fd); }
@@ -43,7 +44,7 @@ function downloadArtifact(env = process.env, { fetchZip = downloadZip } = {}) {
   const scratch = fs.mkdtempSync(path.join(path.dirname(destination), '.harness-artifact-'));
   try {
     const archive = path.join(scratch, 'artifact.zip');
-    fetchZip(artifact.id, archive);
+    fetchZip(artifact.id, archive, env);
     if (!fs.lstatSync(archive).isFile() || fs.statSync(archive).size !== artifact.size || `sha256:${sha256(archive)}` !== artifact.digest) throw new Error('Harness artifact ZIP differs from the frozen successful-run digest.');
     const unpacked = path.join(scratch, 'unpacked');
     fs.mkdirSync(unpacked);

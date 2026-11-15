@@ -12,7 +12,12 @@ const {
 const root = path.resolve(__dirname, "..", "..");
 const tag = process.argv[2];
 const pkg = require(path.join(root, "package.json"));
-const GITHUB_REPOSITORY = "dbalders/TritonAI-Installer";
+const { releaseRepository } = require(path.join(root, "scripts", "release-repository-owner.cjs"));
+// Resolved when a release operation runs, so importing this module (for tests) never depends
+// on which repository the workflow is running in.
+function installerRepository(env = process.env) {
+  return releaseRepository("TritonAI-Installer", env);
+}
 
 function main() {
   assertPublicReleaseInputs({ root });
@@ -193,11 +198,11 @@ function requireRelease(release, releaseTag) {
   return release;
 }
 
-function createGitHubClient(spawn: any = spawnSync) {
+function createGitHubClient(spawn: any = spawnSync, env = process.env) {
   return {
     lookupRelease(releaseTag) {
       return require(path.join(root, "scripts", "github-release-lookup.cjs"))
-        .lookupInstallerRelease(releaseTag, { spawn, cwd: root });
+        .lookupInstallerRelease(releaseTag, { spawn, cwd: root, env });
     },
     createDraftRelease(releaseTag, head) {
       run("gh", [
@@ -205,7 +210,7 @@ function createGitHubClient(spawn: any = spawnSync) {
         "create",
         releaseTag,
         "--repo",
-        GITHUB_REPOSITORY,
+        installerRepository(env),
         "--draft",
         "--target",
         head,
@@ -216,10 +221,10 @@ function createGitHubClient(spawn: any = spawnSync) {
       ]);
     },
     deleteAsset(assetId) {
-      run("gh", ["api", "--method", "DELETE", `repos/${GITHUB_REPOSITORY}/releases/assets/${assetId}`]);
+      run("gh", ["api", "--method", "DELETE", `repos/${installerRepository(env)}/releases/assets/${assetId}`]);
     },
     uploadAsset(releaseTag, asset) {
-      run("gh", ["release", "upload", releaseTag, asset.absolutePath, "--repo", GITHUB_REPOSITORY]);
+      run("gh", ["release", "upload", releaseTag, asset.absolutePath, "--repo", installerRepository(env)]);
     }
   };
 }
@@ -257,7 +262,7 @@ function run(command, args) {
 if (require.main === module) main();
 
 module.exports = {
-  GITHUB_REPOSITORY,
+  installerRepository,
   buildDesiredReleaseAssets,
   createGitHubClient,
   getRemoteTagCommit,

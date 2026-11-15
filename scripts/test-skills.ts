@@ -186,6 +186,19 @@ function assertSecureRepositoryProvenance() {
     );
   }
   for (const repository of [
+    "https://github.com/UCSD/UCSD-Skills-Library-Secure.git",
+    "https://github.com/ucsd/UCSD-Skills-Library-Secure",
+    "git@github.com:UCSD/UCSD-Skills-Library-Secure.git"
+  ]) {
+    assert.strictEqual(
+      assertCanonicalSecureSkillsRepository(repository),
+      "UCSD/UCSD-Skills-Library-Secure"
+    );
+  }
+  for (const repository of [
+    "https://github.com/UCSD/UCSD-Skills-Library.git",
+    "https://github.com/UCSD-evil/UCSD-Skills-Library-Secure.git",
+    "https://github.com/someone/UCSD-Skills-Library-Secure.git",
     "https://github.com/dbalders/UCSD-Skills-Library.git",
     "https://github.com.evil.example/dbalders/UCSD-Skills-Library-Secure.git",
     "https://gitlab.com/dbalders/UCSD-Skills-Library-Secure.git",

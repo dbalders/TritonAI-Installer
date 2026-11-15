@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const { execFileSync, spawnSync } = require('node:child_process');
+const { releaseRepository } = require('./release-repository-owner.cjs');
 function github(...args) {
   if (args[0] !== 'run') return execFileSync('gh', args, { encoding: 'utf8' });
   const result = spawnSync('gh', args, { stdio: 'inherit' });
@@ -7,10 +8,11 @@ function github(...args) {
   if (result.status !== 0) throw new Error(`Harness CI wait failed: ${result.status ?? result.signal}`);
   return '';
 }
-function wait(runId, commit, gh = github) {
+function wait(runId, commit, gh = github, env = process.env) {
   if (!/^\d+$/.test(runId || '') || !/^[a-f0-9]{40}$/.test(commit || '')) throw new Error('Expected an exact Harness run ID and commit');
-  const args = ['--repo', 'dbalders/TritonAI-Harness'];
-  const view = () => JSON.parse(gh('api', `repos/dbalders/TritonAI-Harness/actions/runs/${runId}`));
+  const harness = releaseRepository('TritonAI-Harness', env);
+  const args = ['--repo', harness];
+  const view = () => JSON.parse(gh('api', `repos/${harness}/actions/runs/${runId}`));
   const before = view();
   if (before.head_sha !== commit || before.path !== '.github/workflows/release.yml') throw new Error('Harness run does not match the release workflow and selected commit');
   // gh handles polling in one process. No AI loop is needed.

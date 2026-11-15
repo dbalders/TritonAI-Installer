@@ -2,20 +2,23 @@ const path = require("path");
 
 const CANONICAL_GITHUB_HOST = "github.com";
 const CANONICAL_SECURE_REPOSITORY = "dbalders/UCSD-Skills-Library-Secure";
+// The secure skills repository is moving from dbalders to the UCSD organization. Accept
+// both owners so bundled skills verify on either side of the transfer.
+const ACCEPTED_SECURE_REPOSITORY_OWNERS = ["dbalders", "UCSD"];
 
 function assertCanonicalSecureSkillsRepository(repository, label = "Secure skills source") {
   const parsed = parseGitHubRepository(repository);
-  const canonical = parsed
+  const owner = parsed
     && parsed.host === CANONICAL_GITHUB_HOST
-    && parsed.owner.toLowerCase() === "dbalders"
-    && parsed.repository.toLowerCase() === "ucsd-skills-library-secure";
-  if (!canonical) {
+    && parsed.repository.toLowerCase() === "ucsd-skills-library-secure"
+    && ACCEPTED_SECURE_REPOSITORY_OWNERS.find(candidate => candidate.toLowerCase() === parsed.owner.toLowerCase());
+  if (!owner) {
     throw new Error(
-      `${label} must identify ${CANONICAL_GITHUB_HOST}/${CANONICAL_SECURE_REPOSITORY} as its canonical source repository; `
+      `${label} must identify ${CANONICAL_GITHUB_HOST}/${CANONICAL_SECURE_REPOSITORY} or ${CANONICAL_GITHUB_HOST}/UCSD/UCSD-Skills-Library-Secure as its canonical source repository; `
       + `${sanitizeRepositoryUrl(repository)} is not accepted as secure skills provenance.`
     );
   }
-  return CANONICAL_SECURE_REPOSITORY;
+  return `${owner}/UCSD-Skills-Library-Secure`;
 }
 
 function parseGitHubRepository(value) {

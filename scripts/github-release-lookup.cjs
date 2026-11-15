@@ -1,7 +1,10 @@
 'use strict';
 const { spawnSync } = require('node:child_process');
+const { releaseRepositoryOwner } = require('./release-repository-owner.cjs');
 
-function lookupInstallerRelease(tag, { spawn = spawnSync, cwd = process.cwd() } = {}) {
+function lookupInstallerRelease(tag, { spawn = spawnSync, cwd = process.cwd(), env = process.env } = {}) {
+  // GraphQL addresses the repository by its current owner instead of GitHub's transfer redirect.
+  const owner = releaseRepositoryOwner(env);
   function request(args) {
     const result = spawn('gh', ['api', ...args], {
       cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe']
@@ -16,8 +19,8 @@ function lookupInstallerRelease(tag, { spawn = spawnSync, cwd = process.cwd() } 
   // Match gh's draft lookup: REST tag/list endpoints can omit pending drafts
   // with Actions tokens. GraphQL resolves the pending tag to its stable ID.
   const response = request(['graphql', '-f',
-    'query=query($tag: String!) { repository(owner: "dbalders", name: "TritonAI-Installer") { release(tagName: $tag) { databaseId } } }',
-    '-f', `tag=${tag}`]);
+    'query=query($owner: String!, $tag: String!) { repository(owner: $owner, name: "TritonAI-Installer") { release(tagName: $tag) { databaseId } } }',
+    '-f', `owner=${owner}`, '-f', `tag=${tag}`]);
   if (response.errors || !response.data?.repository || !Object.hasOwn(response.data.repository, 'release')) {
     throw new Error('GitHub release lookup returned an invalid GraphQL response.');
   }
@@ -26,7 +29,7 @@ function lookupInstallerRelease(tag, { spawn = spawnSync, cwd = process.cwd() } 
   if (!Number.isSafeInteger(match.databaseId) || match.databaseId <= 0) {
     throw new Error('GitHub release lookup returned an invalid release ID.');
   }
-  const release = request([`repos/dbalders/TritonAI-Installer/releases/${match.databaseId}`]);
+  const release = request([`repos/${owner}/TritonAI-Installer/releases/${match.databaseId}`]);
   if (release.id !== match.databaseId || release.tag_name !== tag) {
     throw new Error('GitHub release lookup returned a mismatched release.');
   }

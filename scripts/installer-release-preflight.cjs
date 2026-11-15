@@ -2,6 +2,7 @@
 const { execFileSync } = require('node:child_process');
 const { lookupInstallerRelease } = require('./github-release-lookup.cjs');
 const { validateInputs } = require('./validate-windows-signing-inputs.cjs');
+const { releaseRepository } = require('./release-repository-owner.cjs');
 
 function assertInstallerSource(version, pkg, release, tag, head) {
   if (pkg.version !== version) throw new Error('Installer version must match committed package.json.');
@@ -10,7 +11,7 @@ function assertInstallerSource(version, pkg, release, tag, head) {
 }
 function lookup(suffix) {
   try {
-    return JSON.parse(execFileSync('gh', ['api', `repos/dbalders/TritonAI-Installer/${suffix}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+    return JSON.parse(execFileSync('gh', ['api', `repos/${releaseRepository('TritonAI-Installer')}/${suffix}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
   } catch (error) {
     if (/\bHTTP 404\b/.test(String(error.stderr))) return null;
     throw new Error(`Cannot verify Installer ${suffix}; GitHub lookup failed.`);

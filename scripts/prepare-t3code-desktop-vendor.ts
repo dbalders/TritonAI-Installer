@@ -26,6 +26,7 @@ const {
 } = require("../src/installer/windows-artifact-trust");
 
 const root = path.resolve(__dirname, "..", "..");
+const { releaseRepository } = require(path.join(root, "scripts", "release-repository-owner.cjs"));
 const {
   expectedHarnessVersion,
   defaultReleaseBase,
@@ -177,7 +178,7 @@ function stageWindowsVendor(arch, trustMode = "authenticode") {
       fs.mkdirSync(path.dirname(proofPath), { recursive: true });
       fs.writeFileSync(proofPath, `${JSON.stringify({
         schemaVersion: 1,
-        repository: "dbalders/TritonAI-Harness",
+        repository: releaseRepository("TritonAI-Harness"),
         runId: process.env.HARNESS_RUN_ID,
         commit: process.env.HARNESS_COMMIT,
         version: expectedHarnessVersion,

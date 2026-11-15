@@ -13,8 +13,11 @@ const {
 } = require("../src/installer/secure-skills-provenance");
 
 const root = path.resolve(__dirname, "..", "..");
+const { releaseRepository } = require(path.join(root, "scripts", "release-repository-owner.cjs"));
 const localSourceOverride = process.env.UCSD_SKILLS_SOURCE;
-const repo = process.env.UCSD_SKILLS_REPO || "https://github.com/dbalders/UCSD-Skills-Library-Secure.git";
+// Resolved only when cloning, so importing this module (for tests) never depends on the workflow owner.
+const secureSkillsRepositoryUrl = () =>
+  process.env.UCSD_SKILLS_REPO || `https://github.com/${releaseRepository("UCSD-Skills-Library-Secure")}.git`;
 const ref = process.env.UCSD_SKILLS_REF || "main";
 const sourceSubdir = process.env.UCSD_SKILLS_SUBDIR || "";
 const vendorDir = path.join(root, "vendor", "skills");
@@ -47,6 +50,7 @@ function main() {
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tritonai-secure-skills-vendor-"));
   try {
+    const repo = secureSkillsRepositoryUrl();
     const effectiveRepository = getEffectiveCloneRepositoryUrl(repo);
     assertCanonicalSecureSkillsRepository(effectiveRepository, "UCSD_SKILLS_REPO");
     const cloneDir = path.join(tempRoot, "repo");

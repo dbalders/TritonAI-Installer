@@ -40,7 +40,7 @@ permissions:
 
 jobs:
   request:
-    if: github.repository == 'dbalders/TritonAI-Installer' && github.ref == 'refs/heads/main'
+    if: contains(fromJSON('["dbalders/TritonAI-Installer","UCSD/TritonAI-Installer"]'), github.repository) && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
