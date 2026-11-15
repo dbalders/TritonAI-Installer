@@ -6,7 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { run, treeHash } = require('./release-runner.cjs');
-const { releaseRepository } = require('./release-repository-owner.cjs');
+const { releaseRepositoryOwner } = require('./release-repository-owner.cjs');
 
 const SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -335,10 +335,13 @@ function candidateEnvironment(candidate) {
   const config = read(candidate.configurationFile);
   const serialized = JSON.stringify(Object.fromEntries(candidate.pluginIds.map(id => [id, config[id]])));
   if (hash(serialized) !== candidate.configurationSha256) throw new Error('Plugin configuration changed. Use --fresh for a new candidate.');
+  // Local releases run outside a workflow: use only the explicit owner override, never CI's owner.
+  // Pass the resolved owner on so release stages, which rebuild this environment, keep it.
+  const owner = releaseRepositoryOwner({ TRITONAI_RELEASE_REPOSITORY_OWNER: process.env.TRITONAI_RELEASE_REPOSITORY_OWNER });
   return { ...cleanEnvironment(process.env, candidate.tools),
     TRITONAI_PLUGIN_CONFIGURATION_JSON: serialized,
-    // Local releases run outside a workflow: use only the explicit owner override, never CI's owner.
-    T3CODE_DESKTOP_UPDATE_REPOSITORY: releaseRepository('TritonAI-Harness', { TRITONAI_RELEASE_REPOSITORY_OWNER: process.env.TRITONAI_RELEASE_REPOSITORY_OWNER }) };
+    TRITONAI_RELEASE_REPOSITORY_OWNER: owner,
+    T3CODE_DESKTOP_UPDATE_REPOSITORY: `${owner}/TritonAI-Harness` };
 }
 
 function macSigningEnvironment(candidate) {

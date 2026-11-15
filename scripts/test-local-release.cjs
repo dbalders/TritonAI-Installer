@@ -61,6 +61,20 @@ test('resume freezes selectors and configuration, not moving latest refs', t => 
   assert.equal(JSON.parse(candidateEnvironment(c).TRITONAI_PLUGIN_CONFIGURATION_JSON).github.clientId, 'fixture');
   save(file, { github: { clientId: 'changed' } }); assert.throws(() => candidateEnvironment(c), /configuration changed/);
 });
+test('an explicit release owner survives into release stages, which rebuild the candidate environment', t => {
+  const root = fixture(t), file = path.join(root, 'config.json'); save(file, { github: { clientId: 'fixture' } });
+  const c = { configurationFile: file, configurationSha256: hash(JSON.stringify({ github: { clientId: 'fixture' } })), pluginIds: ['github'], tools: {} };
+  const saved = process.env.TRITONAI_RELEASE_REPOSITORY_OWNER;
+  t.after(() => { if (saved === undefined) delete process.env.TRITONAI_RELEASE_REPOSITORY_OWNER; else process.env.TRITONAI_RELEASE_REPOSITORY_OWNER = saved; });
+  process.env.TRITONAI_RELEASE_REPOSITORY_OWNER = 'UCSD';
+  const parent = candidateEnvironment(c);
+  // A stage child process starts with only the parent's environment and rebuilds it.
+  delete process.env.TRITONAI_RELEASE_REPOSITORY_OWNER;
+  if (parent.TRITONAI_RELEASE_REPOSITORY_OWNER) process.env.TRITONAI_RELEASE_REPOSITORY_OWNER = parent.TRITONAI_RELEASE_REPOSITORY_OWNER;
+  const stage = candidateEnvironment(c);
+  assert.equal(parent.T3CODE_DESKTOP_UPDATE_REPOSITORY, 'UCSD/TritonAI-Harness');
+  assert.equal(stage.T3CODE_DESKTOP_UPDATE_REPOSITORY, 'UCSD/TritonAI-Harness');
+});
 test('release environment excludes ambient build overrides without mutating parent', () => {
   const input = { PATH: '/usr/bin', ELECTRON_RUN_AS_NODE: '1', Node_Path: '/ambient', Electron_Run_As_Node: '1', NODE_OPTIONS: '--bad', TRITONAI_PLUGINS_REF: 'wrong', APPLE_API_KEY: 'ambient', WINEPREFIX: '/shared', KEEP: 'yes' };
   const result = cleanEnvironment(input, { node: '/tools/node', vp: '/vite/vp' });
