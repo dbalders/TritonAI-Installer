@@ -336,7 +336,9 @@ function candidateEnvironment(candidate) {
   const serialized = JSON.stringify(Object.fromEntries(candidate.pluginIds.map(id => [id, config[id]])));
   if (hash(serialized) !== candidate.configurationSha256) throw new Error('Plugin configuration changed. Use --fresh for a new candidate.');
   return { ...cleanEnvironment(process.env, candidate.tools),
-    TRITONAI_PLUGIN_CONFIGURATION_JSON: serialized, T3CODE_DESKTOP_UPDATE_REPOSITORY: releaseRepository('TritonAI-Harness') };
+    TRITONAI_PLUGIN_CONFIGURATION_JSON: serialized,
+    // Local releases run outside a workflow: use only the explicit owner override, never CI's owner.
+    T3CODE_DESKTOP_UPDATE_REPOSITORY: releaseRepository('TritonAI-Harness', { TRITONAI_RELEASE_REPOSITORY_OWNER: process.env.TRITONAI_RELEASE_REPOSITORY_OWNER }) };
 }
 
 function macSigningEnvironment(candidate) {

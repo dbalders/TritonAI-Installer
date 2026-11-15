@@ -4,7 +4,6 @@ const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const {
-  GITHUB_REPOSITORY,
   buildDesiredReleaseAssets,
   createGitHubClient,
   planAssetReconciliation,
@@ -128,22 +127,26 @@ function assertOperationalFailures(paths) {
   );
 }
 
+// Pin the owner so these tests behave the same in any repository, including contributor forks.
+const LOOKUP_ENV = { GITHUB_REPOSITORY_OWNER: "dbalders" };
+
 function assertLookupStatusHandling() {
   const draft = { id: 1, tag_name: "v0.2.5", draft: true, assets: [] };
   const clientFor = (match, release = draft) => createGitHubClient((_command, args) => {
+    if (args[1] === "graphql") assert(args.includes("owner=UCSD"));
     if (args[1] === "graphql") {
       assert(args.includes("tag=v0.2.5"));
       return { status: 0, stdout: JSON.stringify({ data: { repository: { release: match } } }), stderr: "" };
     }
-    assert.deepStrictEqual(args, ["api", `repos/${GITHUB_REPOSITORY}/releases/1`]);
+    assert.deepStrictEqual(args, ["api", "repos/UCSD/TritonAI-Installer/releases/1"]);
     return { status: 0, stdout: JSON.stringify(release), stderr: "" };
-  });
+  }, { GITHUB_REPOSITORY_OWNER: "UCSD" });
   assert.strictEqual(clientFor(null).lookupRelease("v0.2.5"), null);
   assert.deepStrictEqual(clientFor({ databaseId: 1 }).lookupRelease("v0.2.5"), draft);
   assert.throws(() => clientFor({ databaseId: "1" }).lookupRelease("v0.2.5"), /invalid release ID/);
   assert.throws(() => clientFor({ databaseId: 1 }, { ...draft, tag_name: "v9" }).lookupRelease("v0.2.5"), /mismatched/);
   for (const stdout of ['{}', '{"data":{"repository":null}}', '{"errors":[]}', 'not JSON']) {
-    const failed = createGitHubClient(() => ({ status: 0, stdout, stderr: "" }));
+    const failed = createGitHubClient(() => ({ status: 0, stdout, stderr: "" }), LOOKUP_ENV);
     assert.throws(() => failed.lookupRelease("v0.2.5"), /invalid/);
   }
   for (const status of [403, 404, 503]) {
@@ -153,7 +156,7 @@ function assertLookupStatusHandling() {
           return { status: 0, stdout: JSON.stringify({ data: { repository: { release: { databaseId: 1 } } } }), stderr: "" };
         }
         return { status: 1, stdout: "", stderr: `gh: request failed (HTTP ${status})` };
-      });
+      }, LOOKUP_ENV);
       assert.throws(() => failed.lookupRelease("v0.2.5"), new RegExp(`HTTP ${status}`));
     }
   }

@@ -88,11 +88,12 @@ test('handoff preserves exact bytes, resumes, and refuses replacement', async t 
 });
 test('CI wait rejects unrelated workflows and reads back success', () => {
   const commit = 'a'.repeat(40); let calls = 0;
+  const ownerEnv = { GITHUB_REPOSITORY_OWNER: 'dbalders' }; // Independent of the repository running the tests.
   wait('123', commit, (...args) => {
     calls++; if (args[0] === 'run') { assert.ok(args.includes('--exit-status')); return ''; }
     return JSON.stringify({ head_sha: commit, path: '.github/workflows/release.yml', status: 'completed', conclusion: 'success' });
-  }); assert.equal(calls, 3);
-  assert.throws(() => wait('123', commit, () => JSON.stringify({ head_sha: 'b'.repeat(40) })), /does not match/);
+  }, ownerEnv); assert.equal(calls, 3);
+  assert.throws(() => wait('123', commit, () => JSON.stringify({ head_sha: 'b'.repeat(40) }), ownerEnv), /does not match/);
 });
 test('preparer creates same-commit isolated worktrees and gates both packages on tests', async t => {
   const { execFileSync } = require('node:child_process');
